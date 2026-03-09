@@ -246,15 +246,6 @@ const route = useRoute()
 
 // ====== 通用 ======
 const activeTab = ref('docker')
-
-watch(() => route.path, (newPath) => {
-  if (newPath.includes('k8s')) {
-    activeTab.value = 'k8s'
-    if (!clusters.value.length) fetchClusters()
-  } else {
-    activeTab.value = 'docker'
-  }
-}, { immediate: true })
 const hosts = ref([])
 
 // ====== Docker ======
@@ -462,6 +453,15 @@ async function saveCluster() {
 }
 
 // ====== 初始化 ======
+watch(() => route.path, (newPath) => {
+  if (newPath.includes('k8s')) {
+    activeTab.value = 'k8s'
+    if (!clusters.value.length) fetchClusters()
+  } else {
+    activeTab.value = 'docker'
+  }
+}, { immediate: true })
+
 onMounted(async () => {
   try {
     const res = await getHosts()
