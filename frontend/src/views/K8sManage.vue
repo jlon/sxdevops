@@ -5,7 +5,7 @@
       <div class="k8s-toolbar" v-if="activeTab !== 'clusters'">
         <div class="cluster-selector-group">
           <span class="toolbar-label"><el-icon><Connection /></el-icon> 当前集群</span>
-          <el-select v-model="selectedClusterId" placeholder="选择集群" @change="onClusterChange" style="width: 450px" class="industrial-select" popper-class="industrial-popper">
+          <el-select v-model="selectedClusterId" placeholder="选择集群" @change="onClusterChange" style="width: 150px" class="industrial-select" popper-class="industrial-popper">
             <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
               <div style="display:flex;align-items:center;gap:8px;font-weight:600;">
                 <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span> {{ c.name }}
@@ -16,7 +16,7 @@
         
         <div class="namespace-selector-group" v-if="needsNamespace">
           <span class="toolbar-label"><el-icon><FolderOpened /></el-icon> NS</span>
-          <el-select v-model="selectedNamespace" placeholder="命名空间" @change="fetchCurrentTab" style="width: 280px" class="industrial-select" popper-class="industrial-popper">
+          <el-select v-model="selectedNamespace" placeholder="命名空间" @change="fetchCurrentTab" style="width: 100px" class="industrial-select" popper-class="industrial-popper">
             <el-option label="[ 全部命名空间 ]" value="_all" />
             <el-option v-for="ns in namespaces" :key="ns.name" :label="ns.name" :value="ns.name" />
           </el-select>

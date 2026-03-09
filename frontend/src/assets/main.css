@@ -1135,11 +1135,11 @@ body {
 }
 
 .industrial-select.cluster-select .el-input__wrapper {
-  width: 450px;
+  width: 150px;
 }
 
 .industrial-select.ns-select .el-input__wrapper {
-  width: 280px;
+  width: 100px;
 }
 
 .industrial-select .el-input__inner {
@@ -1148,8 +1148,8 @@ body {
   font-weight: 600;
   font-size: 14px;
   white-space: nowrap;
-  overflow: visible !important;
-  text-overflow: clip !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
 }
 
 .industrial-select:hover .el-input__wrapper {
