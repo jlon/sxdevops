@@ -1099,12 +1099,13 @@ body {
 .k8s-toolbar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  background: #0f172a;
-  padding: 8px 16px;
+  gap: 20px;
+  background: #326ce5;
+  padding: 12px 24px;
   border-radius: 6px;
-  border: 1px solid #334155;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  border: none;
+  box-shadow: 0 4px 15px -3px rgba(50, 108, 229, 0.4);
+  flex-wrap: wrap;
 }
 
 .cluster-selector-group,
@@ -1117,27 +1118,28 @@ body {
 .toolbar-label {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: #10b981;
+  gap: 8px;
+  color: #ffffff;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  letter-spacing: 1px;
 }
 
 .industrial-select .el-input__wrapper {
-  background-color: #1e293b !important;
-  box-shadow: 0 0 0 1px #475569 inset !important;
+  background-color: #0f172a !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.2) inset !important;
   border-radius: 4px;
 }
 
 .industrial-select.cluster-select .el-input__wrapper {
-  width: 240px;
+  width: 360px;
 }
 
 .industrial-select.ns-select .el-input__wrapper {
-  width: 180px;
+  width: 240px;
 }
 
 .industrial-select .el-input__inner {
@@ -1148,29 +1150,36 @@ body {
 }
 
 .industrial-select:hover .el-input__wrapper {
-  box-shadow: 0 0 0 1px #10b981 inset !important;
+  box-shadow: 0 0 0 1px #60a5fa inset !important;
 }
 
 .industrial-select .el-input.is-focus .el-input__wrapper {
-  box-shadow: 0 0 0 1px #10b981 inset !important;
+  box-shadow: 0 0 0 1px #60a5fa inset !important;
 }
 
 /* 覆盖弹出框样式以匹配深色工业风格 */
 .industrial-popper.el-select-dropdown {
-  background: #1e293b !important;
-  border: 1px solid #475569 !important;
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5) !important;
+  background: #0f172a !important;
+  border: 1px solid #334155 !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5) !important;
 }
 
 .industrial-popper .el-select-dropdown__item {
-  color: #cbd5e1;
+  color: #94a3b8;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  white-space: nowrap;
 }
 
 .industrial-popper .el-select-dropdown__item.hover, 
 .industrial-popper .el-select-dropdown__item:hover {
-  background-color: #334155 !important;
+  background-color: #1e293b !important;
   color: #f8fafc;
+}
+
+.industrial-popper .el-select-dropdown__item.selected {
+  color: #3b82f6 !important;
+  font-weight: 700;
+  background-color: rgba(59, 130, 246, 0.1) !important;
 }
 
 .industrial-popper .el-select-dropdown__item.selected {
