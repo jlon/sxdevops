@@ -86,8 +86,8 @@ def deploy_service_view(request):
         deployer=data.get('deployer', 'admin'),
     )
 
-    # 后台线程执行部署
-    thread = threading.Thread(target=deployer.deploy_service, args=(dep,), daemon=True)
+    # 后台线程执行部署（传 ID 而非 ORM 对象，避免线程中 DB 连接问题）
+    thread = threading.Thread(target=deployer.deploy_service, args=(dep.id,), daemon=True)
     thread.start()
 
     return Response(ServiceDeploymentSerializer(dep).data, status=status.HTTP_201_CREATED)

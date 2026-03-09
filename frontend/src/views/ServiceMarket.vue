@@ -161,7 +161,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   getTemplates, getDeployments, deployService,
@@ -237,10 +237,51 @@ async function fetchHosts() {
   } catch (e) { /* */ }
 }
 
+// ====== 自动轮询：当有 deploying/pending 状态时每3秒刷新 ======
+let pollTimer = null
+
+function startPolling() {
+  if (pollTimer) return
+  pollTimer = setInterval(async () => {
+    await fetchDeployments()
+    // 如果没有正在部署的任务了就停止轮询
+    const hasActive = deployments.value.some(d => d.status === 'deploying' || d.status === 'pending')
+    if (!hasActive) {
+      stopPolling()
+    }
+  }, 3000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+// 切换到部署管理 Tab 时也自动刷新
+watch(activeTab, (val) => {
+  if (val === 'deploy') {
+    fetchDeployments().then(() => {
+      const hasActive = deployments.value.some(d => d.status === 'deploying' || d.status === 'pending')
+      if (hasActive) startPolling()
+    })
+  } else {
+    stopPolling()
+  }
+})
+
 onMounted(() => {
   fetchTemplates()
-  fetchDeployments()
+  fetchDeployments().then(() => {
+    const hasActive = deployments.value.some(d => d.status === 'deploying' || d.status === 'pending')
+    if (hasActive) startPolling()
+  })
   fetchHosts()
+})
+
+onBeforeUnmount(() => {
+  stopPolling()
 })
 
 // ====== 部署逻辑 ======
@@ -275,9 +316,11 @@ async function handleDeploy() {
       env_config: deployForm.value.env_config,
       deployer: deployForm.value.deployer,
     })
-    ElMessage.success('部署任务已发起，请在"部署管理"中查看进度')
+    ElMessage.success('部署任务已发起，正在自动跟踪状态...')
     deployVisible.value = false
+    activeTab.value = 'deploy'
     fetchDeployments()
+    startPolling()
   } catch (e) { /* */ }
   deploying.value = false
 }

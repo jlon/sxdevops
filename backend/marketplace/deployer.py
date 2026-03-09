@@ -6,6 +6,8 @@ import logging
 import re
 import paramiko
 
+from .models import ServiceDeployment
+
 logger = logging.getLogger(__name__)
 
 DEPLOY_BASE = '/opt/agdevops'
@@ -44,13 +46,22 @@ def _ssh_exec(client, cmd):
     return exit_code, out, err
 
 
-def deploy_service(deployment):
+def deploy_service(deployment_id):
     """
-    部署服务到远程主机
+    部署服务到远程主机（在后台线程中执行）
     1. 渲染 docker-compose.yml
     2. SSH 上传文件
     3. 执行 docker-compose up -d
     """
+    from django.db import close_old_connections
+    close_old_connections()
+
+    try:
+        deployment = ServiceDeployment.objects.select_related('template', 'host').get(pk=deployment_id)
+    except ServiceDeployment.DoesNotExist:
+        logger.error(f'Deployment {deployment_id} not found')
+        return
+
     template = deployment.template
     host = deployment.host
     service_dir = f'{DEPLOY_BASE}/{template.name.lower().replace(" ", "_")}'
@@ -106,6 +117,8 @@ def deploy_service(deployment):
 
     deployment.deploy_log = '\n'.join(log_lines)
     deployment.save(update_fields=['status', 'deploy_log'])
+
+    close_old_connections()
     return deployment
 
 
