@@ -8,22 +8,41 @@
         </div>
         <span class="logo-text">AgDevOps</span>
       </div>
-      <nav class="sidebar-nav">
-        <template v-for="item in menuItems" :key="item.name || item.title">
-          <div v-if="item.divider" class="nav-divider">
-            <span>{{ item.title }}</span>
-          </div>
-          <router-link
-            v-else
-            :to="item.path"
-            class="nav-item"
-            :class="{ active: currentRoute === item.name }"
-          >
-            <el-icon class="nav-icon"><component :is="item.icon" /></el-icon>
-            <span class="nav-label">{{ item.title }}</span>
-          </router-link>
+      <el-menu
+        :default-active="route.path"
+        class="sidebar-nav el-menu-vertical"
+        :collapse="appStore.sidebarCollapsed"
+        router
+        :collapse-transition="false"
+      >
+        <template v-for="item in menuItems" :key="item.title">
+          <!-- 有子菜单 -->
+          <el-sub-menu v-if="item.children" :index="item.title">
+            <template #title>
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.title }}</span>
+            </template>
+            <el-menu-item 
+              v-for="child in item.children" 
+              :key="child.path" 
+              :index="child.path"
+            >
+              <template #title>
+                <el-icon v-if="child.icon"><component :is="child.icon" /></el-icon>
+                <span>{{ child.title }}</span>
+              </template>
+            </el-menu-item>
+          </el-sub-menu>
+
+          <!-- 无子菜单 -->
+          <el-menu-item v-else :index="item.path">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <template #title>
+              <span>{{ item.title }}</span>
+            </template>
+          </el-menu-item>
         </template>
-      </nav>
+      </el-menu>
     </aside>
 
     <!-- 主内容区 -->
@@ -78,28 +97,47 @@ const route = useRoute()
 const appStore = useAppStore()
 
 const menuItems = [
-  { path: '/dashboard',   name: 'Dashboard',   title: '仪表盘',   icon: 'Odometer' },
-  { path: '/hosts',       name: 'Hosts',       title: '主机管理', icon: 'Monitor' },
-  { path: '/deployments', name: 'Deployments', title: '部署管理', icon: 'Promotion' },
-  { path: '/marketplace', name: 'ServiceMarket', title: '工具市场', icon: 'Shop' },
-  { path: '/containers',  name: 'ContainerManage', title: '容器管理', icon: 'Box' },
-  { path: '/logs',        name: 'Logs',        title: '日志中心', icon: 'Document' },
-  { path: '/alerts',      name: 'Alerts',      title: '告警中心', icon: 'Bell' },
-  { path: '/users',       name: 'Users',       title: '用户管理', icon: 'User' },
-  { divider: true, title: 'SQL 审计' },
-  { path: '/sql/datasources', name: 'SqlDatasources', title: '数据源',   icon: 'Coin' },
-  { path: '/sql/orders',      name: 'SqlOrders',      title: 'SQL 工单', icon: 'Tickets' },
-  { path: '/sql/query',       name: 'SqlQuery',       title: 'SQL 查询', icon: 'Search' },
+  { path: '/dashboard',   title: '仪表盘',   icon: 'Odometer' },
+  { path: '/hosts',       title: '主机管理', icon: 'Monitor' },
+  { path: '/deployments', title: '部署管理', icon: 'Promotion' },
+  { path: '/marketplace', title: '工具市场', icon: 'Shop' },
+  {
+    path: '/containers',
+    title: '容器管理',
+    icon: 'Box',
+    children: [
+      { path: '/containers/docker', title: 'Docker 容器' },
+      { path: '/containers/k8s',    title: 'K8s 集群' },
+    ]
+  },
+  { path: '/logs',        title: '日志中心', icon: 'Document' },
+  { path: '/alerts',      title: '告警中心', icon: 'Bell' },
+  { path: '/users',       title: '用户管理', icon: 'User' },
+  {
+    title: 'SQL 审计',
+    icon: 'DataAnalysis',
+    children: [
+      { path: '/sql/datasources', title: '数据源',   icon: 'Coin' },
+      { path: '/sql/orders',      title: 'SQL 工单', icon: 'Tickets' },
+      { path: '/sql/query',       title: 'SQL 查询', icon: 'Search' },
+    ]
+  }
 ]
 
-const currentRoute = computed(() => route.name)
+// 递归查找当前激活菜单的 title
 const currentTitle = computed(() => {
-  const item = menuItems.find(m => m.name === route.name)
-  return item ? item.title : ''
+  const currentPath = route.path
+  
+  for (const item of menuItems) {
+    if (item.path === currentPath) return item.title
+    if (item.children) {
+      const child = item.children.find(c => c.path === currentPath)
+      if (child) return `${item.title} / ${child.title}`
+    }
+  }
+  return ''
 })
 </script>
-
-<style scoped>
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.25s ease, transform 0.25s ease;

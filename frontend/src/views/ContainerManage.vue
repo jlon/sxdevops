@@ -1,16 +1,9 @@
 <template>
   <div class="fade-in">
-    <!-- 页头 + Tab 切换 -->
+    <!-- 页头 -->
     <div class="page-header">
-      <h2>容器管理</h2>
-      <div class="market-tabs">
-        <button class="tab-btn" :class="{ active: activeTab === 'docker' }" @click="activeTab = 'docker'">
-          <span style="font-size:16px;">🐳</span> Docker 容器
-        </button>
-        <button class="tab-btn" :class="{ active: activeTab === 'k8s' }" @click="switchToK8s">
-          <span style="font-size:16px;">☸️</span> K8s 集群
-        </button>
-      </div>
+      <h2 v-if="activeTab === 'docker'"> Docker 容器</h2>
+      <h2 v-if="activeTab === 'k8s'"> K8s 集群</h2>
     </div>
 
     <!-- ============ Docker Tab ============ -->
@@ -235,7 +228,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { getHosts } from '@/api/modules/ops'
@@ -248,8 +242,19 @@ import {
   getK8sPods, getK8sServices, getK8sDeployments, restartK8sPod,
 } from '@/api/modules/container'
 
+const route = useRoute()
+
 // ====== 通用 ======
 const activeTab = ref('docker')
+
+watch(() => route.path, (newPath) => {
+  if (newPath.includes('k8s')) {
+    activeTab.value = 'k8s'
+    if (!clusters.value.length) fetchClusters()
+  } else {
+    activeTab.value = 'docker'
+  }
+}, { immediate: true })
 const hosts = ref([])
 
 // ====== Docker ======

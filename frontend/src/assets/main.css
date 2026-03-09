@@ -142,49 +142,68 @@ body {
   display: none;
 }
 
+/* ========== Element-Plus 侧边栏菜单覆盖 (Industrial Utilitarian) ========== */
 .sidebar-nav {
   flex: 1;
-  padding: 12px 8px;
+  padding: 0;
   overflow-y: auto;
+  border-right: none !important; /* 移除默认右边框 */
+  --el-menu-bg-color: #09090b;
+  --el-menu-text-color: #a1a1aa;
+  --el-menu-active-color: #10b981;
+  --el-menu-hover-bg-color: #18181b;
+  --el-menu-item-height: 44px;
+  background-color: var(--el-menu-bg-color);
 }
 
-.nav-item {
-  display: flex;
-  align-items: center;
-  padding: 10px 12px;
-  margin-bottom: 2px;
-  border-radius: 8px;
-  color: var(--sidebar-text);
-  text-decoration: none;
-  cursor: pointer;
-  transition: var(--transition);
-  gap: 12px;
-  font-size: 14px;
-  font-weight: 500;
-  position: relative;
-  white-space: nowrap;
+.sidebar .el-menu {
+  border-right: none;
+  background-color: transparent;
 }
 
-.nav-item:hover {
-  background: var(--sidebar-hover);
-  color: #e2e8f0;
+.sidebar .el-menu-item,
+.sidebar .el-sub-menu__title {
+  margin: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
 }
 
-.nav-item.active {
-  background: var(--sidebar-active);
-  color: var(--sidebar-text-active);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+/* 悬停状态 */
+.sidebar .el-menu-item:hover,
+.sidebar .el-sub-menu__title:hover {
+  background-color: var(--el-menu-hover-bg-color) !important;
+  color: #e4e4e7 !important;
 }
 
-.nav-item .nav-icon {
-  font-size: 18px;
-  width: 24px;
-  display: flex;
+/* 激活状态 - 硬边框、发光文字和透明背景 */
+.sidebar .el-menu-item.is-active {
+  background-color: rgba(16, 185, 129, 0.1) !important;
+  color: var(--el-menu-active-color) !important;
+  border-left: 3px solid var(--el-menu-active-color);
+  font-weight: 600;
+}
+
+/* 消除子菜单打开时的背景色污染 */
+.sidebar .el-sub-menu.is-opened > .el-sub-menu__title {
+  color: #e4e4e7;
+}
+
+/* 子菜单项样式微调：使用等宽字体以增加硬核感 */
+.sidebar .el-menu--inline .el-menu-item {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  padding-left: 48px !important;
+}
+
+/* 折叠状态下的优化 */
+.sidebar.collapsed .el-menu-item,
+.sidebar.collapsed .el-sub-menu__title {
+  margin: 4px;
+  padding: 0 !important;
   justify-content: center;
-  flex-shrink: 0;
 }
 
-.sidebar.collapsed .nav-label {
+.sidebar.collapsed .el-sub-menu .el-icon.el-sub-menu__icon-arrow {
   display: none;
 }
 
