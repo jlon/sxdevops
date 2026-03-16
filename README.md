@@ -2,6 +2,12 @@
 
 基于 Django、Django REST framework、Channels 与 Vue 3 / Element Plus 的一体化运维平台，覆盖主机管理、CMDB、部署管理、容器管理、Nginx 管理、日志中心、告警中心、SQL 审计等常见运维场景。
 
+## 术语说明
+
+- CMDB：Configuration Management Database，配置管理数据库
+- CI：Configuration Item，配置项或资源对象
+- WebShell：浏览器内主机终端入口
+
 ## 核心能力
 
 - 仪表盘：聚合主机、部署、告警等核心指标
@@ -27,6 +33,12 @@
 - 后端：Django + Django REST framework + Channels + Daphne
 - 前端：Vue 3 + Vite + Element Plus + Pinia + Vue Router + ECharts
 - 数据存储：SQLite（默认开发配置）
+
+## 界面预览
+
+### CMDB 成本分析
+
+![CMDB 成本分析页](frontend/cmdb-cost-check-fixed.png)
 
 ## 项目结构
 
