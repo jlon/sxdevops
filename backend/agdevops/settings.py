@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'sqlaudit',
     'marketplace',
     'cmdb',
+    'iac',
     'rbac',
 ]
 

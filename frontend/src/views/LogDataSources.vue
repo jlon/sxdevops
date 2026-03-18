@@ -2,7 +2,7 @@
   <div class="fade-in log-datasource-page">
     <div class="page-header compact-header">
       <div class="page-title-row">
-        <h2>日志中心</h2>
+        <h2>📄日志中心</h2>
         <p class="page-desc">{{ activeLogTab.description }}</p>
       </div>
       <el-button v-if="canManageLogDataSources" type="primary" @click="openDialog()">

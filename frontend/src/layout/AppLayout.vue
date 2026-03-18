@@ -119,6 +119,7 @@ const menuItems = [
     ],
   },
   { path: '/nginx', title: 'Nginx 管理', icon: 'Location', permission: 'ops.nginx.view' },
+  { path: '/terraform', title: 'IaC 资源编排', icon: 'SetUp', permission: 'ops.iac.view' },
   {
     key: 'log-center',
     title: '日志中心',

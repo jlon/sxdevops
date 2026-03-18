@@ -1,4 +1,4 @@
-import axios from 'axios'
+﻿import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
 const TOKEN_KEY = 'agdevops_token'
@@ -9,6 +9,57 @@ const request = axios.create({
     baseURL: '/api',
     timeout: 15000,
 })
+
+function flattenErrorPayload(payload, parentKey = '') {
+    if (payload == null) return []
+    if (typeof payload === 'string') return [payload]
+    if (Array.isArray(payload)) {
+        return payload.flatMap(item => flattenErrorPayload(item, parentKey))
+    }
+    if (typeof payload !== 'object') {
+        return [String(payload)]
+    }
+
+    return Object.entries(payload).flatMap(([key, value]) => {
+        const label = ['detail', 'non_field_errors'].includes(key)
+            ? parentKey
+            : parentKey
+                ? `${parentKey}.${key}`
+                : key
+        return flattenErrorPayload(value, label).map((item) => {
+            if (!label) return item
+            return `${label}: ${item}`
+        })
+    })
+}
+
+async function extractErrorMessage(error) {
+    const response = error.response
+    const data = response?.data
+
+    if (typeof Blob !== 'undefined' && data instanceof Blob) {
+        try {
+            const text = await data.text()
+            if (!text) return error.message || '请求失败'
+            try {
+                const parsed = JSON.parse(text)
+                const messages = flattenErrorPayload(parsed)
+                return messages.join('；') || text
+            } catch {
+                return text
+            }
+        } catch {
+            return error.message || '请求失败'
+        }
+    }
+
+    const messages = flattenErrorPayload(data)
+    if (messages.length) {
+        return messages.join('；')
+    }
+
+    return error.message || '请求失败'
+}
 
 function redirectToLogin() {
     if (window.location.pathname.startsWith('/login')) return
@@ -40,11 +91,11 @@ request.interceptors.request.use((config) => {
 
 request.interceptors.response.use(
     (response) => response.data,
-    (error) => {
+    async (error) => {
         const status = error.response?.status
         const requestUrl = String(error.config?.url || '')
         const isProfileRequest = requestUrl.includes('/auth/me/')
-        const msg = error.response?.data?.detail || error.message || '请求失败'
+        const msg = await extractErrorMessage(error)
 
         if (status === 401 && !isProfileRequest) {
             handleSessionExpired()

@@ -79,6 +79,12 @@ const routes = [
         meta: { title: 'Nginx 管理', icon: 'Location', permission: 'ops.nginx.view' },
       },
       {
+        path: 'terraform',
+        name: 'TerraformIac',
+        component: () => import('@/views/TerraformIac.vue'),
+        meta: { title: 'IaC 资源编排', icon: 'SetUp', permission: 'ops.iac.view' },
+      },
+      {
         path: 'logs',
         redirect: '/logs/query',
         meta: { hidden: true },
