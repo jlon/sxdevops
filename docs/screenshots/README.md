@@ -11,6 +11,8 @@ README 首页当前已接入 4 张真实页面截图：
 - `logs-or-sql.png`
 - `iac-orchestration.png`
 
+这些 PNG 已按 README 展示场景做过统一高亮标注，更适合直接用于仓库首页导览。
+
 同时保留了同名 SVG 占位图，方便后续做示意图或临时替换：
 
 - `dashboard.svg`
