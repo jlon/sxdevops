@@ -295,6 +295,33 @@ class AppReleaseRuntimeTests(TestCase):
         self.assertEqual(payload['mode'], 'docker_compose')
         self.assertEqual(payload['items'][0]['name'], 'order-service')
 
+    @patch('ops.deployer._get_ssh_client')
+    def test_get_docker_runtime_status_uses_demo_fallback(self, mock_get_client):
+        deployment = Deployment.objects.create(
+            app_name='order-center',
+            business_line='电商线',
+            version='2.6.0',
+            image='registry.demo.local/order-center:v2.6.0',
+            environment='test',
+            deploy_mode='docker_compose',
+            docker_host=self.docker_host,
+            approval_status='approved',
+            status='running',
+            is_current=True,
+            deploy_dir='/opt/agdevops/apps/order-center-test',
+            release_strategy='batch',
+            batch_total=3,
+            batch_current=2,
+            container_port=8081,
+            service_port=8081,
+        )
+
+        payload = deployer.get_service_status(deployment)
+        self.assertEqual(payload['mode'], 'docker_compose')
+        self.assertIn('Demo Docker 环境', payload['summary'])
+        self.assertEqual(payload['items'][0]['name'], deployment.release_name_display)
+        mock_get_client.assert_not_called()
+
     def test_advance_batch_updates_progress(self):
         deployment = Deployment.objects.create(
             app_name='crm',

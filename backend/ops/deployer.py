@@ -61,6 +61,15 @@ def _docker_target_cmdb_status(target):
     return 'offline'
 
 
+def _is_demo_docker(deployment):
+    docker_target = _docker_target(deployment)
+    if not docker_target:
+        return False
+    description = str(getattr(docker_target, 'description', '') or '')
+    image = str(getattr(deployment, 'image', '') or '')
+    return '演示' in description or image.startswith('registry.demo.local/')
+
+
 def _cmdb_status_for_deployment(deployment, override=None):
     if override:
         return override
@@ -706,6 +715,14 @@ def get_service_logs(deployment, tail=100):
         except Exception as exc:
             return f'获取日志失败: {str(exc)}'
 
+    if _is_demo_docker(deployment):
+        return (
+            f'[{deployment.release_name_display}] demo container running\n'
+            f'image={deployment.image}\n'
+            f'target={deployment.target_display}\n'
+            f'batch={deployment.batch_current or 1}/{deployment.batch_total or 1}'
+        )
+
     try:
         docker_target = _docker_target(deployment)
         client = _get_ssh_client(docker_target)
@@ -719,6 +736,31 @@ def get_service_logs(deployment, tail=100):
 def _docker_runtime_status(deployment):
     if not deployment.deploy_dir:
         return {'mode': 'docker_compose', 'summary': '尚未生成发布目录', 'items': []}
+    if _is_demo_docker(deployment):
+        current_batch = max(deployment.batch_current or 1, 1)
+        batch_total = max(deployment.batch_total or 1, 1)
+        return {
+            'mode': 'docker_compose',
+            'summary': f'Demo Docker 环境 {deployment.target_display} 运行正常',
+            'items': [
+                {
+                    'kind': 'container',
+                    'name': deployment.release_name_display,
+                    'state': 'running',
+                    'ports': (
+                        f'{deployment.service_port}:{deployment.container_port}'
+                        if deployment.service_port and deployment.container_port
+                        else ''
+                    ),
+                },
+                {
+                    'kind': 'strategy',
+                    'name': deployment.get_release_strategy_display(),
+                    'state': deployment.strategy_summary,
+                    'ports': f'批次 {current_batch}/{batch_total}' if deployment.release_strategy == 'batch' else '',
+                },
+            ],
+        }
     docker_target = _docker_target(deployment)
     client = _get_ssh_client(docker_target)
     try:

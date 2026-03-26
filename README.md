@@ -17,6 +17,14 @@ AgDevOps 是一个基于 Django、Django REST framework、Channels、Vue 3 和 E
 
 > 如果你希望展示一个“有业务闭环、有运维深度、有产品化页面”的全栈项目，这个仓库会比普通管理后台更有说服力。
 
+## 简历项目描述版
+
+- **项目名称**：AgDevOps 运维与交付平台
+- **项目定位**：面向企业内部的统一运维、发布与资源治理平台
+- **技术栈**：Django / DRF / Channels / Vue 3 / Element Plus / Kubernetes Python Client / Terraform
+- **核心能力**：CMDB、应用发布、审批流、K8s / Docker 运维、日志审计、IaC 资源编排
+- **项目亮点**：实现自研应用的 Docker / K8s 双模式发布，支持审批流、回滚、重试、批次 / 灰度流程，并联动 CMDB 形成发布闭环
+
 ## 近期更新亮点
 
 - 应用发布升级为企业发布平台风格，支持 `Docker 环境`、`K8s 集群`、审批流、灰度 / 批次发布、回滚、重新执行与 CMDB 自动关联
