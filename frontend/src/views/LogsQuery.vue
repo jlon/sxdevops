@@ -1,11 +1,14 @@
 ﻿<template>
   <div class="logs-query-page">
-    <div class="page-header compact-header">
-      <div class="page-title-row">
-        <h2>📄日志中心</h2>
-        <p class="page-desc">{{ activeLogTab.description }}</p>
+    <section class="hero panel hero-panel">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="log-header-icon"><el-icon><Search /></el-icon></span>
+          <h2>日志中心</h2>
+          <p class="page-desc inline-subtitle">{{ activeLogTab.description }}</p>
+        </div>
       </div>
-    </div>
+    </section>
 
     <div class="neo-tabs theme-blue log-center-tabs">
       <button
@@ -1263,37 +1266,80 @@ onUnmounted(() => {
   gap: 14px;
 }
 
-.compact-header {
-  margin-bottom: 0;
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
-.page-title-row {
+.hero-panel {
+  background: linear-gradient(135deg, rgba(239,246,255,.96) 0%, rgba(236,254,255,.94) 52%, rgba(248,250,252,.98) 100%);
+  border: 1px solid rgba(96,165,250,.18);
+  border-radius: 24px;
+  box-shadow: 0 16px 36px rgba(14,165,233,.08);
+  padding: 14px 22px;
+}
+
+.release-hero-title-row {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.release-hero-title-inline {
   flex-wrap: wrap;
+}
+
+.log-header-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #fff;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  box-shadow: 0 10px 20px rgba(37,99,235,.2);
 }
 
 .log-center-tabs {
   margin-bottom: 0;
+  padding: 12px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
+  border: 1px solid rgba(148,163,184,.16);
+  box-shadow: 0 18px 36px rgba(15,23,42,.06);
+}
+
+.log-center-tabs .neo-tab-btn {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 14px;
 }
 
 .page-desc {
-  margin-top: 0;
-  color: var(--text-secondary);
+  margin: 0;
+  color: #475569;
   font-size: 13px;
+  line-height: 1.45;
+}
+
+.inline-subtitle {
+  max-width: none;
 }
 
 .panel {
-  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
-  border: 1px solid #e5e7eb;
-  border-radius: 18px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+  background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92));
+  border: 1px solid rgba(148,163,184,.16);
+  border-radius: 20px;
+  box-shadow: 0 18px 36px rgba(15,23,42,.06);
   padding: 16px 18px;
 }
 
 .tabs-panel {
-  padding: 10px 14px 2px;
+  padding: 12px 16px 4px;
 }
 
 .query-layout {
@@ -1324,6 +1370,16 @@ onUnmounted(() => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.toolbar-actions {
+  align-items: center;
+}
+
+.toolbar-actions :deep(.el-button) {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 12px;
 }
 
 .stack {

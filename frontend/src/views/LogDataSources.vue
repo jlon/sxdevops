@@ -1,15 +1,20 @@
 ﻿<template>
   <div class="fade-in log-datasource-page">
-    <div class="page-header compact-header">
-      <div class="page-title-row">
-        <h2>📄日志中心</h2>
-        <p class="page-desc">{{ activeLogTab.description }}</p>
+    <section class="hero panel">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="log-header-icon"><el-icon><DataBoard /></el-icon></span>
+          <h2>日志中心</h2>
+          <p class="page-desc inline-subtitle">{{ activeLogTab.description }}</p>
+        </div>
       </div>
-      <el-button v-if="canManageLogDataSources" type="primary" @click="openDialog()">
-        <el-icon><Plus /></el-icon>
-        新增数据源
-      </el-button>
-    </div>
+      <div class="hero-actions">
+        <el-button v-if="canManageLogDataSources" type="primary" @click="openDialog()">
+          <el-icon><Plus /></el-icon>
+          新增数据源
+        </el-button>
+      </div>
+    </section>
 
     <div class="neo-tabs theme-blue log-center-tabs">
       <button
@@ -429,25 +434,100 @@ onMounted(async () => {
   gap: 14px;
 }
 
-.page-title-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+.panel {
+  background: linear-gradient(135deg, rgba(239,246,255,.96) 0%, rgba(236,254,255,.94) 52%, rgba(248,250,252,.98) 100%);
+  border: 1px solid rgba(96,165,250,.18);
+  border-radius: 24px;
+  box-shadow: 0 16px 36px rgba(14,165,233,.08);
+  padding: 14px 22px;
 }
 
-.compact-header {
-  margin-bottom: 0;
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .log-center-tabs {
   margin-bottom: 0;
+  padding: 12px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
+  border: 1px solid rgba(148,163,184,.16);
+  box-shadow: 0 18px 36px rgba(15,23,42,.06);
+}
+
+.release-hero-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.release-hero-title-inline {
+  flex-wrap: wrap;
+}
+
+.hero h2 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.log-header-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #fff;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  box-shadow: 0 10px 20px rgba(37,99,235,.2);
 }
 
 .page-desc {
-  margin-top: 0;
-  color: var(--text-secondary);
-  font-size: 14px;
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.inline-subtitle {
+  max-width: none;
+}
+
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hero-actions :deep(.el-button) {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 12px;
+}
+
+.log-center-tabs .neo-tab-btn {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 14px;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.table-card {
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92));
+  box-shadow: 0 18px 36px rgba(15,23,42,.06);
 }
 
 .overview-grid {
@@ -494,6 +574,13 @@ onMounted(async () => {
 .disabled {
   opacity: 0.55;
   pointer-events: none;
+}
+
+@media (max-width: 900px) {
+  .hero {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 .sub-text,

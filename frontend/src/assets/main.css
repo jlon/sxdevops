@@ -147,7 +147,8 @@ body {
   flex: 1;
   padding: 0;
   overflow-y: auto;
-  border-right: none !important; /* 移除默认右边框 */
+  border-right: none !important;
+  /* 移除默认右边框 */
   --el-menu-bg-color: #09090b;
   --el-menu-text-color: #a1a1aa;
   --el-menu-active-color: #10b981;
@@ -184,7 +185,7 @@ body {
 }
 
 /* 消除子菜单打开时的背景色污染 */
-.sidebar .el-sub-menu.is-opened > .el-sub-menu__title {
+.sidebar .el-sub-menu.is-opened>.el-sub-menu__title {
   color: #e4e4e7;
 }
 
@@ -277,7 +278,7 @@ body {
 /* 内容区 */
 .content {
   flex: 1;
-  padding: 24px;
+  padding: 12px 24px 12px;
   width: 100%;
   overflow-x: hidden;
   /* 给内容区也加上换行收口 */
@@ -934,8 +935,15 @@ body {
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.3;
+  }
 }
 
 .terminal-container {
@@ -1000,9 +1008,17 @@ body {
 }
 
 @keyframes pulse-state {
-  0%   { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
-  70%  { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5);
+  }
+
+  70% {
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
 }
 
 /* 空状态 */
@@ -1130,7 +1146,7 @@ body {
 
 .industrial-select .el-input__wrapper {
   background-color: #0f172a !important;
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.2) inset !important;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2) inset !important;
   border-radius: 4px;
 }
 
@@ -1173,7 +1189,7 @@ body {
   white-space: nowrap;
 }
 
-.industrial-popper .el-select-dropdown__item.hover, 
+.industrial-popper .el-select-dropdown__item.hover,
 .industrial-popper .el-select-dropdown__item:hover {
   background-color: #1e293b !important;
   color: #f8fafc;
@@ -1230,7 +1246,7 @@ body {
 
 .k8s-tab-btn:hover {
   color: #3b82f6;
-  background: rgba(59,130,246,0.05);
+  background: rgba(59, 130, 246, 0.05);
 }
 
 .k8s-tab-btn.active {
@@ -1355,7 +1371,7 @@ body {
 
 .pod-op-btn:hover {
   transform: scale(1.15);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
 .pod-op-log {
@@ -1444,12 +1460,12 @@ body {
 
 .event-normal .event-indicator {
   background: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
 .event-warning .event-indicator {
   background: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245,158,11,0.15);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
   animation: pulse-state 2s infinite;
 }
 
@@ -1477,7 +1493,7 @@ body {
   font-size: 11px;
   font-weight: 700;
   color: #f59e0b;
-  background: rgba(245,158,11,0.1);
+  background: rgba(245, 158, 11, 0.1);
   padding: 1px 6px;
   border-radius: 8px;
 }
@@ -1596,6 +1612,14 @@ body {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
 }
 
-.theme-blue .neo-sub-tab-btn.active { color: #2563eb; }
-.theme-green .neo-sub-tab-btn.active { color: #059669; }
-.theme-purple .neo-sub-tab-btn.active { color: #6d28d9; }
+.theme-blue .neo-sub-tab-btn.active {
+  color: #2563eb;
+}
+
+.theme-green .neo-sub-tab-btn.active {
+  color: #059669;
+}
+
+.theme-purple .neo-sub-tab-btn.active {
+  color: #6d28d9;
+}

@@ -1,19 +1,21 @@
 ﻿<template>
   <div class="fade-in terraform-page">
-    <div class="page-header terraform-header">
-      <div>
-        <div class="title-row">
+    <section class="hero panel terraform-header">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
           <span class="title-icon">
             <el-icon><SetUp /></el-icon>
           </span>
           <h2>IaC 编排</h2>
+          <p class="page-subtitle inline-subtitle">基于 Terraform 实现。按模块完成云资源编排，生成阿里云 / 华为云 Terraform 工程文件，并支持执行与同步 CMDB。</p>
         </div>
-        <p class="page-subtitle">基于 Terraform 实现。按模块完成云资源编排，生成阿里云 / 华为云 Terraform 工程文件，并支持执行与同步 CMDB。</p>
       </div>
-      <el-button v-if="canManageIac" class="new-plan-button" type="primary" @click="resetForm">
-        <el-icon><Plus /></el-icon> 新建方案
-      </el-button>
-    </div>
+      <div class="hero-actions">
+        <el-button v-if="canManageIac" class="new-plan-button" type="primary" @click="resetForm">
+          <el-icon><Plus /></el-icon> 新建方案
+        </el-button>
+      </div>
+    </section>
 
     <div class="workspace-banner" :class="{ active: hasActiveWorkspace }">
       <el-icon class="workspace-banner-icon"><FolderOpened /></el-icon>
@@ -1517,15 +1519,21 @@ onBeforeUnmount(() => { stopNodeDrag() })
 
 <style scoped>
 .terraform-page { display: flex; flex-direction: column; gap: 4px; }
+.panel { background: linear-gradient(135deg, rgba(239,246,255,.96) 0%, rgba(236,254,255,.94) 52%, rgba(248,250,252,.98) 100%); border: 1px solid rgba(96,165,250,.18); border-radius: 24px; box-shadow: 0 16px 36px rgba(14,165,233,.08); padding: 14px 22px; }
+.hero { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .terraform-header { align-items: flex-start; justify-content: space-between; gap: 16px; }
 .page-subtitle, .provider-desc, .config-section-desc, .resource-switch-desc, .workspace-hint { color: var(--text-secondary); line-height: 1.6; }
 .topology-toolbar, .execution-meta, .execution-actions, .topology-tip, .section-head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .workspace-banner { display: flex; align-items: center; gap: 10px; margin-top: -6px; padding: 14px 16px; border-radius: 16px; border: 1px dashed rgba(148, 163, 184, 0.28); background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.92)); color: var(--text-secondary); }
 .workspace-banner.active { border-style: solid; border-color: rgba(34, 197, 94, 0.24); background: linear-gradient(180deg, rgba(240, 253, 244, 0.96), rgba(236, 253, 245, 0.92)); color: #166534; }
 .workspace-banner-icon { font-size: 18px; color: #16a34a; }
-.title-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
-.title-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(135deg, #0ea5e9, #0284c7); color: #fff; box-shadow: 0 10px 20px rgba(2, 132, 199, 0.2); font-size: 16px; }
-.title-row h2 { margin: 0; }
+.release-hero-title-row { display: flex; align-items: center; gap: 12px; }
+.release-hero-title-inline { flex-wrap: wrap; }
+.title-icon { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; border-radius: 14px; background: linear-gradient(135deg, #0ea5e9, #2563eb); color: #fff; box-shadow: 0 10px 20px rgba(37,99,235,.2); font-size: 20px; }
+.release-hero-title-row h2 { margin: 0; color: #0f172a; }
+.inline-subtitle { max-width: none; margin: 0; font-size: 13px; }
+.hero-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.hero-actions :deep(.el-button) { min-height: 38px; padding: 0 16px; border-radius: 12px; }
 .new-plan-button { border: none; background: linear-gradient(135deg, #22c55e, #16a34a); box-shadow: 0 12px 24px rgba(22, 163, 74, 0.22); }
 .new-plan-button:hover, .new-plan-button:focus { background: linear-gradient(135deg, #4ade80, #22c55e); }
 .module-tabs { border-radius: 20px; padding: 18px; background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92)); box-shadow: 0 18px 36px rgba(15, 23, 42, 0.06); }
@@ -1592,9 +1600,8 @@ onBeforeUnmount(() => { stopNodeDrag() })
 .file-editor :deep(.el-textarea__inner:focus) { box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.28) inset; }
 .error-log { color: #fecaca; }
 @media (max-width: 960px) {
-  .terraform-header { flex-direction: column; align-items: stretch; }
+  .hero, .terraform-header { flex-direction: column; align-items: stretch; }
   .workspace-banner { align-items: flex-start; }
-  .title-row { align-items: flex-start; }
   .design-tab-label, .design-step-footer, .design-step-actions, .design-step-summary { flex-direction: column; align-items: stretch; }
   .resource-switcher-grid, .summary-grid, .resource-pill-list, .resource-list, .relationship-list, .multi-card-list { grid-template-columns: 1fr; }
   .relation-item, .relation-actions { flex-direction: column; align-items: stretch; min-width: 0; }

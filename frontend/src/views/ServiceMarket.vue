@@ -1,21 +1,28 @@
 <template>
   <div class="fade-in">
-    <div class="page-header">
-      <h2>🧰 工具市场 <span class="page-header-subtitle">支持 Docker Compose 单机 / Kubernetes 集群 两种部署模式</span></h2>
-      <div class="market-tabs">
-        <button class="tab-btn" :class="{ active: activeTab === 'market' }" @click="activeTab = 'market'">
-          <el-icon><Shop /></el-icon> 工具市场
-        </button>
-        <button
-          v-if="canViewMarketplaceDeployments"
-          class="tab-btn"
-          :class="{ active: activeTab === 'deploy' }"
-          @click="activeTab = 'deploy'; fetchDeployments()"
-        >
-          <el-icon><Setting /></el-icon> 部署管理
-          <span v-if="deployments.length" class="tab-badge">{{ deployments.length }}</span>
-        </button>
+    <section class="hero panel">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="market-header-icon"><el-icon><Shop /></el-icon></span>
+          <h2>工具市场</h2>
+          <p class="page-desc inline-subtitle">支持 Docker Compose 单机与 Kubernetes 集群两种部署模式，统一查看模板与部署实例。</p>
+        </div>
       </div>
+    </section>
+
+    <div class="market-tabs">
+      <button class="tab-btn" :class="{ active: activeTab === 'market' }" @click="activeTab = 'market'">
+        <el-icon><Shop /></el-icon> 工具市场
+      </button>
+      <button
+        v-if="canViewMarketplaceDeployments"
+        class="tab-btn"
+        :class="{ active: activeTab === 'deploy' }"
+        @click="activeTab = 'deploy'; fetchDeployments()"
+      >
+        <el-icon><Setting /></el-icon> 部署管理
+        <span v-if="deployments.length" class="tab-badge">{{ deployments.length }}</span>
+      </button>
     </div>
 
     <div v-show="activeTab === 'market'" class="market-content">
@@ -556,6 +563,86 @@ function viewDeployLog(deployment) {
 </script>
 
 <style scoped>
+.panel {
+  background: linear-gradient(135deg, rgba(239,246,255,.96) 0%, rgba(236,254,255,.94) 52%, rgba(248,250,252,.98) 100%);
+  border: 1px solid rgba(96,165,250,.18);
+  border-radius: 24px;
+  box-shadow: 0 16px 36px rgba(14,165,233,.08);
+  padding: 14px 22px;
+}
+
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.release-hero-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.release-hero-title-inline {
+  flex-wrap: wrap;
+}
+
+.hero h2 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.market-header-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #fff;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  box-shadow: 0 10px 20px rgba(37,99,235,.2);
+}
+
+.page-desc {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.inline-subtitle {
+  max-width: none;
+}
+
+.market-tabs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
+  border: 1px solid rgba(148,163,184,.16);
+  box-shadow: 0 18px 36px rgba(15,23,42,.06);
+}
+
+.market-tabs .tab-btn {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 14px;
+}
+
+.table-card {
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92));
+  box-shadow: 0 18px 36px rgba(15,23,42,.06);
+}
+
 .service-card.disabled {
   opacity: 0.58;
 }
@@ -567,10 +654,4 @@ function viewDeployLog(deployment) {
   margin-top: 10px;
 }
 
-.page-header-subtitle {
-  font-size: 13px;
-  font-weight: 400;
-  color: #64748b;
-  margin-left: 8px;
-}
 </style>

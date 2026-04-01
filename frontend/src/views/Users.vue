@@ -1,8 +1,14 @@
 <template>
   <div class="fade-in">
-    <div class="page-header">
-      <h2>用户与权限</h2>
-      <div style="display:flex; gap:8px;">
+    <section class="hero panel">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="users-header-icon"><el-icon><User /></el-icon></span>
+          <h2>用户管理</h2>
+          <p class="page-desc inline-subtitle">统一维护用户、用户组、角色与权限字典，支持内置权限同步与账号治理。</p>
+        </div>
+      </div>
+      <div class="hero-actions">
         <el-button v-if="canSync" @click="handleSyncPermissions">同步内置权限</el-button>
         <el-button v-if="activeTab === 'users' && canManageUsers" type="primary" @click="openUserDialog()">
           <el-icon><Plus /></el-icon> 新增用户
@@ -14,7 +20,7 @@
           <el-icon><Plus /></el-icon> 新增用户组
         </el-button>
       </div>
-    </div>
+    </section>
 
     <div class="table-card">
       <el-tabs v-model="activeTab">
@@ -607,9 +613,111 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.panel {
+  background: linear-gradient(135deg, rgba(239,246,255,.96) 0%, rgba(236,254,255,.94) 52%, rgba(248,250,252,.98) 100%);
+  border: 1px solid rgba(96,165,250,.18);
+  border-radius: 24px;
+  box-shadow: 0 16px 36px rgba(14,165,233,.08);
+  padding: 14px 22px;
+}
+
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.release-hero-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.release-hero-title-inline {
+  flex-wrap: wrap;
+}
+
+.hero h2 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.users-header-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #fff;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  box-shadow: 0 10px 20px rgba(37,99,235,.2);
+}
+
+.page-desc {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.inline-subtitle {
+  max-width: none;
+}
+
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.hero-actions :deep(.el-button) {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 12px;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.table-card {
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92));
+  box-shadow: 0 18px 36px rgba(15,23,42,.06);
+}
+
+.table-card :deep(.el-tabs__header) {
+  margin-bottom: 14px;
+}
+
+.table-card :deep(.el-tabs__nav-wrap::after) {
+  background-color: rgba(148,163,184,.18);
+}
+
+.table-card :deep(.el-tabs__item) {
+  font-weight: 600;
+}
+
 .dialog-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 12px;
+}
+
+@media (max-width: 900px) {
+  .hero {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 </style>
