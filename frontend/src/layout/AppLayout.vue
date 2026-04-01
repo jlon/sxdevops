@@ -16,12 +16,17 @@
         :collapse-transition="false"
       >
         <template v-for="item in visibleMenuItems" :key="item.title">
-          <el-sub-menu v-if="item.children?.length" :index="item.title">
+          <el-sub-menu v-if="item.children?.length" :index="item.menuKey || item.title">
             <template #title>
               <el-icon><component :is="item.icon" /></el-icon>
               <span>{{ item.title }}</span>
             </template>
-            <el-menu-item v-for="child in item.children" :key="child.path" :index="child.path">
+            <el-menu-item
+              v-for="child in item.children"
+              :key="child.menuKey || child.path"
+              :index="child.menuKey || child.path"
+              :route="child.route || child.path"
+            >
               <template #title>
                 <el-icon v-if="child.icon"><component :is="child.icon" /></el-icon>
                 <span>{{ child.title }}</span>
@@ -29,7 +34,7 @@
             </el-menu-item>
           </el-sub-menu>
 
-          <el-menu-item v-else :index="item.path">
+          <el-menu-item v-else :index="item.menuKey || item.path" :route="item.route || item.path">
             <el-icon><component :is="item.icon" /></el-icon>
             <template #title>
               <span>{{ item.title }}</span>
@@ -97,6 +102,44 @@ const authStore = useAuthStore()
 const menuItems = [
   { path: '/dashboard', title: '仪表盘', icon: 'Odometer', permission: 'ops.dashboard.view' },
   {
+    title: 'CMDB',
+    icon: 'Files',
+    children: [
+      {
+        path: '/cmdb',
+        menuKey: '/cmdb?tab=items',
+        route: { path: '/cmdb', query: { tab: 'items' } },
+        title: '配置项管理',
+        icon: 'Grid',
+        permission: 'cmdb.ci.view',
+      },
+      {
+        path: '/cmdb',
+        menuKey: '/cmdb?tab=topology',
+        route: { path: '/cmdb', query: { tab: 'topology' } },
+        title: '资源地图',
+        icon: 'Share',
+        permission: 'cmdb.topology.view',
+      },
+      {
+        path: '/cmdb',
+        menuKey: '/cmdb?tab=cost',
+        route: { path: '/cmdb', query: { tab: 'cost' } },
+        title: '成本分析',
+        icon: 'TrendCharts',
+        permission: 'cmdb.cost.view',
+      },
+      {
+        path: '/cmdb',
+        menuKey: '/cmdb?tab=optimize',
+        route: { path: '/cmdb', query: { tab: 'optimize' } },
+        title: '资源优化',
+        icon: 'Lightning',
+        permission: 'cmdb.cost.view',
+      },
+    ],
+  },
+  {
     title: '主机中心',
     icon: 'Monitor',
     children: [
@@ -127,19 +170,6 @@ const menuItems = [
     ],
   },
   {
-    path: '/cmdb',
-    title: 'CMDB',
-    icon: 'Files',
-    anyPermissions: [
-      'cmdb.dashboard.view',
-      'cmdb.ci.view',
-      'cmdb.topology.view',
-      'cmdb.cost.view',
-      'cmdb.request.submit',
-      'cmdb.request.approve',
-    ],
-  },
-  {
     title: '多云管理',
     icon: 'MostlyCloudy',
     children: [
@@ -154,12 +184,6 @@ const menuItems = [
     anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
   },
   {
-    path: '/marketplace',
-    title: '工具市场',
-    icon: 'Shop',
-    anyPermissions: ['marketplace.template.view', 'marketplace.deployment.view', 'marketplace.deployment.manage'],
-  },
-  {
     title: '容器管理',
     icon: 'Box',
     children: [
@@ -168,17 +192,17 @@ const menuItems = [
     ],
   },
   {
-    title: '中间件管理',
+    title: '中间件',
     icon: 'DataBoard',
     children: [
+      { path: '/middleware/nginx', title: 'Nginx 管理', icon: 'Location', permission: 'ops.nginx.view' },
       { path: '/middleware/redis', title: 'Redis 管理', icon: 'Coin', permission: 'ops.middleware.view' },
       { path: '/middleware/rocketmq', title: 'RocketMQ 管理', icon: 'Promotion', permission: 'ops.middleware.view' },
       { path: '/middleware/elasticsearch', title: 'ES 管理', icon: 'Search', permission: 'ops.middleware.view' },
-      { path: '/middleware/nginx', title: 'Nginx 管理', icon: 'Location', permission: 'ops.nginx.view' },
     ],
   },
   {
-    title: '可观测性平台',
+    title: '可观测性',
     icon: 'DataLine',
     children: [
       {
@@ -194,10 +218,10 @@ const menuItems = [
     ],
   },
   {
-    path: '/users',
-    title: '用户管理',
-    icon: 'User',
-    anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
+    path: '/marketplace',
+    title: '工具市场',
+    icon: 'Shop',
+    anyPermissions: ['marketplace.template.view', 'marketplace.deployment.view', 'marketplace.deployment.manage'],
   },
   {
     path: '/sql',
@@ -212,6 +236,12 @@ const menuItems = [
       'sqlaudit.query.view',
       'sqlaudit.query.execute',
     ],
+  },
+  {
+    path: '/users',
+    title: '用户管理',
+    icon: 'User',
+    anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
   },
 ]
 
@@ -236,6 +266,10 @@ const normalizedMenuPath = computed(() => {
   if (route.path.startsWith('/logs/')) {
     return '/logs'
   }
+  if (route.path === '/cmdb') {
+    const currentTab = typeof route.query.tab === 'string' ? route.query.tab : 'items'
+    return `/cmdb?tab=${currentTab}`
+  }
   return route.path
 })
 
@@ -246,9 +280,9 @@ const activeMenuPath = computed(() => {
 const currentTitle = computed(() => {
   const currentPath = normalizedMenuPath.value
   for (const item of visibleMenuItems.value) {
-    if (item.path === currentPath) return item.title
+    if ((item.menuKey || item.path) === currentPath) return item.title
     if (item.children) {
-      const child = item.children.find((entry) => entry.path === currentPath)
+      const child = item.children.find((entry) => (entry.menuKey || entry.path) === currentPath)
       if (child) return `${item.title} / ${child.title}`
     }
   }

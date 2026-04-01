@@ -24,7 +24,7 @@ class SqlCheckResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = SqlCheckResult
         fields = '__all__'
-        read_only_fields = '__all__'
+        read_only_fields = ('id', 'order', 'level', 'rule_name', 'message', 'line_no')
 
 
 class SqlOrderSerializer(serializers.ModelSerializer):

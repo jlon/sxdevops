@@ -1,11 +1,16 @@
 ﻿<template>
   <div class="fade-in">
-    <div v-if="!embedded || canSubmitOrders" class="page-header" :style="embedded ? 'justify-content:flex-end;' : ''">
-      <h2 v-if="!embedded">SQL 工单</h2>
-      <el-button v-if="canSubmitOrders" type="primary" @click="openSubmitDialog">
-        <el-icon><Plus /></el-icon> 提交工单
-      </el-button>
-    </div>
+    <section class="sql-module-bar">
+      <div class="sql-module-copy">
+        <div class="sql-module-title">SQL 工单</div>
+        <div class="sql-module-desc">覆盖提交、预检查、审核与执行链路，适合演示标准数据库变更流程。</div>
+      </div>
+      <div class="sql-module-actions">
+        <el-button v-if="canSubmitOrders" type="primary" @click="openSubmitDialog">
+          <el-icon><Plus /></el-icon> 提交工单
+        </el-button>
+      </div>
+    </section>
 
     <div class="table-card">
       <el-empty v-if="!canViewOrders" description="当前账号可提交或处理工单，但没有工单列表查看权限。" />
@@ -416,10 +421,33 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.sql-module-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
+  border: 1px solid rgba(148,163,184,.16);
+  box-shadow: 0 14px 28px rgba(15,23,42,.05);
+}
+
+.sql-module-copy { min-width: 0; }
+.sql-module-title { font-size: 15px; font-weight: 700; color: #0f172a; }
+.sql-module-desc { margin-top: 4px; font-size: 12px; line-height: 1.5; color: #64748b; }
+.sql-module-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
 .content-hint {
   margin-top: 8px;
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-secondary);
+}
+
+@media (max-width: 900px) {
+  .sql-module-bar { flex-direction: column; align-items: stretch; }
+  .sql-module-actions { justify-content: flex-end; }
 }
 </style>

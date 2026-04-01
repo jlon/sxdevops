@@ -1,8 +1,11 @@
 ﻿<template>
   <div class="fade-in">
-    <div v-if="!embedded" class="page-header">
-      <h2>SQL 查询</h2>
-    </div>
+    <section class="sql-module-bar">
+      <div class="sql-module-copy">
+        <div class="sql-module-title">SQL 查询</div>
+        <div class="sql-module-desc">只读查询入口，支持 SQL / MongoDB 查询并自动沉淀到历史记录。</div>
+      </div>
+    </section>
 
     <div class="table-card" style="margin-bottom: 20px;">
       <div class="query-controls">
@@ -193,6 +196,23 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.sql-module-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
+  border: 1px solid rgba(148,163,184,.16);
+  box-shadow: 0 14px 28px rgba(15,23,42,.05);
+}
+
+.sql-module-copy { min-width: 0; }
+.sql-module-title { font-size: 15px; font-weight: 700; color: #0f172a; }
+.sql-module-desc { margin-top: 4px; font-size: 12px; line-height: 1.5; color: #64748b; }
+
 .query-hint {
   margin-top: 8px;
   font-size: 12px;

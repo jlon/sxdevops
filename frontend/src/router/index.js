@@ -91,14 +91,7 @@ const routes = [
         meta: {
           title: 'CMDB',
           icon: 'Files',
-          anyPermissions: [
-            'cmdb.dashboard.view',
-            'cmdb.ci.view',
-            'cmdb.topology.view',
-            'cmdb.cost.view',
-            'cmdb.request.submit',
-            'cmdb.request.approve',
-          ],
+          anyPermissions: ['cmdb.ci.view', 'cmdb.topology.view', 'cmdb.cost.view'],
         },
       },
       {

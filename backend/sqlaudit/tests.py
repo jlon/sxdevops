@@ -13,6 +13,49 @@ User = get_user_model()
 
 
 class SqlAuditSupportTests(TestCase):
+    def test_demo_datasource_returns_mock_connection_and_databases(self):
+        datasource = DataSource(
+            name='commerce-prod-polardb',
+            db_type='polardb',
+            host='polardb-prod.cluster-demo.rds.aliyuncs.com',
+            port=3306,
+            user='audit_reader',
+            password='secret',
+            charset='utf8mb4',
+        )
+
+        success, message = db_executor.test_connection(datasource)
+        databases = db_executor.get_databases(datasource)
+
+        self.assertTrue(success)
+        self.assertIn('模拟', message)
+        self.assertEqual(databases, ['order_center', 'payment_center', 'member_center'])
+
+    def test_demo_datasource_query_returns_mock_rows(self):
+        datasource = DataSource(
+            name='member-staging-mysql',
+            db_type='mysql',
+            host='10.20.32.18',
+            port=3306,
+            user='staging_auditor',
+            password='secret',
+            charset='utf8mb4',
+        )
+
+        success, columns, rows, count, duration, error = db_executor.execute_query(
+            datasource,
+            'member_center',
+            'SELECT id, nickname, last_login_at FROM member_profile LIMIT 50',
+        )
+
+        self.assertTrue(success)
+        self.assertEqual(error, None)
+        self.assertGreater(count, 0)
+        self.assertIn('id', columns)
+        self.assertIn('nickname', columns)
+        self.assertGreaterEqual(duration, 60)
+        self.assertTrue(rows[0]['nickname'])
+
     def test_check_sql_accepts_mongodb_dml_command(self):
         results = sql_checker.check_sql(
             'updateMany {"collection":"orders","filter":{"status":"new"},"update":{"$set":{"status":"done"}}}',

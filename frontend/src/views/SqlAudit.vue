@@ -1,11 +1,14 @@
 ﻿<template>
   <div class="fade-in sql-audit-page">
-    <div class="page-header compact-header">
-      <div class="page-title-row">
-        <h2>📄SQL审计</h2>
-        <p class="page-desc">{{ SQL_AUDIT_SUPPORT_TEXT }}</p>
+    <section class="hero panel">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="sql-header-icon"><el-icon><Tickets /></el-icon></span>
+          <h2>SQL 审计</h2>
+          <p class="page-desc inline-subtitle">{{ SQL_AUDIT_SUPPORT_TEXT }}</p>
+        </div>
       </div>
-    </div>
+    </section>
 
     <div class="neo-tabs theme-blue log-center-tabs">
       <button
@@ -88,15 +91,48 @@ const handleTabChange = (tab) => {
 </script>
 
 <style scoped>
-.compact-header {
+.panel {
+  background: linear-gradient(135deg, rgba(239,246,255,.96) 0%, rgba(236,254,255,.94) 52%, rgba(248,250,252,.98) 100%);
+  border: 1px solid rgba(96,165,250,.18);
+  border-radius: 24px;
+  box-shadow: 0 16px 36px rgba(14,165,233,.08);
+  padding: 14px 22px;
+}
+
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   margin-bottom: 14px;
 }
 
-.page-title-row {
+.release-hero-title-row {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.release-hero-title-inline {
   flex-wrap: wrap;
+}
+
+.hero h2 {
+  margin: 0;
+  color: #0f172a;
+}
+
+.sql-header-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #fff;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  box-shadow: 0 10px 20px rgba(37,99,235,.2);
 }
 
 .log-center-tabs {
@@ -105,8 +141,12 @@ const handleTabChange = (tab) => {
 
 .page-desc {
   margin: 0;
-  color: var(--text-secondary);
+  color: #475569;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.45;
+}
+
+.inline-subtitle {
+  max-width: none;
 }
 </style>

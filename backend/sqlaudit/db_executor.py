@@ -26,10 +26,28 @@ MONGODB_WRITE_ACTIONS = {
     'createcollection', 'dropcollection',
     'createindex', 'dropindex',
 }
+DEMO_DATASOURCE_PROFILES = {
+    'commerce-prod-polardb': {
+        'message': '演示数据源连接正常（模拟）',
+        'databases': ['order_center', 'payment_center', 'member_center'],
+    },
+    'member-staging-mysql': {
+        'message': '演示数据源连接正常（模拟）',
+        'databases': ['order_center', 'member_center', 'scheduler'],
+    },
+    'risk-analytics-mongo': {
+        'message': '演示数据源连接正常（模拟）',
+        'databases': ['risk_events'],
+    },
+}
 
 
 def _get_db_type(datasource):
     return getattr(datasource, 'db_type', 'mysql') or 'mysql'
+
+
+def _get_demo_profile(datasource):
+    return DEMO_DATASOURCE_PROFILES.get(getattr(datasource, 'name', ''))
 
 
 def validate_query_content(datasource, sql_content):
@@ -50,6 +68,10 @@ def validate_query_content(datasource, sql_content):
 
 
 def test_connection(datasource):
+    demo_profile = _get_demo_profile(datasource)
+    if demo_profile:
+        return True, demo_profile['message']
+
     db_type = _get_db_type(datasource)
     if db_type in MYSQL_LIKE_TYPES:
         return _test_mysql_connection(datasource)
@@ -59,6 +81,10 @@ def test_connection(datasource):
 
 
 def get_databases(datasource):
+    demo_profile = _get_demo_profile(datasource)
+    if demo_profile:
+        return demo_profile['databases']
+
     db_type = _get_db_type(datasource)
     if db_type in MYSQL_LIKE_TYPES:
         return _get_mysql_databases(datasource)
@@ -68,6 +94,10 @@ def get_databases(datasource):
 
 
 def execute_sql(datasource, database, sql_content):
+    demo_profile = _get_demo_profile(datasource)
+    if demo_profile:
+        return _execute_demo_sql(datasource, database, sql_content)
+
     db_type = _get_db_type(datasource)
     if db_type in MYSQL_LIKE_TYPES:
         return _execute_mysql_sql(datasource, database, sql_content)
@@ -77,6 +107,10 @@ def execute_sql(datasource, database, sql_content):
 
 
 def execute_query(datasource, database, sql_content, limit=200):
+    demo_profile = _get_demo_profile(datasource)
+    if demo_profile:
+        return _execute_demo_query(datasource, database, sql_content, limit)
+
     db_type = _get_db_type(datasource)
     if db_type in MYSQL_LIKE_TYPES:
         return _execute_mysql_query(datasource, database, sql_content, limit)
@@ -179,6 +213,104 @@ def _execute_mysql_query(datasource, database, sql_content, limit):
     except Exception as exc:
         duration = int((time.time() - start) * 1000)
         return False, [], [], 0, duration, str(exc)
+
+
+def _execute_demo_sql(datasource, database, sql_content):
+    start = time.time()
+    content = (sql_content or '').lower()
+    if 'task_run_log' in content and 'delete from' in content:
+        affected_rows = 18432
+        log = '演示执行完成：已清理 30 天前测试环境任务日志 18432 行'
+    elif 'payment_callback_log' in content and 'update' in content:
+        affected_rows = 362
+        log = '演示执行完成：已修正支付回调幂等标记 362 行'
+    elif 'alter table' in content:
+        affected_rows = 0
+        log = '演示执行完成：DDL 变更已提交，建议继续观察元数据锁与回滚窗口'
+    else:
+        affected_rows = 12
+        log = '演示执行完成：已按模拟策略执行 SQL 变更'
+    duration = max(int((time.time() - start) * 1000), 80)
+    return True, affected_rows, duration, log
+
+
+def _execute_demo_query(datasource, database, sql_content, limit):
+    start = time.time()
+    db_type = _get_db_type(datasource)
+    content = (sql_content or '').strip()
+    lowered = content.lower()
+
+    if db_type == MONGODB_TYPE:
+        rows = _build_demo_mongodb_rows(lowered)
+    else:
+        rows = _build_demo_sql_rows(lowered, database)
+
+    rows = rows[:limit]
+    columns = _extract_columns(rows)
+    duration = max(int((time.time() - start) * 1000), 60)
+    return True, columns, rows, len(rows), duration, None
+
+
+def _build_demo_sql_rows(sql_content, database):
+    if 'from orders' in sql_content and 'failed' in sql_content:
+        return [
+            {'order_id': 'SO202604010021', 'status': 'FAILED', 'amount': 299.00, 'updated_at': '2026-04-01 09:42:18'},
+            {'order_id': 'SO202604010017', 'status': 'FAILED', 'amount': 88.00, 'updated_at': '2026-04-01 09:18:05'},
+            {'order_id': 'SO202603312241', 'status': 'FAILED', 'amount': 156.50, 'updated_at': '2026-03-31 23:57:44'},
+        ]
+    if 'payment_callback_log' in sql_content and 'group by merchant_id' in sql_content:
+        return [
+            {'merchant_id': 'mch_live_001', 'callback_count': 128},
+            {'merchant_id': 'mch_live_017', 'callback_count': 92},
+            {'merchant_id': 'mch_live_008', 'callback_count': 75},
+        ]
+    if 'from member_profile' in sql_content and 'last_login_at' in sql_content:
+        return [
+            {'id': 1024, 'nickname': '晨星用户', 'last_login_at': '2026-04-01 08:11:45'},
+            {'id': 2048, 'nickname': '风铃计划', 'last_login_at': '2026-03-31 21:08:12'},
+            {'id': 4096, 'nickname': 'demo_vip', 'last_login_at': '2026-03-31 19:36:54'},
+        ]
+    if 'show table status' in sql_content and 'task_run_log' in sql_content:
+        return [
+            {
+                'Name': 'task_run_log',
+                'Rows': 284231,
+                'Data_length': 52428800,
+                'Index_length': 7340032,
+                'Update_time': '2026-03-31 09:15:13',
+            },
+        ]
+    if 'from member_profile' in sql_content and 'group by city' in sql_content:
+        return [
+            {'city': '上海', 'total': 8421},
+            {'city': '杭州', 'total': 6330},
+            {'city': '深圳', 'total': 5124},
+        ]
+    return [
+        {
+            'database': database,
+            'message': '演示查询已命中模拟数据集',
+            'preview_rows': 3,
+        },
+    ]
+
+
+def _build_demo_mongodb_rows(sql_content):
+    if 'count' in sql_content:
+        return [{'count': 27}]
+    if 'distinct' in sql_content:
+        return [{'value': 'high'}, {'value': 'medium'}, {'value': 'low'}]
+    if 'aggregate' in sql_content:
+        return [
+            {'_id': 'open', 'total': 16},
+            {'_id': 'processing', 'total': 7},
+            {'_id': 'closed', 'total': 4},
+        ]
+    return [
+        {'event_id': 'risk-evt-1001', 'level': 'high', 'status': 'open', 'score': 92},
+        {'event_id': 'risk-evt-1002', 'level': 'high', 'status': 'open', 'score': 88},
+        {'event_id': 'risk-evt-1011', 'level': 'high', 'status': 'open', 'score': 84},
+    ]
 
 
 def _ensure_pymongo():

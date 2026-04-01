@@ -1,12 +1,18 @@
 ﻿<template>
-  <div class="fade-in">
-    <div class="page-header">
-      <h2>🗄️ CMDB 资产管理</h2>
-    </div>
+  <div class="fade-in cmdb-page">
+    <section class="hero panel">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="cmdb-header-icon"><el-icon><Files /></el-icon></span>
+          <h2>CMDB 资产管理</h2>
+          <p class="subtitle inline-subtitle">统一管理配置项、资源地图、成本分析与优化建议，保持资产视图与运维视角一致。</p>
+        </div>
+      </div>
+    </section>
 
     <div v-if="canViewHosts" class="cmdb-host-entry-strip">
-      <span>主机资产与任务调度已升级为一级菜单，CMDB 继续负责资产关系、拓扑和成本视图。</span>
-      <el-button link type="primary" @click="router.push('/hosts/assets')">进入主机中心</el-button>
+      <span>主机能力已独立到一级菜单，CMDB 继续承载关系、拓扑、成本与优化视图。</span>
+      <el-button link type="primary" size="small" @click="router.push('/hosts/assets')">进入主机中心</el-button>
     </div>
 
     <!-- 主 Tab 栏 (Pill Tab Theme: Purple) -->
@@ -1485,6 +1491,51 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.panel {
+  background: linear-gradient(135deg, rgba(245,243,255,.96) 0%, rgba(238,242,255,.94) 52%, rgba(248,250,252,.98) 100%);
+  border: 1px solid rgba(167,139,250,.2);
+  border-radius: 24px;
+  box-shadow: 0 16px 36px rgba(79,70,229,.08);
+  padding: 14px 22px;
+}
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.release-hero-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.release-hero-title-inline {
+  flex-wrap: wrap;
+}
+.hero h2 {
+  margin: 0;
+  color: #0f172a;
+}
+.inline-subtitle {
+  margin: 0;
+  max-width: none;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #475569;
+}
+.cmdb-header-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #fff;
+  background: linear-gradient(135deg, #8b5cf6, #6366f1);
+  box-shadow: 0 10px 20px rgba(99,102,241,.22);
+}
 /* ====== 自定义树节点 ====== */
 .custom-tree-node { transition: background 0.2s; border-radius: 4px; }
 .custom-tree-node:hover { background: rgba(139,92,246,0.05); }
@@ -1495,14 +1546,27 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(59, 130, 246, 0.18);
-  color: var(--text-secondary);
-  font-size: 13px;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.52);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.25;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.4);
+  backdrop-filter: blur(6px);
+}
+.cmdb-host-entry-strip span {
+  flex: 1;
+  min-width: 0;
+}
+.cmdb-host-entry-strip :deep(.el-button) {
+  opacity: .78;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
 }
 .cmdb-resource-tree-panel {
   width: 188px;
