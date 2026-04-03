@@ -25,8 +25,10 @@ Thumbs.db
 *.local
 
 # Local runtime logs
+backend/*.log
 backend/*.out.log
 backend/*.err.log
+frontend/*.log
 frontend/*.out.log
 frontend/*.err.log
 
