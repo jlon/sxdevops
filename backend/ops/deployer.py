@@ -1,4 +1,4 @@
-import json
+﻿import json
 import logging
 import re
 import threading
@@ -12,6 +12,8 @@ from kubernetes import utils as k8s_utils
 from kubernetes.client.exceptions import ApiException
 
 from cmdb.models import CIType, CIRelation, ConfigItem
+from eventwall.models import EventRecord
+from eventwall.services import build_resource, record_event
 from ops.k8s_views import _get_k8s_client, _is_demo
 
 from .models import Deployment
@@ -67,7 +69,7 @@ def _is_demo_docker(deployment):
         return False
     description = str(getattr(docker_target, 'description', '') or '')
     image = str(getattr(deployment, 'image', '') or '')
-    return '演示' in description or image.startswith('registry.demo.local/')
+    return '婕旂ず' in description or image.startswith('registry.demo.local/')
 
 
 def _cmdb_status_for_deployment(deployment, override=None):
@@ -84,11 +86,11 @@ def _cmdb_status_for_deployment(deployment, override=None):
 
 def _ensure_cmdb_app_ci_type():
     ci_type, _ = CIType.objects.get_or_create(
-        name='应用服务',
+        name='搴旂敤鏈嶅姟',
         defaults={
             'icon': 'Promotion',
             'color': '#3b82f6',
-            'description': '由应用发布模块自动同步的业务应用配置项',
+            'description': '\u7531\u5e94\u7528\u53d1\u5e03\u6a21\u5757\u81ea\u52a8\u540c\u6b65\u7684\u4e1a\u52a1\u5e94\u7528\u914d\u7f6e\u9879',
         },
     )
     changed = False
@@ -99,7 +101,7 @@ def _ensure_cmdb_app_ci_type():
         ci_type.color = '#3b82f6'
         changed = True
     if not ci_type.description:
-        ci_type.description = '由应用发布模块自动同步的业务应用配置项'
+        ci_type.description = '\u7531\u5e94\u7528\u53d1\u5e03\u6a21\u5757\u81ea\u52a8\u540c\u6b65\u7684\u4e1a\u52a1\u5e94\u7528\u914d\u7f6e\u9879'
         changed = True
     if changed:
         ci_type.save(update_fields=['icon', 'color', 'description'])
@@ -134,7 +136,7 @@ def _ensure_target_cmdb_item(deployment):
     environment = _cmdb_environment(deployment.environment)
     docker_target = _docker_target(deployment)
     if deployment.deploy_mode == 'docker_compose' and docker_target:
-        ci_type = _ensure_cmdb_ci_type('Docker环境', 'Box', '#10b981', '由应用发布模块自动同步的 Docker 发布目标')
+        ci_type = _ensure_cmdb_ci_type('Docker鐜', 'Box', '#10b981', '鐢卞簲鐢ㄥ彂甯冩ā鍧楄嚜鍔ㄥ悓姝ョ殑 Docker 鍙戝竷鐩爣')
         ci, _ = ConfigItem.objects.get_or_create(
             ci_type=ci_type,
             name=_docker_target_name(docker_target),
@@ -160,7 +162,7 @@ def _ensure_target_cmdb_item(deployment):
         return ci
 
     if deployment.deploy_mode == 'k8s' and deployment.cluster_id:
-        ci_type = _ensure_cmdb_ci_type('K8s集群', 'Connection', '#0ea5e9', '由应用发布模块自动同步的集群目标')
+        ci_type = _ensure_cmdb_ci_type('K8s闆嗙兢', 'Connection', '#0ea5e9', '鐢卞簲鐢ㄥ彂甯冩ā鍧楄嚜鍔ㄥ悓姝ョ殑闆嗙兢鐩爣')
         ci, _ = ConfigItem.objects.get_or_create(
             ci_type=ci_type,
             name=deployment.cluster.name,
@@ -241,7 +243,7 @@ def sync_deployment_to_cmdb(deployment, override_status=None):
             source=ci,
             target=target_ci,
             relation_type='runs_on',
-            defaults={'description': '应用发布自动关联发布目标'},
+            defaults={'description': '搴旂敤鍙戝竷鑷姩鍏宠仈鍙戝竷鐩爣'},
         )
     return ci
 
@@ -360,10 +362,10 @@ def _mark_current_release(deployment):
 
 def _strategy_log_lines(deployment):
     if deployment.release_strategy == 'canary':
-        return [f'[INFO] 发布策略: 灰度发布 {deployment.canary_percent}%']
+        return [f'[INFO] 鍙戝竷绛栫暐: 鐏板害鍙戝竷 {deployment.canary_percent}%']
     if deployment.release_strategy == 'batch':
-        return [f'[INFO] 发布策略: 批次发布，共 {deployment.batch_total} 批，单批规模 {deployment.batch_size}']
-    return ['[INFO] 发布策略: 标准发布']
+        return [f'[INFO] 鍙戝竷绛栫暐: 鎵规鍙戝竷锛屽叡 {deployment.batch_total} 鎵癸紝鍗曟壒瑙勬ā {deployment.batch_size}']
+    return ['[INFO] 鍙戝竷绛栫暐: 鏍囧噯鍙戝竷']
 
 
 def start_deployment_thread(deployment_id):
@@ -375,7 +377,7 @@ def start_deployment_thread(deployment_id):
 def _deploy_docker_compose(deployment, log_lines):
     docker_target = _docker_target(deployment)
     if not docker_target:
-        raise RuntimeError('未配置 Docker 发布环境')
+        raise RuntimeError('鏈厤缃?Docker 鍙戝竷鐜')
     release_name = deployment.release_name_display or _default_release_name(deployment)
     service_dir = f'{DEPLOY_BASE}/{release_name}'
     deployment.release_name = release_name
@@ -385,14 +387,14 @@ def _deploy_docker_compose(deployment, log_lines):
     compose_content = _build_compose_payload(deployment)
     client = _get_ssh_client(docker_target)
     try:
-        log_lines.append(f'[INFO] SSH 连接成功: {_docker_target_name(docker_target)} ({docker_target.ip_address})')
+        log_lines.append(f'[INFO] SSH 杩炴帴鎴愬姛: {_docker_target_name(docker_target)} ({docker_target.ip_address})')
         _ssh_exec(client, f'mkdir -p {service_dir}')
-        log_lines.append(f'[INFO] 创建目录: {service_dir}')
+        log_lines.append(f'[INFO] 鍒涘缓鐩綍: {service_dir}')
         sftp = client.open_sftp()
         with sftp.file(f'{service_dir}/docker-compose.yml', 'w') as file_obj:
             file_obj.write(compose_content)
         sftp.close()
-        log_lines.append('[INFO] 已上传 docker-compose.yml')
+        log_lines.append('[INFO] 宸蹭笂浼?docker-compose.yml')
 
         code, out, err = _ssh_exec(
             client,
@@ -404,7 +406,7 @@ def _deploy_docker_compose(deployment, log_lines):
         if err.strip():
             log_lines.append(err.strip())
         if code != 0:
-            raise RuntimeError(f'docker-compose 执行失败，退出码: {code}')
+            raise RuntimeError(f'docker-compose 鎵ц澶辫触锛岄€€鍑虹爜: {code}')
     finally:
         client.close()
 
@@ -442,20 +444,20 @@ def _deploy_k8s(deployment, log_lines):
 
     if _is_demo(deployment.cluster):
         log_lines.extend([
-            f'[INFO] 已连接 Demo K8s 集群: {deployment.cluster.name}',
-            f'[INFO] 命名空间: {namespace}',
-            f'[INFO] 发布名称: {release_name}',
+            f'[INFO] 宸茶繛鎺?Demo K8s 闆嗙兢: {deployment.cluster.name}',
+            f'[INFO] 鍛藉悕绌洪棿: {namespace}',
+            f'[INFO] 鍙戝竷鍚嶇О: {release_name}',
             '[INFO] Demo 模式已模拟创建应用工作负载',
         ])
         return
 
     client_module = _get_k8s_client(deployment.cluster)
     created = _ensure_k8s_namespace(client_module, namespace)
-    log_lines.append(f'[INFO] {"已创建" if created else "复用现有"}命名空间: {namespace}')
+    log_lines.append(f'[INFO] {"created" if created else "reused"} namespace: {namespace}')
     api_client = client_module.ApiClient()
     for document in _build_k8s_documents(deployment):
         k8s_utils.create_from_dict(api_client, document, namespace=namespace, verbose=False)
-        log_lines.append(f'[INFO] 已创建 {document["kind"]}/{document["metadata"]["name"]}')
+        log_lines.append(f'[INFO] 宸插垱寤?{document["kind"]}/{document["metadata"]["name"]}')
 
 
 def deploy_service(deployment_id):
@@ -473,16 +475,15 @@ def deploy_service(deployment_id):
     deployment.finished_at = None
     deployment.is_current = False
     deployment.save(update_fields=['status', 'deploy_log', 'execution_count', 'executed_at', 'finished_at', 'is_current'])
-
     log_lines = [
-        f'[INFO] 发布类型: {deployment.get_action_type_display()}',
-        f'[INFO] 发布模式: {deployment.get_deploy_mode_display()}',
-        f'[INFO] 应用: {deployment.app_name}',
-        f'[INFO] 版本: {deployment.version}',
+        f'[INFO] 鍙戝竷绫诲瀷: {deployment.get_action_type_display()}',
+        f'[INFO] 鍙戝竷妯″紡: {deployment.get_deploy_mode_display()}',
+        f'[INFO] 搴旂敤: {deployment.app_name}',
+        f'[INFO] 鐗堟湰: {deployment.version}',
     ]
     log_lines.extend(_strategy_log_lines(deployment))
     if deployment.change_summary:
-        log_lines.append(f'[INFO] 变更说明: {deployment.change_summary}')
+        log_lines.append(f'[INFO] 鍙樻洿璇存槑: {deployment.change_summary}')
 
     try:
         if deployment.deploy_mode == 'k8s':
@@ -493,18 +494,59 @@ def deploy_service(deployment_id):
         deployment.finished_at = timezone.now()
         if deployment.release_strategy == 'batch':
             deployment.batch_current = max(deployment.batch_current or 0, 1)
-            log_lines.append(f'[INFO] 批次进度: 1/{deployment.batch_total}')
-        log_lines.append('[SUCCESS] 发布成功')
+            log_lines.append(f'[INFO] 鎵规杩涘害: 1/{deployment.batch_total}')
+        log_lines.append('[SUCCESS] 鍙戝竷鎴愬姛')
         _mark_current_release(deployment)
         try:
             sync_deployment_to_cmdb(deployment, override_status='active')
         except Exception:
             logger.exception('sync_deployment_to_cmdb error after deploy success')
+        record_event(
+            module='ops',
+            category='execution',
+            action='deploy_finish',
+            title='发布执行成功',
+            summary=f'发布单 {deployment.app_name} 执行成功',
+            result=EventRecord.RESULT_SUCCESS,
+            source_type=EventRecord.SOURCE_ASYNC,
+            actor_type=EventRecord.ACTOR_SYSTEM,
+            actor_username=deployment.deployer or deployment.submitter or 'system',
+            actor_display=deployment.deployer or deployment.submitter or 'system',
+            resource_type='deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.app_name,
+            business_line=deployment.business_line,
+            environment=deployment.environment,
+            application=deployment.app_name,
+            correlation_id=f'deployment:{deployment.id}',
+            metadata={'execution_count': deployment.execution_count},
+        )
     except Exception as exc:
         logger.exception('deploy_service error')
         deployment.status = 'failed'
         deployment.finished_at = timezone.now()
-        log_lines.append(f'[ERROR] 发布失败: {str(exc)}')
+        log_lines.append(f'[ERROR] 鍙戝竷澶辫触: {str(exc)}')
+        record_event(
+            module='ops',
+            category='execution',
+            action='deploy_finish',
+            title='发布执行失败',
+            summary=f'发布单 {deployment.app_name} 执行失败',
+            result=EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_WARNING,
+            source_type=EventRecord.SOURCE_ASYNC,
+            actor_type=EventRecord.ACTOR_SYSTEM,
+            actor_username=deployment.deployer or deployment.submitter or 'system',
+            actor_display=deployment.deployer or deployment.submitter or 'system',
+            resource_type='deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.app_name,
+            business_line=deployment.business_line,
+            environment=deployment.environment,
+            application=deployment.app_name,
+            correlation_id=f'deployment:{deployment.id}',
+            metadata={'error': str(exc)},
+        )
 
     deployment.deploy_log = '\n'.join(log_lines)
     deployment.save(update_fields=['status', 'finished_at', 'deploy_log', 'batch_current'])
@@ -532,16 +574,16 @@ def _scale_k8s_workloads(deployment, replicas):
 
 def stop_service(deployment):
     if not deployment.is_current:
-        deployment.deploy_log += '\n[WARN] 只能停止当前生效版本'
+        deployment.deploy_log += '\n[WARN] 鍙兘鍋滄褰撳墠鐢熸晥鐗堟湰'
         deployment.save(update_fields=['deploy_log'])
         return deployment
     if deployment.deploy_mode == 'k8s':
         try:
             scaled = _scale_k8s_workloads(deployment, 0)
             deployment.status = 'stopped'
-            deployment.deploy_log += f'\n[SUCCESS] 已缩容到 0 副本: {", ".join(scaled)}'
+            deployment.deploy_log += f'\n[SUCCESS] 宸茬缉瀹瑰埌 0 鍓湰: {", ".join(scaled)}'
         except Exception as exc:
-            deployment.deploy_log += f'\n[ERROR] 停止失败: {str(exc)}'
+            deployment.deploy_log += f'\n[ERROR] 鍋滄澶辫触: {str(exc)}'
         deployment.finished_at = timezone.now()
         deployment.save(update_fields=['status', 'deploy_log', 'finished_at'])
         try:
@@ -551,7 +593,7 @@ def stop_service(deployment):
         return deployment
 
     if not deployment.deploy_dir:
-        deployment.deploy_log += '\n[ERROR] 无发布目录，无法停止'
+        deployment.deploy_log += '\n[ERROR] 鏃犲彂甯冪洰褰曪紝鏃犳硶鍋滄'
         deployment.save(update_fields=['deploy_log'])
         return deployment
     docker_target = _docker_target(deployment)
@@ -559,9 +601,9 @@ def stop_service(deployment):
     try:
         _, out, err = _ssh_exec(client, f'cd {deployment.deploy_dir} && docker-compose stop 2>&1 || docker compose stop 2>&1')
         deployment.status = 'stopped'
-        deployment.deploy_log += f'\n[SUCCESS] 应用已停止\n{out}{err}'
+        deployment.deploy_log += f'\n[SUCCESS] 搴旂敤宸插仠姝n{out}{err}'
     except Exception as exc:
-        deployment.deploy_log += f'\n[ERROR] 停止失败: {str(exc)}'
+        deployment.deploy_log += f'\n[ERROR] 鍋滄澶辫触: {str(exc)}'
     finally:
         client.close()
     deployment.finished_at = timezone.now()
@@ -575,16 +617,16 @@ def stop_service(deployment):
 
 def start_service(deployment):
     if not deployment.is_current:
-        deployment.deploy_log += '\n[WARN] 只能启动当前生效版本'
+        deployment.deploy_log += '\n[WARN] 鍙兘鍚姩褰撳墠鐢熸晥鐗堟湰'
         deployment.save(update_fields=['deploy_log'])
         return deployment
     if deployment.deploy_mode == 'k8s':
         try:
             scaled = _scale_k8s_workloads(deployment, max(deployment.replicas or 1, 1))
             deployment.status = 'running'
-            deployment.deploy_log += f'\n[SUCCESS] 已恢复副本数: {", ".join(scaled)}'
+            deployment.deploy_log += f'\n[SUCCESS] 宸叉仮澶嶅壇鏈暟: {", ".join(scaled)}'
         except Exception as exc:
-            deployment.deploy_log += f'\n[ERROR] 启动失败: {str(exc)}'
+            deployment.deploy_log += f'\n[ERROR] 鍚姩澶辫触: {str(exc)}'
         deployment.finished_at = timezone.now()
         deployment.save(update_fields=['status', 'deploy_log', 'finished_at'])
         try:
@@ -598,9 +640,9 @@ def start_service(deployment):
     try:
         _, out, err = _ssh_exec(client, f'cd {deployment.deploy_dir} && docker-compose start 2>&1 || docker compose start 2>&1')
         deployment.status = 'running'
-        deployment.deploy_log += f'\n[SUCCESS] 应用已启动\n{out}{err}'
+        deployment.deploy_log += f'\n[SUCCESS] 搴旂敤宸插惎鍔╘n{out}{err}'
     except Exception as exc:
-        deployment.deploy_log += f'\n[ERROR] 启动失败: {str(exc)}'
+        deployment.deploy_log += f'\n[ERROR] 鍚姩澶辫触: {str(exc)}'
     finally:
         client.close()
     deployment.finished_at = timezone.now()
@@ -632,17 +674,17 @@ def _remove_k8s_resources(deployment):
 
 def remove_service(deployment):
     if not deployment.is_current:
-        deployment.deploy_log += '\n[WARN] 只能下线当前生效版本'
+        deployment.deploy_log += '\n[WARN] 鍙兘涓嬬嚎褰撳墠鐢熸晥鐗堟湰'
         deployment.save(update_fields=['deploy_log'])
         return deployment
     if deployment.deploy_mode == 'k8s':
         try:
             deleted = _remove_k8s_resources(deployment)
-            deployment.deploy_log += f'\n[SUCCESS] 已删除 K8s 资源: {", ".join(deleted)}'
+            deployment.deploy_log += f'\n[SUCCESS] 宸插垹闄?K8s 璧勬簮: {", ".join(deleted)}'
             deployment.status = 'removed'
             deployment.is_current = False
         except Exception as exc:
-            deployment.deploy_log += f'\n[ERROR] 下线失败: {str(exc)}'
+            deployment.deploy_log += f'\n[ERROR] 涓嬬嚎澶辫触: {str(exc)}'
         deployment.finished_at = timezone.now()
         deployment.save(update_fields=['status', 'is_current', 'deploy_log', 'finished_at'])
         try:
@@ -656,11 +698,11 @@ def remove_service(deployment):
     try:
         _, out, err = _ssh_exec(client, f'cd {deployment.deploy_dir} && docker-compose down -v 2>&1 || docker compose down -v 2>&1')
         _ssh_exec(client, f'rm -rf {deployment.deploy_dir}')
-        deployment.deploy_log += f'\n[SUCCESS] 应用已下线\n{out}{err}'
+        deployment.deploy_log += f'\n[SUCCESS] 搴旂敤宸蹭笅绾縗n{out}{err}'
         deployment.status = 'removed'
         deployment.is_current = False
     except Exception as exc:
-        deployment.deploy_log += f'\n[ERROR] 下线失败: {str(exc)}'
+        deployment.deploy_log += f'\n[ERROR] 涓嬬嚎澶辫触: {str(exc)}'
     finally:
         client.close()
     deployment.finished_at = timezone.now()
@@ -676,13 +718,13 @@ def advance_batch(deployment, actor='', change_summary=''):
     if deployment.release_strategy != 'batch':
         raise ValueError('当前发布单不是批次发布')
     if deployment.approval_status != 'approved':
-        raise ValueError('只有审批通过的发布单才能推进批次')
+        raise ValueError('鍙湁瀹℃壒閫氳繃鐨勫彂甯冨崟鎵嶈兘鎺ㄨ繘鎵规')
     if not deployment.is_current:
         raise ValueError('只能推进当前生效版本的批次')
     if deployment.status not in ('running', 'stopped'):
-        raise ValueError('当前状态不支持推进批次')
+        raise ValueError('褰撳墠鐘舵€佷笉鏀寔鎺ㄨ繘鎵规')
     if (deployment.batch_current or 0) >= (deployment.batch_total or 1):
-        raise ValueError('批次发布已全部完成')
+        raise ValueError('批次发布已经全部完成')
 
     deployment.batch_current = (deployment.batch_current or 0) + 1
     deployment.finished_at = timezone.now()
@@ -700,7 +742,7 @@ def advance_batch(deployment, actor='', change_summary=''):
 
 def get_service_logs(deployment, tail=100):
     if not deployment.is_current:
-        return '该发布已被后续版本接管，以下展示归档日志：\n\n' + (deployment.deploy_log or '暂无日志')
+        return '璇ュ彂甯冨凡琚悗缁増鏈帴绠★紝浠ヤ笅灞曠ず褰掓。鏃ュ織锛歕n\n' + (deployment.deploy_log or '鏆傛棤鏃ュ織')
     if deployment.deploy_mode == 'k8s':
         if _is_demo(deployment.cluster):
             return f'[{deployment.namespace or "default"}/{deployment.release_name_display}] demo pod running'
@@ -709,11 +751,11 @@ def get_service_logs(deployment, tail=100):
             core_v1 = client_module.CoreV1Api()
             pods = core_v1.list_namespaced_pod(deployment.namespace or 'default', label_selector=_label_selector(deployment)).items
             if not pods:
-                return '未找到关联 Pod'
+                return '鏈壘鍒板叧鑱?Pod'
             pod = sorted(pods, key=lambda item: item.metadata.name)[0]
             return core_v1.read_namespaced_pod_log(pod.metadata.name, deployment.namespace or 'default', tail_lines=tail)
         except Exception as exc:
-            return f'获取日志失败: {str(exc)}'
+            return f'鑾峰彇鏃ュ織澶辫触: {str(exc)}'
 
     if _is_demo_docker(deployment):
         return (
@@ -730,18 +772,18 @@ def get_service_logs(deployment, tail=100):
         client.close()
         return out or err
     except Exception as exc:
-        return f'获取日志失败: {str(exc)}'
+        return f'鑾峰彇鏃ュ織澶辫触: {str(exc)}'
 
 
 def _docker_runtime_status(deployment):
     if not deployment.deploy_dir:
-        return {'mode': 'docker_compose', 'summary': '尚未生成发布目录', 'items': []}
+        return {'mode': 'docker_compose', 'summary': '灏氭湭鐢熸垚鍙戝竷鐩綍', 'items': []}
     if _is_demo_docker(deployment):
         current_batch = max(deployment.batch_current or 1, 1)
         batch_total = max(deployment.batch_total or 1, 1)
         return {
             'mode': 'docker_compose',
-            'summary': f'Demo Docker 环境 {deployment.target_display} 运行正常',
+            'summary': f'Demo Docker 鐜 {deployment.target_display} 杩愯姝ｅ父',
             'items': [
                 {
                     'kind': 'container',
@@ -757,7 +799,7 @@ def _docker_runtime_status(deployment):
                     'kind': 'strategy',
                     'name': deployment.get_release_strategy_display(),
                     'state': deployment.strategy_summary,
-                    'ports': f'批次 {current_batch}/{batch_total}' if deployment.release_strategy == 'batch' else '',
+                    'ports': f'鎵规 {current_batch}/{batch_total}' if deployment.release_strategy == 'batch' else '',
                 },
             ],
         }
@@ -788,7 +830,7 @@ def _docker_runtime_status(deployment):
                 'ports': payload.get('Publishers') or payload.get('Ports') or '',
             })
     if items:
-        return {'mode': 'docker_compose', 'summary': f'容器 {len(items)} 个', 'items': items}
+        return {'mode': 'docker_compose', 'summary': f'容器数量: {len(items)}', 'items': items}
     return {'mode': 'docker_compose', 'summary': '已返回原始 docker compose 状态', 'items': [], 'raw': raw}
 
 
@@ -796,7 +838,7 @@ def _k8s_runtime_status(deployment):
     if _is_demo(deployment.cluster):
         return {
             'mode': 'k8s',
-            'summary': f'Demo 集群 {deployment.cluster.name} 运行正常',
+            'summary': f'Demo 闆嗙兢 {deployment.cluster.name} 杩愯姝ｅ父',
             'items': [
                 {'kind': 'Deployment', 'name': deployment.release_name_display, 'state': 'Available', 'ready': '1/1'},
                 {'kind': 'Pod', 'name': f'{deployment.release_name_display}-demo-0', 'state': 'Running', 'ready': '1/1'},
@@ -826,7 +868,7 @@ def _k8s_runtime_status(deployment):
             'state': getattr(item.status, 'phase', '-') or '-',
             'ready': f'{ready}/{total or 1}',
         })
-    return {'mode': 'k8s', 'summary': f'工作负载 {len(items)} 项', 'items': items}
+    return {'mode': 'k8s', 'summary': f'工作负载数量: {len(items)}', 'items': items}
 
 
 def get_service_status(deployment):
@@ -845,7 +887,7 @@ def get_service_status(deployment):
         'is_current': deployment.is_current,
     }
     if deployment.approval_status != 'approved':
-        base.update({'summary': '尚未通过审批', 'items': [], 'message': '待审批或已拒绝的发布单暂无运行态'})
+        base.update({'summary': '尚未通过审批', 'items': [], 'message': '待审批或已驳回的发布单暂时没有运行状态'})
         return base
     if not deployment.is_current:
         base.update({'summary': '该发布已被后续版本接管', 'items': [], 'message': '请查看当前生效版本获取实时状态'})

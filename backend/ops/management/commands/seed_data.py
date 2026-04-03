@@ -1,4 +1,4 @@
-import json
+﻿import json
 import random
 from datetime import timedelta
 
@@ -10,6 +10,7 @@ from django.utils import timezone
 from cmdb.demo_seed import BIZ_COMMERCE, BIZ_DATA, BIZ_INFRA, seed_cmdb_demo
 from marketplace.models import ServiceDeployment, ServiceTemplate
 from ops.deployer import sync_current_deployments_to_cmdb
+from sqlaudit.models import DataSource, QueryOrder, SqlCheckResult, SqlOrder
 from ops.models import (
     Alert,
     Deployment,
@@ -212,6 +213,87 @@ def create_marketplace_deployment(item):
     values = [payload[name] for name in insert_columns]
     with connection.cursor() as cursor:
         cursor.execute(sql, values)
+
+
+def seed_sqlaudit_demo(stdout):
+    stdout.write('正在生成 SQL 审计演示数据...')
+    SqlCheckResult.objects.all().delete()
+    QueryOrder.objects.all().delete()
+    SqlOrder.objects.all().delete()
+    DataSource.objects.all().delete()
+
+    ds_order = DataSource.objects.create(
+        name='trade-primary',
+        db_type='mysql',
+        host='10.10.1.20',
+        port=3306,
+        user='audit_reader',
+        password='demo-secret',
+        charset='utf8mb4',
+        remark='订单核心库，供 SQL 审计演示使用',
+        is_active=True,
+    )
+    ds_member = DataSource.objects.create(
+        name='member-archive',
+        db_type='polardb',
+        host='10.20.8.18',
+        port=3306,
+        user='archive_reader',
+        password='demo-secret',
+        charset='utf8mb4',
+        remark='会员归档库，供只读查询演示使用',
+        is_active=True,
+    )
+
+    order_pending = SqlOrder.objects.create(
+        title='订单表增加灰度索引',
+        datasource=ds_order,
+        database='trade_prod',
+        sql_type='DDL',
+        sql_content='ALTER TABLE order_main ADD INDEX idx_order_gray_status (gray_status, updated_at);',
+        status='pending',
+        submitter='dev_demo',
+    )
+    SqlCheckResult.objects.create(
+        order=order_pending,
+        level='warning',
+        rule_name='DDLReview',
+        message='生产 DDL 需要在低峰窗口执行，并提前准备回滚方案',
+        line_no=1,
+    )
+
+    order_done = SqlOrder.objects.create(
+        title='修复库存同步状态',
+        datasource=ds_order,
+        database='trade_prod',
+        sql_type='DML',
+        sql_content='UPDATE stock_job SET sync_status = 1 WHERE sync_status = 0 AND updated_at < NOW() - INTERVAL 10 MINUTE;',
+        status='executed',
+        submitter='dev_demo',
+        reviewer='audit_demo',
+        review_comment='已确认影响范围，并在低峰执行',
+        reviewed_at=timezone.now() - timedelta(hours=6),
+        execute_log='[INFO] Statement executed successfully',
+        affected_rows=42,
+        duration_ms=186,
+        executed_at=timezone.now() - timedelta(hours=6),
+    )
+    SqlCheckResult.objects.create(
+        order=order_done,
+        level='info',
+        rule_name='SafeWhere',
+        message='检测到 where 条件，执行风险可控',
+        line_no=1,
+    )
+
+    QueryOrder.objects.create(
+        datasource=ds_member,
+        database='member_archive',
+        sql_content='SELECT region, COUNT(*) AS total FROM member_login_log GROUP BY region ORDER BY total DESC LIMIT 10;',
+        submitter='audit_demo',
+        result_count=10,
+        duration_ms=84,
+    )
 
 
 def _create_approval_steps(deployment, statuses):
@@ -1127,7 +1209,7 @@ class Command(BaseCommand):
                 )
             )
 
-        self.stdout.write('正在生成 Docker 环境数据...')
+        self.stdout.write('正在生成 Docker 主机数据...')
         docker_hosts = [
             DockerHost.objects.create(
                 name='app-release-test',
@@ -1161,7 +1243,7 @@ class Command(BaseCommand):
             ),
         ]
 
-        self.stdout.write('正在准备应用发布典型案例...')
+        self.stdout.write('正在生成监控告警数据...')
 
         self.stdout.write('正在生成告警数据...')
         alert_templates = [
@@ -1201,18 +1283,18 @@ class Command(BaseCommand):
         seed_app_release_demo(self.stdout, hosts, docker_hosts)
         seed_host_task_demo(self.stdout, hosts)
         seed_host_schedule_demo(self.stdout, hosts)
+        seed_sqlaudit_demo(self.stdout)
         self.stdout.write(
-            self.style.SUCCESS(
-                f'数据生成完成: {Host.objects.count()} 主机, {Deployment.objects.count()} 发布记录, '
-                f'{Alert.objects.count()} 告警, {LogEntry.objects.count()} 日志'
-            )
+            f'演示数据完成: {len(hosts)} 台主机, {Deployment.objects.count()} 个发布单, {Alert.objects.count()} 条告警, {LogEntry.objects.count()} 条日志'
         )
 
-        self.stdout.write('正在生成 RBAC 演示账号...')
+        self.stdout.write('正在生成 RBAC 演示数据...')
         seed_marketplace_demo(self.stdout, hosts)
         call_command('seed_rbac_demo')
-
+        self.stdout.write('正在生成 RBAC 演示数据...')
         self.stdout.write('正在生成 CMDB 演示数据...')
         seed_cmdb_demo(self.stdout)
         call_command('seed_multicloud_demo')
         sync_current_deployments_to_cmdb()
+        call_command('seed_eventwall_demo')
+

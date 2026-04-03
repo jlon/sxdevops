@@ -13,6 +13,8 @@ from django.utils.text import slugify
 from kubernetes import utils as k8s_utils
 from kubernetes.client.exceptions import ApiException
 
+from eventwall.models import EventRecord
+from eventwall.services import build_resource, record_event
 from ops.k8s_views import _get_k8s_client, _is_demo
 
 from .models import ServiceDeployment
@@ -32,6 +34,15 @@ def _render_template(template_str, context):
 
 def _service_slug(template_name):
     return slugify(template_name) or re.sub(r'[^a-z0-9]+', '-', template_name.lower()).strip('-') or 'service'
+
+
+def _related_resources(deployment):
+    related = [build_resource('marketplace', 'service_template', deployment.template_id, deployment.template.name)]
+    if deployment.host_id:
+        related.append(build_resource('ops', 'host', deployment.host_id, deployment.host.hostname))
+    if deployment.cluster_id:
+        related.append(build_resource('ops', 'k8s_cluster', deployment.cluster_id, deployment.cluster.name))
+    return related
 
 
 def _get_ssh_client(host):
@@ -256,7 +267,7 @@ def _scale_k8s_workloads(deployment, replicas):
 
 
 def deploy_service(deployment_id):
-    """后台执行部署任务"""
+    """????????"""
     close_old_connections()
 
     try:
@@ -268,19 +279,57 @@ def deploy_service(deployment_id):
     deployment.status = 'deploying'
     deployment.deploy_log = ''
     deployment.save(update_fields=['status', 'deploy_log'])
-
-    log_lines = [f'[INFO] 部署模式: {deployment.get_deploy_mode_display()}']
+    log_lines = [f'[INFO] ????: {deployment.get_deploy_mode_display()}']
     try:
         if deployment.deploy_mode == 'k8s':
             _deploy_k8s(deployment, log_lines)
         else:
             _deploy_docker_compose(deployment, log_lines)
         deployment.status = 'running'
-        log_lines.append('[✓] 部署成功')
+        log_lines.append('[SUCCESS] ????')
+        record_event(
+            module='marketplace',
+            category='execution',
+            action='deploy_finish',
+            title='????????',
+            summary=f'?? {deployment.template.name} ????',
+            result=EventRecord.RESULT_SUCCESS,
+            source_type=EventRecord.SOURCE_ASYNC,
+            actor_type=EventRecord.ACTOR_SYSTEM,
+            actor_username=deployment.deployer or 'system',
+            actor_display=deployment.deployer or 'system',
+            resource_type='service_deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.template.name,
+            application=deployment.template.name,
+            correlation_id=f'marketplace-deployment:{deployment.id}',
+            related_resources=_related_resources(deployment),
+            metadata={'deploy_mode': deployment.deploy_mode, 'version': deployment.version},
+        )
     except Exception as exc:
         deployment.status = 'failed'
-        log_lines.append(f'[✗] 部署失败: {str(exc)}')
+        log_lines.append(f'[ERROR] ????: {str(exc)}')
         logger.exception('deploy_service error')
+        record_event(
+            module='marketplace',
+            category='execution',
+            action='deploy_finish',
+            title='????????',
+            summary=f'?? {deployment.template.name} ????',
+            result=EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_WARNING,
+            source_type=EventRecord.SOURCE_ASYNC,
+            actor_type=EventRecord.ACTOR_SYSTEM,
+            actor_username=deployment.deployer or 'system',
+            actor_display=deployment.deployer or 'system',
+            resource_type='service_deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.template.name,
+            application=deployment.template.name,
+            correlation_id=f'marketplace-deployment:{deployment.id}',
+            related_resources=_related_resources(deployment),
+            metadata={'deploy_mode': deployment.deploy_mode, 'version': deployment.version, 'error': str(exc)},
+        )
 
     deployment.deploy_log = '\n'.join(log_lines)
     deployment.save(update_fields=['status', 'deploy_log'])

@@ -232,6 +232,33 @@ const routes = [
         meta: { title: 'Grafana 大屏', icon: 'Histogram', permission: 'ops.grafana.view' },
       },
       {
+        path: 'events',
+        redirect: '/events/overview',
+        meta: { hidden: true, permission: 'eventwall.view' },
+      },
+      {
+        path: 'events/overview',
+        name: 'EventWallOverview',
+        component: () => import('@/views/EventWallOverview.vue'),
+        meta: { title: '事件总览', icon: 'DataLine', permission: 'eventwall.view' },
+      },
+      {
+        path: 'events/wall',
+        name: 'EventWallStream',
+        component: () => import('@/views/EventWallStream.vue'),
+        meta: { title: '事件流', icon: 'Tickets', permission: 'eventwall.view' },
+      },
+      {
+        path: 'events/audit',
+        redirect: '/events/overview',
+        meta: { hidden: true, permission: 'eventwall.view' },
+      },
+      {
+        path: 'events/analysis',
+        redirect: '/events/overview',
+        meta: { hidden: true, permission: 'eventwall.view' },
+      },
+      {
         path: 'users',
         name: 'Users',
         component: () => import('@/views/Users.vue'),
@@ -319,3 +346,5 @@ router.beforeEach(async (to) => {
 })
 
 export default router
+
+

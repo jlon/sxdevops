@@ -218,6 +218,14 @@ const menuItems = [
     ],
   },
   {
+    title: '事件墙',
+    icon: 'Tickets',
+    children: [
+      { path: '/events/overview', title: '事件总览', icon: 'DataLine', permission: 'eventwall.view' },
+      { path: '/events/wall', title: '事件流', icon: 'Tickets', permission: 'eventwall.view' },
+    ],
+  },
+  {
     path: '/marketplace',
     title: '工具市场',
     icon: 'Shop',
@@ -262,6 +270,9 @@ const visibleMenuItems = computed(() => menuItems
 const normalizedMenuPath = computed(() => {
   if (route.path.startsWith('/sql')) {
     return '/sql'
+  }
+  if (route.path.startsWith('/events/')) {
+    return route.path
   }
   if (route.path.startsWith('/logs/')) {
     return '/logs'
@@ -341,3 +352,5 @@ async function handleUserCommand(command) {
   color: var(--text-secondary);
 }
 </style>
+
+

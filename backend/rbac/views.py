@@ -7,6 +7,10 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 
+from eventwall.mixins import EventWallModelViewSetMixin
+from eventwall.models import EventRecord
+from eventwall.services import record_event
+
 from .models import PermissionDefinition, Role, UserGroup
 from .permissions import RBACPermissionMixin, build_rbac_permission
 from .serializers import (
@@ -22,11 +26,16 @@ from .services import ensure_builtin_rbac, ensure_default_superuser
 User = get_user_model()
 
 
-class UserViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class UserViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = User.objects.all().order_by('-date_joined')
     serializer_class = UserSerializer
     filter_backends = [filters.SearchFilter]
     search_fields = ['username', 'email', 'first_name', 'last_name']
+    event_module = 'rbac'
+    event_resource_type = 'rbac_user'
+    event_resource_label = '用户'
+    event_resource_name_fields = ('username',)
+    event_exclude_fields = ('password',)
     rbac_permissions = {
         'list': ['rbac.user.view'],
         'retrieve': ['rbac.user.view'],
@@ -46,15 +55,33 @@ class UserViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(instance=user, data={'password': password}, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        record_event(
+            request=request,
+            module='rbac',
+            category='security',
+            action='reset_password',
+            title='重置用户密码',
+            summary=f'已重置用户 {user.username} 的密码',
+            resource_type='rbac_user',
+            resource_id=user.id,
+            resource_name=user.username,
+            severity=EventRecord.SEVERITY_WARNING,
+            correlation_id=f'rbac-user:{user.id}',
+            metadata={'target_user': user.username},
+        )
         return Response({'success': True, 'message': f'已重置 {user.username} 的密码。'})
 
 
-class RoleViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class RoleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = Role.objects.prefetch_related('permissions').all().order_by('name')
     serializer_class = RoleSerializer
     pagination_class = None
     filter_backends = [filters.SearchFilter]
     search_fields = ['code', 'name', 'description']
+    event_module = 'rbac'
+    event_resource_type = 'rbac_role'
+    event_resource_label = '角色'
+    event_resource_name_fields = ('name', 'code')
     rbac_permissions = {
         'list': ['rbac.role.view'],
         'retrieve': ['rbac.role.view'],
@@ -70,12 +97,16 @@ class RoleViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         super().perform_destroy(instance)
 
 
-class UserGroupViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class UserGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = UserGroup.objects.prefetch_related('roles', 'users').all().order_by('name')
     serializer_class = UserGroupSerializer
     pagination_class = None
     filter_backends = [filters.SearchFilter]
     search_fields = ['code', 'name', 'description']
+    event_module = 'rbac'
+    event_resource_type = 'rbac_group'
+    event_resource_label = '用户组'
+    event_resource_name_fields = ('name', 'code')
     rbac_permissions = {
         'list': ['rbac.group.view'],
         'retrieve': ['rbac.group.view'],
@@ -141,4 +172,17 @@ def current_user_view(request):
 @permission_classes([IsAuthenticated, build_rbac_permission('rbac.permission.view')])
 def sync_permissions_view(request):
     ensure_builtin_rbac()
+    record_event(
+        request=request,
+        module='rbac',
+        category='system',
+        action='sync_permissions',
+        title='同步内置权限',
+        summary='内置权限与角色已同步完成',
+        resource_type='rbac_permission_registry',
+        resource_id='builtin',
+        resource_name='内置权限字典',
+        severity=EventRecord.SEVERITY_INFO,
+        correlation_id='rbac-permission-registry',
+    )
     return Response({'success': True, 'message': '内置权限与角色已同步。'})

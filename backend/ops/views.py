@@ -1,4 +1,4 @@
-from datetime import timedelta
+﻿from datetime import timedelta
 import paramiko
 from django.db.models import Avg, Count, Q
 from django.utils import timezone
@@ -7,6 +7,9 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from eventwall.mixins import EventWallModelViewSetMixin
+from eventwall.models import EventRecord
+from eventwall.services import build_json_preview, build_resource, record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 
 from . import deployer
@@ -94,11 +97,16 @@ def _match_step_approver(user, step):
     return True
 
 
-class HostViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class HostViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = Host.objects.all()
     serializer_class = HostSerializer
     search_fields = ['hostname', 'ip_address']
     filterset_fields = ['status', 'business_line', 'environment']
+    event_module = 'ops'
+    event_resource_type = 'host'
+    event_resource_label = '主机'
+    event_resource_name_fields = ('hostname',)
+    event_exclude_fields = ('ssh_password',)
     rbac_permissions = {
         'list': ['ops.host.view'],
         'retrieve': ['ops.host.view'],
@@ -126,8 +134,40 @@ class HostViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             stdin, stdout, stderr = client.exec_command('uname -a', timeout=5)
             uname = stdout.read().decode('utf-8', errors='replace').strip()
             client.close()
+            record_event(
+                request=request,
+                module='ops',
+                category='execution',
+                action='test_connection',
+                title='\u6d4b\u8bd5\u4e3b\u673a\u8fde\u901a\u6027',
+                summary=f'\u4e3b\u673a {host.hostname} \u8fde\u901a\u6027\u6d4b\u8bd5\u6210\u529f',
+                resource_type='host',
+                resource_id=host.id,
+                resource_name=host.hostname,
+                business_line=host.business_line,
+                environment=host.environment,
+                correlation_id=f'host:{host.id}',
+                metadata={'ip_address': host.ip_address},
+            )
             return Response({'success': True, 'message': f'\u8fde\u63a5\u6210\u529f: {uname}'})
         except Exception as exc:
+            record_event(
+                request=request,
+                module='ops',
+                category='execution',
+                action='test_connection',
+                title='\u6d4b\u8bd5\u4e3b\u673a\u8fde\u901a\u6027',
+                summary=f'\u4e3b\u673a {host.hostname} \u8fde\u901a\u6027\u6d4b\u8bd5\u5931\u8d25',
+                result=EventRecord.RESULT_FAILED,
+                severity=EventRecord.SEVERITY_WARNING,
+                resource_type='host',
+                resource_id=host.id,
+                resource_name=host.hostname,
+                business_line=host.business_line,
+                environment=host.environment,
+                correlation_id=f'host:{host.id}',
+                metadata={'ip_address': host.ip_address, 'error': str(exc)},
+            )
             return Response({'success': False, 'message': f'\u8fde\u63a5\u5931\u8d25: {str(exc)}'})
 
     @action(detail=True, methods=['post'])
@@ -164,17 +204,57 @@ class HostViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             host.status = 'online'
             host.save(update_fields=['cpu_usage', 'memory_usage', 'disk_usage', 'status'])
             client.close()
+            record_event(
+                request=request,
+                module='ops',
+                category='execution',
+                action='refresh_info',
+                title='\u5237\u65b0\u4e3b\u673a\u72b6\u6001',
+                summary=f'\u4e3b\u673a {host.hostname} \u72b6\u6001\u5df2\u5237\u65b0',
+                resource_type='host',
+                resource_id=host.id,
+                resource_name=host.hostname,
+                business_line=host.business_line,
+                environment=host.environment,
+                correlation_id=f'host:{host.id}',
+                metadata={
+                    'cpu_usage': host.cpu_usage,
+                    'memory_usage': host.memory_usage,
+                    'disk_usage': host.disk_usage,
+                },
+            )
             return Response(HostSerializer(host).data)
         except Exception as exc:
             host.status = 'offline'
             host.save(update_fields=['status'])
+            record_event(
+                request=request,
+                module='ops',
+                category='execution',
+                action='refresh_info',
+                title='\u5237\u65b0\u4e3b\u673a\u72b6\u6001',
+                summary=f'\u4e3b\u673a {host.hostname} \u5237\u65b0\u5931\u8d25\uff0c\u5df2\u6807\u8bb0\u79bb\u7ebf',
+                result=EventRecord.RESULT_FAILED,
+                severity=EventRecord.SEVERITY_WARNING,
+                resource_type='host',
+                resource_id=host.id,
+                resource_name=host.hostname,
+                business_line=host.business_line,
+                environment=host.environment,
+                correlation_id=f'host:{host.id}',
+                metadata={'error': str(exc)},
+            )
             return Response({'detail': f'\u83b7\u53d6\u4fe1\u606f\u5931\u8d25: {str(exc)}'}, status=400)
 
 
-class HostTaskTemplateViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class HostTaskTemplateViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = HostTaskTemplateSerializer
     search_fields = ['name', 'description', 'created_by']
     http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
+    event_module = 'ops'
+    event_resource_type = 'host_task_template'
+    event_resource_label = '主机任务模板'
+    event_resource_name_fields = ('name',)
     rbac_permissions = {
         'list': ['ops.host.execute'],
         'retrieve': ['ops.host.execute'],
@@ -264,6 +344,28 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             summary='\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u7b49\u5f85\u8c03\u5ea6\u6267\u884c',
         )
         start_host_task(task, hosts)
+        record_event(
+            request=request,
+            module='ops',
+            category='execution',
+            action='create_task',
+            title='\u521b\u5efa\u4e3b\u673a\u4efb\u52a1',
+            summary=f'\u4e3b\u673a\u4efb\u52a1 {task.name} \u5df2\u521b\u5efa\uff0c\u76ee\u6807\u4e3b\u673a {len(hosts)} \u53f0',
+            result=EventRecord.RESULT_PENDING,
+            resource_type='host_task',
+            resource_id=task.id,
+            resource_name=task.name,
+            correlation_id=f'host-task:{task.id}',
+            related_resources=[
+                build_resource('ops', 'host', host.id, host.hostname, environment=host.environment, business_line=host.business_line)
+                for host in hosts[:10]
+            ],
+            metadata={
+                'task_type': task.task_type,
+                'execution_mode': task.execution_mode,
+                'payload_preview': build_json_preview(task.payload),
+            },
+        )
         data = HostTaskDetailSerializer(self.get_queryset().get(pk=task.pk)).data
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -328,6 +430,21 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             summary='\u91cd\u8dd1\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u7b49\u5f85\u8c03\u5ea6\u6267\u884c',
         )
         start_host_task(rerun_task, hosts)
+        record_event(
+            request=request,
+            module='ops',
+            category='execution',
+            action='rerun_task',
+            title='\u91cd\u8dd1\u4e3b\u673a\u4efb\u52a1',
+            summary=f'\u4e3b\u673a\u4efb\u52a1 {source.name} \u5df2\u53d1\u8d77\u91cd\u8dd1',
+            result=EventRecord.RESULT_PENDING,
+            resource_type='host_task',
+            resource_id=rerun_task.id,
+            resource_name=rerun_task.name,
+            correlation_id=f'host-task:{source.id}',
+            related_resources=[build_resource('ops', 'host_task', source.id, source.name)],
+            metadata={'source_task_id': source.id, 'target_count': len(hosts)},
+        )
         data = HostTaskDetailSerializer(self.get_queryset().get(pk=rerun_task.pk)).data
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -343,6 +460,19 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         task.cancel_requested_at = timezone.now()
         task.summary = '\u5df2\u63d0\u4ea4\u7ec8\u6b62\u8bf7\u6c42\uff0c\u7b49\u5f85\u6267\u884c\u5668\u505c\u6b62\u4efb\u52a1'
         task.save(update_fields=['cancel_requested', 'cancel_requested_by', 'cancel_requested_at', 'summary'])
+        record_event(
+            request=request,
+            module='ops',
+            category='execution',
+            action='cancel_task',
+            title='\u7ec8\u6b62\u4e3b\u673a\u4efb\u52a1',
+            summary=f'\u4e3b\u673a\u4efb\u52a1 {task.name} \u5df2\u63d0\u4ea4\u7ec8\u6b62\u8bf7\u6c42',
+            severity=EventRecord.SEVERITY_WARNING,
+            resource_type='host_task',
+            resource_id=task.id,
+            resource_name=task.name,
+            correlation_id=f'host-task:{task.id}',
+        )
         return Response(HostTaskSerializer(task).data)
 
     @action(detail=False, methods=['post'])
@@ -361,6 +491,20 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             cancel_requested_at=now,
             summary='\u5df2\u6279\u91cf\u63d0\u4ea4\u7ec8\u6b62\u8bf7\u6c42\uff0c\u7b49\u5f85\u6267\u884c\u5668\u505c\u6b62\u4efb\u52a1',
         )
+        record_event(
+            request=request,
+            module='ops',
+            category='execution',
+            action='batch_cancel_task',
+            title='\u6279\u91cf\u7ec8\u6b62\u4e3b\u673a\u4efb\u52a1',
+            summary=f'\u5df2\u6279\u91cf\u63d0\u4ea4 {len(tasks)} \u4e2a\u4e3b\u673a\u4efb\u52a1\u7684\u7ec8\u6b62\u8bf7\u6c42',
+            severity=EventRecord.SEVERITY_WARNING,
+            resource_type='host_task_batch',
+            resource_id='batch_cancel',
+            resource_name='鎵归噺缁堟浠诲姟',
+            correlation_id=f'host-task-batch-cancel:{now.strftime("%Y%m%d%H%M%S")}',
+            metadata={'ids': [item.id for item in tasks]},
+        )
         return Response({
             'count': len(tasks),
             'ids': [item.id for item in tasks],
@@ -368,12 +512,16 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         })
 
 
-class HostTaskScheduleViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class HostTaskScheduleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = HostTaskSchedule.objects.all()
     serializer_class = HostTaskScheduleSerializer
     search_fields = ['name', 'description', 'created_by', 'updated_by']
     filterset_fields = ['enabled', 'task_type', 'execution_mode', 'schedule_type']
     http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
+    event_module = 'ops'
+    event_resource_type = 'host_task_schedule'
+    event_resource_label = '主机定时任务'
+    event_resource_name_fields = ('name',)
     rbac_permissions = {
         'list': ['ops.host.schedule.view'],
         'retrieve': ['ops.host.schedule.view'],
@@ -465,6 +613,19 @@ class HostTaskScheduleViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         else:
             schedule.next_run_at = None
         schedule.save(update_fields=['enabled', 'updated_by', 'next_run_at', 'updated_at'])
+        record_event(
+            request=request,
+            module='ops',
+            category='workflow',
+            action='toggle_schedule',
+            title='\u5207\u6362\u5b9a\u65f6\u4efb\u52a1\u72b6\u6001',
+            summary=f'\u5b9a\u65f6\u4efb\u52a1 {schedule.name} \u5df2{"\u542f\u7528" if schedule.enabled else "\u505c\u7528"}',
+            resource_type='host_task_schedule',
+            resource_id=schedule.id,
+            resource_name=schedule.name,
+            correlation_id=f'host-task-schedule:{schedule.id}',
+            metadata={'enabled': schedule.enabled, 'next_run_at': schedule.next_run_at},
+        )
         return Response(self.get_serializer(schedule).data)
 
     @action(detail=True, methods=['post'])
@@ -477,7 +638,26 @@ class HostTaskScheduleViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             scheduled_run=False,
         )
         if not execution:
-            return Response({'detail': '当前已有执行中的同名编排，已按并发策略跳过本次触发'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'detail': '\u5f53\u524d\u5df2\u6709\u6267\u884c\u4e2d\u7684\u540c\u540d\u7f16\u6392\uff0c\u5df2\u6309\u5e76\u53d1\u7b56\u7565\u8df3\u8fc7\u672c\u6b21\u89e6\u53d1'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        record_event(
+            request=request,
+            module='ops',
+            category='execution',
+            action='run_schedule',
+            title='\u624b\u52a8\u89e6\u53d1\u5b9a\u65f6\u4efb\u52a1',
+            summary=f'\u5df2\u624b\u52a8\u89e6\u53d1\u5b9a\u65f6\u4efb\u52a1 {schedule.name}',
+            result=EventRecord.RESULT_PENDING,
+            severity=EventRecord.SEVERITY_WARNING,
+            resource_type='host_task_schedule',
+            resource_id=schedule.id,
+            resource_name=schedule.name,
+            correlation_id=f'host-task-schedule:{schedule.id}',
+            related_resources=[build_resource('ops', 'host_task', _task.id, _task.name)] if _task else [],
+            metadata={'execution_id': execution.id},
+        )
         return Response(HostTaskScheduleExecutionSerializer(execution).data, status=status.HTTP_201_CREATED)
 
 
@@ -498,10 +678,14 @@ class HostTaskScheduleExecutionViewSet(RBACPermissionMixin, viewsets.ReadOnlyMod
             queryset = queryset.filter(schedule_id=schedule_id)
         return queryset
 
-class DeploymentApprovalFlowViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class DeploymentApprovalFlowViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = DeploymentApprovalFlow.objects.prefetch_related('nodes').all()
     serializer_class = DeploymentApprovalFlowSerializer
     search_fields = ['name', 'description']
+    event_module = 'ops'
+    event_resource_type = 'deployment_approval_flow'
+    event_resource_label = '\u53d1\u5e03\u5ba1\u6279\u6d41'
+    event_resource_name_fields = ('name',)
     rbac_permissions = {
         'list': ['ops.deployment.view'],
         'retrieve': ['ops.deployment.view'],
@@ -515,7 +699,7 @@ class DeploymentApprovalFlowViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user.username)
 
 
-class DeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = Deployment.objects.select_related(
         'host',
         'docker_host',
@@ -528,6 +712,10 @@ class DeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = DeploymentSerializer
     search_fields = ['app_name', 'business_line', 'version', 'image', 'submitter', 'deployer']
     filterset_fields = ['business_line', 'environment', 'deploy_mode', 'approval_status', 'status', 'release_strategy']
+    event_module = 'ops'
+    event_resource_type = 'deployment'
+    event_resource_label = '发布单'
+    event_resource_name_fields = ('app_name',)
     rbac_permissions = {
         'list': ['ops.deployment.view'],
         'retrieve': ['ops.deployment.view'],
@@ -550,6 +738,19 @@ class DeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         deployment = serializer.save(submitter=self.request.user.username)
         _initialize_approval_steps(deployment)
+
+    def eventwall_should_record(self, action, instance=None):
+        return False
+
+    def eventwall_related_resources(self, instance):
+        related = []
+        if instance.cluster_id:
+            related.append(build_resource('ops', 'k8s_cluster', instance.cluster_id, instance.cluster.name))
+        if instance.docker_host_id:
+            related.append(build_resource('ops', 'docker_host', instance.docker_host_id, instance.docker_host.name))
+        if instance.host_id:
+            related.append(build_resource('ops', 'host', instance.host_id, instance.host.hostname))
+        return related
 
     def _clone_release(
         self,
@@ -597,14 +798,14 @@ class DeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def approve(self, request, pk=None):
         deployment = self.get_object()
         if deployment.approval_status != 'pending':
-            return Response({'detail': '只能审批待审批的发布单'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': '\u53ea\u80fd\u5ba1\u6279\u5f85\u5ba1\u6279\u7684\u53d1\u5e03\u5355'}, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = ApprovalActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         comment = serializer.validated_data.get('comment', '')
         current_step = deployment.current_approval_step
         if current_step and not _match_step_approver(request.user, current_step):
-            return Response({'detail': '当前账号不在该审批节点的审批范围内'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': '\u5f53\u524d\u8d26\u53f7\u4e0d\u5728\u8be5\u5ba1\u6279\u8282\u70b9\u7684\u5ba1\u6279\u8303\u56f4\u5185'}, status=status.HTTP_403_FORBIDDEN)
 
         if current_step:
             current_step.status = 'approved'
@@ -636,14 +837,14 @@ class DeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def reject(self, request, pk=None):
         deployment = self.get_object()
         if deployment.approval_status != 'pending':
-            return Response({'detail': '只能驳回待审批的发布单'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': '\u53ea\u80fd\u9a73\u56de\u5f85\u5ba1\u6279\u7684\u53d1\u5e03\u5355'}, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = ApprovalActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         comment = serializer.validated_data.get('comment', '')
         current_step = deployment.current_approval_step
         if current_step and not _match_step_approver(request.user, current_step):
-            return Response({'detail': '当前账号不在该审批节点的审批范围内'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': '\u5f53\u524d\u8d26\u53f7\u4e0d\u5728\u8be5\u5ba1\u6279\u8282\u70b9\u7684\u5ba1\u6279\u8303\u56f4\u5185'}, status=status.HTTP_403_FORBIDDEN)
 
         if current_step:
             current_step.status = 'rejected'
@@ -660,6 +861,25 @@ class DeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         deployment.approval_comment = comment
         deployment.approved_at = timezone.now()
         deployment.save(update_fields=['approval_status', 'status', 'approver', 'approval_comment', 'approved_at'])
+        record_event(
+            request=request,
+            module='ops',
+            category='workflow',
+            action='reject',
+            title='驳回发布单',
+            summary=f'发布单 {deployment.app_name} 已被驳回',
+            result=EventRecord.RESULT_REJECTED,
+            severity=EventRecord.SEVERITY_WARNING,
+            resource_type='deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.app_name,
+            business_line=deployment.business_line,
+            environment=deployment.environment,
+            application=deployment.app_name,
+            correlation_id=f'deployment:{deployment.id}',
+            related_resources=self.eventwall_related_resources(deployment),
+            metadata={'comment': comment},
+        )
         return Response(DeploymentSerializer(deployment).data)
 
     @action(detail=True, methods=['post'])
@@ -671,7 +891,7 @@ class DeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             deployment,
             actor=request.user.username,
             action_type='rerun',
-            change_summary=serializer.validated_data.get('change_summary') or f'閲嶆柊鎵ц #{deployment.id}',
+            change_summary=serializer.validated_data.get('change_summary') or f'闁插秵鏌婇幍褑顢?#{deployment.id}',
             previous_success=deployment if deployment.approval_status == 'approved' and deployment.execution_count else deployment.previous_success,
             rerun_source=deployment,
         )
@@ -682,14 +902,14 @@ class DeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         deployment = self.get_object()
         previous_release = deployment.get_previous_successful_release()
         if not previous_release:
-            return Response({'detail': '未找到可回滚的历史成功版本'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': '\u672a\u627e\u5230\u53ef\u56de\u6eda\u7684\u5386\u53f2\u6210\u529f\u7248\u672c'}, status=status.HTTP_400_BAD_REQUEST)
         serializer = DeploymentActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         new_release = self._clone_release(
             previous_release,
             actor=request.user.username,
             action_type='rollback',
-            change_summary=serializer.validated_data.get('change_summary') or f'鍥炴粴鍒?v{previous_release.version}',
+            change_summary=serializer.validated_data.get('change_summary') or f'閸ョ偞绮撮崚?v{previous_release.version}',
             previous_success=deployment if deployment.approval_status == 'approved' and deployment.execution_count else deployment.previous_success,
             rollback_source=deployment,
         )
@@ -714,18 +934,68 @@ class DeploymentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def stop(self, request, pk=None):
         deployment = self.get_object()
         deployer.stop_service(deployment)
+        record_event(
+            request=request,
+            module='ops',
+            category='execution',
+            action='stop',
+            title='停止应用发布实例',
+            summary=f'发布单 {deployment.app_name} 已执行停止操作',
+            severity=EventRecord.SEVERITY_WARNING,
+            resource_type='deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.app_name,
+            business_line=deployment.business_line,
+            environment=deployment.environment,
+            application=deployment.app_name,
+            correlation_id=f'deployment:{deployment.id}',
+            related_resources=self.eventwall_related_resources(deployment),
+        )
         return Response(DeploymentSerializer(deployment).data)
 
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
         deployment = self.get_object()
         deployer.start_service(deployment)
+        record_event(
+            request=request,
+            module='ops',
+            category='execution',
+            action='start',
+            title='启动应用发布实例',
+            summary=f'发布单 {deployment.app_name} 已执行启动操作',
+            resource_type='deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.app_name,
+            business_line=deployment.business_line,
+            environment=deployment.environment,
+            application=deployment.app_name,
+            correlation_id=f'deployment:{deployment.id}',
+            related_resources=self.eventwall_related_resources(deployment),
+        )
         return Response(DeploymentSerializer(deployment).data)
 
     @action(detail=True, methods=['post'])
     def remove(self, request, pk=None):
         deployment = self.get_object()
         deployer.remove_service(deployment)
+        record_event(
+            request=request,
+            module='ops',
+            category='execution',
+            action='remove',
+            title='下线应用发布实例',
+            summary=f'发布单 {deployment.app_name} 已执行下线操作',
+            severity=EventRecord.SEVERITY_WARNING,
+            resource_type='deployment',
+            resource_id=deployment.id,
+            resource_name=deployment.app_name,
+            business_line=deployment.business_line,
+            environment=deployment.environment,
+            application=deployment.app_name,
+            correlation_id=f'deployment:{deployment.id}',
+            related_resources=self.eventwall_related_resources(deployment),
+        )
         return Response(DeploymentSerializer(deployment).data)
 
     @action(detail=True, methods=['get'])
@@ -823,4 +1093,5 @@ def dashboard_stats(request):
         'recent_deploys': recent_deploys,
         'recent_alerts': recent_alerts,
     })
+
 

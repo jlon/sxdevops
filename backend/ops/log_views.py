@@ -14,6 +14,9 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from eventwall.mixins import EventWallModelViewSetMixin
+from eventwall.models import EventRecord
+from eventwall.services import record_event
 from .models import LogDataSource
 from .serializers import LogDataSourceSerializer
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
@@ -1246,10 +1249,15 @@ def _error_response(exc):
     return Response({'error': str(exc), 'detail': exc.detail}, status=exc.status_code)
 
 
-class LogDataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class LogDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = LogDataSource.objects.all().order_by('provider', 'name')
     serializer_class = LogDataSourceSerializer
     pagination_class = None
+    event_module = 'ops'
+    event_resource_type = 'log_datasource'
+    event_resource_label = '日志数据源'
+    event_resource_name_fields = ('name',)
+    event_exclude_fields = ('config',)
     rbac_permissions = {
         'list': ['ops.log.datasource.view'],
         'retrieve': ['ops.log.datasource.view'],
@@ -1277,6 +1285,19 @@ class LogDataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         try:
             payload = {'action': 'labels'} if datasource.provider == 'loki' else {'action': 'sources'}
             preview = _get_catalog(datasource.provider, _merge_config(datasource.provider, datasource.config), payload)
+            record_event(
+                request=request,
+                module='ops',
+                category='execution',
+                action='test_log_datasource',
+                title='测试日志数据源连通性',
+                summary=f'日志数据源 {datasource.name} 连通性测试成功',
+                resource_type='log_datasource',
+                resource_id=datasource.id,
+                resource_name=datasource.name,
+                correlation_id=f'log-datasource:{datasource.id}',
+                metadata={'provider': datasource.provider, 'preview_kind': preview.get('kind')},
+            )
             return Response({
                 'success': True,
                 'message': f'{datasource.name} 连接成功',
@@ -1284,8 +1305,38 @@ class LogDataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 'preview_kind': preview.get('kind'),
             })
         except ProviderError as exc:
+            record_event(
+                request=request,
+                module='ops',
+                category='execution',
+                action='test_log_datasource',
+                title='测试日志数据源连通性',
+                summary=f'日志数据源 {datasource.name} 连通性测试失败',
+                result=EventRecord.RESULT_FAILED,
+                severity=EventRecord.SEVERITY_WARNING,
+                resource_type='log_datasource',
+                resource_id=datasource.id,
+                resource_name=datasource.name,
+                correlation_id=f'log-datasource:{datasource.id}',
+                metadata={'provider': datasource.provider, 'error': str(exc)},
+            )
             return Response({'success': False, 'message': str(exc), 'detail': exc.detail}, status=exc.status_code)
         except Exception as exc:
+            record_event(
+                request=request,
+                module='ops',
+                category='execution',
+                action='test_log_datasource',
+                title='测试日志数据源连通性',
+                summary=f'日志数据源 {datasource.name} 连通性测试失败',
+                result=EventRecord.RESULT_FAILED,
+                severity=EventRecord.SEVERITY_WARNING,
+                resource_type='log_datasource',
+                resource_id=datasource.id,
+                resource_name=datasource.name,
+                correlation_id=f'log-datasource:{datasource.id}',
+                metadata={'provider': datasource.provider, 'error': str(exc)},
+            )
             return Response(
                 {'success': False, 'message': '连接测试失败', 'detail': str(exc)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,

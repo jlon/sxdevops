@@ -4,6 +4,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.utils import timezone
 
+from eventwall.mixins import EventWallModelViewSetMixin
+from eventwall.models import EventRecord
+from eventwall.services import build_resource, record_event
+
 from .models import DataSource, SqlOrder, QueryOrder, SqlCheckResult
 from .serializers import (
     DataSourceSerializer, SqlOrderSerializer,
@@ -14,11 +18,16 @@ from . import db_executor
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 
 
-class DataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class DataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     """数据源管理"""
     queryset = DataSource.objects.all()
     serializer_class = DataSourceSerializer
     search_fields = ['name', 'host']
+    event_module = 'sqlaudit'
+    event_resource_type = 'sql_datasource'
+    event_resource_label = 'SQL 数据源'
+    event_resource_name_fields = ('name',)
+    event_exclude_fields = ('password',)
     rbac_permissions = {
         'list': ['sqlaudit.datasource.view'],
         'retrieve': ['sqlaudit.datasource.view'],
@@ -34,6 +43,21 @@ class DataSourceViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def test_connection(self, request, pk=None):
         ds = self.get_object()
         success, message = db_executor.test_connection(ds)
+        record_event(
+            request=request,
+            module='sqlaudit',
+            category='execution',
+            action='test_connection',
+            title='测试 SQL 数据源连通性',
+            summary=f'数据源 {ds.name} 连通性测试{"成功" if success else "失败"}',
+            result=EventRecord.RESULT_SUCCESS if success else EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_INFO if success else EventRecord.SEVERITY_WARNING,
+            resource_type='sql_datasource',
+            resource_id=ds.id,
+            resource_name=ds.name,
+            correlation_id=f'sql-datasource:{ds.id}',
+            metadata={'db_type': ds.db_type, 'host': ds.host},
+        )
         return Response({
             'success': success,
             'message': message,
@@ -86,7 +110,6 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 message=item.message,
                 line_no=item.line_no,
             )
-
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
         order = self.get_object()
@@ -115,6 +138,23 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         order.review_comment = request.data.get('comment', '')
         order.reviewed_at = timezone.now()
         order.save()
+        record_event(
+            request=request,
+            module='sqlaudit',
+            category='workflow',
+            action='reject',
+            title='驳回 SQL 工单',
+            summary=f'SQL 工单 {order.title} 已被驳回',
+            result=EventRecord.RESULT_REJECTED,
+            severity=EventRecord.SEVERITY_WARNING,
+            resource_type='sql_order',
+            resource_id=order.id,
+            resource_name=order.title,
+            application=order.database,
+            correlation_id=f'sql-order:{order.id}',
+            related_resources=[build_resource('sqlaudit', 'sql_datasource', order.datasource_id, order.datasource.name)],
+            metadata={'database': order.database},
+        )
         return Response(SqlOrderSerializer(order).data)
 
     @action(detail=True, methods=['post'])
@@ -139,6 +179,27 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         order.execute_log = log
         order.executed_at = timezone.now()
         order.save()
+        record_event(
+            request=request,
+            module='sqlaudit',
+            category='execution',
+            action='execute',
+            title='执行 SQL 工单',
+            summary=f'SQL 工单 {order.title} 执行{"成功" if success else "失败"}',
+            result=EventRecord.RESULT_SUCCESS if success else EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_WARNING,
+            resource_type='sql_order',
+            resource_id=order.id,
+            resource_name=order.title,
+            application=order.database,
+            correlation_id=f'sql-order:{order.id}',
+            related_resources=[build_resource('sqlaudit', 'sql_datasource', order.datasource_id, order.datasource.name)],
+            metadata={
+                'database': order.database,
+                'affected_rows': affected,
+                'duration_ms': duration,
+            },
+        )
 
         return Response(SqlOrderSerializer(order).data)
 
@@ -187,7 +248,6 @@ class QueryOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             result_count=count if success else 0,
             duration_ms=duration,
         )
-
         if not success:
             return Response(
                 {'error': error, 'order': QueryOrderSerializer(query_order).data},

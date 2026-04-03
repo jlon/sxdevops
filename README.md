@@ -14,6 +14,7 @@ AgDevOps 是一个基于 `Django + Django REST framework + Channels + Vue 3 + El
 - **CMDB 基座**：统一管理资源树、配置项、主机资产、资源拓扑、成本分析与资源优化。
 - **应用发布闭环**：支持自研应用发布单、审批流、Docker / K8s 双模式部署、灰度 / 批次、回滚、重新执行，并自动回写 CMDB 关系。
 - **可观测性平台**：新增统一的 `可观测性平台` 菜单，将日志中心、告警中心、链路追踪、Grafana 大屏聚合到一个入口下。
+- **事件墙**：新增独立的 `事件墙` 菜单，聚焦最终执行结果与关键写操作，支持按业务线、环境、应用做失败事件定位与操作审计。
 - **链路追踪已接入 SkyWalking**：支持 SkyWalking OAP GraphQL 查询，未配置或不可达时自动回落到演示数据。
 - **日志与告警联动**：日志中心支持查询收藏、历史记录、趋势图；告警、日志、链路、Grafana 之间支持带条件联动跳转。
 - **容器运维增强**：K8s 集群概览、Pod Terminal、工作负载扩缩容、配置回滚，Docker 容器与镜像治理。
@@ -112,6 +113,7 @@ README 当前使用以下页面截图：
 | 仪表盘 | `docs/screenshots/dashboard.png` | 展示首页整体运营视角 |
 | CMDB | `docs/screenshots/cmdb.png` | 展示资源树、配置项和治理能力 |
 | 日志 / SQL | `docs/screenshots/logs-or-sql.png` | 展示日志中心与审计排障能力 |
+| 事件墙 | `docs/screenshots/event-wall.png` | 展示失败事件定位、操作审计与范围筛选能力 |
 | IaC 编排 | `docs/screenshots/iac-orchestration.png` | 展示 Terraform 方案设计与执行 |
 | K8s Pod Terminal | `docs/screenshots/k8s-pod-terminal.png` | 展示浏览器内实时终端能力 |
 
@@ -132,6 +134,12 @@ README 当前使用以下页面截图：
 ![日志与 SQL 页面](docs/screenshots/logs-or-sql.png)
 
 用于展示日志中心与 SQL 审计的查询能力。当前 README 对这一页的定位已经扩展为“可观测性排障入口”，与新的可观测性平台能力保持一致。
+
+### 事件墙
+
+![事件墙](docs/screenshots/event-wall.png)
+
+用于展示事件墙的总览能力：只保留最终执行结果与关键写操作，默认过滤掉未执行的驳回审批流，并支持按业务线、环境、应用快速收敛失败事件范围。
 
 ### IaC 编排
 
@@ -166,6 +174,7 @@ README 当前使用以下页面截图：
 
 - `ops.trace.view`
 - `ops.grafana.view`
+- `eventwall.view`
 
 ## 典型使用场景
 

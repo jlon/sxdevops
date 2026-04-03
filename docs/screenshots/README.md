@@ -9,6 +9,7 @@ README 当前引用以下 PNG 资源：
 - `dashboard.png`
 - `cmdb.png`
 - `logs-or-sql.png`
+- `event-wall.png`
 - `iac-orchestration.png`
 - `k8s-pod-terminal.png`
 
@@ -17,6 +18,7 @@ README 当前引用以下 PNG 资源：
 - `dashboard.png`：展示首页总览、核心指标与关键入口
 - `cmdb.png`：展示 CMDB 资源树、配置项与治理能力
 - `logs-or-sql.png`：展示日志中心 / SQL 审计查询能力，当前 README 也将其作为可观测性排障入口的展示截图
+- `event-wall.png`：展示事件墙总览、失败事件定位、范围筛选与操作审计能力
 - `iac-orchestration.png`：展示 Terraform 方案设计、执行与同步 CMDB
 - `k8s-pod-terminal.png`：展示浏览器内 Pod Terminal 能力
 
@@ -35,4 +37,4 @@ README 当前引用以下 PNG 资源：
 
 - README 中引用的图片路径应与本目录中的文件保持一致
 - 如果替换截图，请优先保留现有命名，避免 README 链接频繁变动
-- 如果后续补拍“可观测性平台”独立截图，建议优先替换 `logs-or-sql.png`，或新增 `observability.png` 后同步更新 README
+- `event-wall.png` 为 2026-04-03 补拍的事件墙页面截图，展示当前审计与监控分析入口形态

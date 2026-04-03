@@ -104,6 +104,7 @@ INSTALLED_APPS = [
     'iac',
     'multicloud',
     'rbac',
+    'eventwall',
 ]
 
 MIDDLEWARE = [

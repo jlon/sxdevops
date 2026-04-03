@@ -2,7 +2,11 @@ from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from django.utils import timezone
 
+from eventwall.mixins import EventWallModelViewSetMixin
+from eventwall.models import EventRecord
+from eventwall.services import build_resource, record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
 
@@ -22,12 +26,17 @@ from .services import (
 )
 
 
-class CloudCredentialViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class CloudCredentialViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = CloudCredential.objects.all().prefetch_related('environments')
     serializer_class = CloudCredentialSerializer
     pagination_class = None
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'account_id', 'account_name', 'owner', 'description']
+    event_module = 'multicloud'
+    event_resource_type = 'cloud_credential'
+    event_resource_label = '云账号'
+    event_resource_name_fields = ('name', 'account_name')
+    event_exclude_fields = ('access_key_id', 'access_key_secret', 'external_id', 'role_arn')
     rbac_permissions = {
         'list': ['ops.multicloud.view'],
         'retrieve': ['ops.multicloud.view'],
@@ -58,25 +67,61 @@ class CloudCredentialViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
-        return Response(test_credential_connection(self.get_object()))
+        credential = self.get_object()
+        result = test_credential_connection(credential)
+        record_event(
+            request=request,
+            module='multicloud',
+            category='execution',
+            action='test_connection',
+            title='测试云账号连通性',
+            summary=f'云账号 {credential.name} 连通性测试{"成功" if result.get("success") else "失败"}',
+            result=EventRecord.RESULT_SUCCESS if result.get('success') else EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_INFO if result.get('success') else EventRecord.SEVERITY_WARNING,
+            resource_type='cloud_credential',
+            resource_id=credential.id,
+            resource_name=credential.name,
+            correlation_id=f'cloud-credential:{credential.id}',
+            metadata={'provider': credential.provider},
+        )
+        return Response(result)
 
     @action(detail=True, methods=['post'])
     def sync_all(self, request, pk=None):
         credential = self.get_object()
         result = sync_credential_environments(credential, operator=request.user.username)
         credential.refresh_from_db()
+        record_event(
+            request=request,
+            module='multicloud',
+            category='sync',
+            action='sync_all',
+            title='同步云账号环境',
+            summary=result['message'],
+            result=EventRecord.RESULT_SUCCESS if result.get('success', True) else EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_INFO,
+            resource_type='cloud_credential',
+            resource_id=credential.id,
+            resource_name=credential.name,
+            correlation_id=f'cloud-credential:{credential.id}',
+            metadata={'provider': credential.provider},
+        )
         return Response(
             {'message': result['message'], 'result': result, 'credential': CloudCredentialSerializer(credential).data},
             status=status.HTTP_200_OK,
         )
 
 
-class CloudEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+class CloudEnvironmentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = CloudEnvironment.objects.select_related('credential').prefetch_related('assets')
     serializer_class = CloudEnvironmentSerializer
     pagination_class = None
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'code', 'business_line', 'region', 'owner', 'description']
+    event_module = 'multicloud'
+    event_resource_type = 'cloud_environment'
+    event_resource_label = '云环境'
+    event_resource_name_fields = ('name', 'code')
     rbac_permissions = {
         'list': ['ops.multicloud.view'],
         'retrieve': ['ops.multicloud.view'],
@@ -112,6 +157,27 @@ class CloudEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         environment = self.get_object()
         task = sync_environment_inventory(environment, operator=request.user.username)
         environment.refresh_from_db()
+        record_event(
+            request=request,
+            module='multicloud',
+            category='sync',
+            action='sync_inventory',
+            title='同步云环境资源',
+            summary=task.summary,
+            result=EventRecord.RESULT_SUCCESS if task.status == 'success' else EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_INFO if task.status == 'success' else EventRecord.SEVERITY_WARNING,
+            resource_type='cloud_environment',
+            resource_id=environment.id,
+            resource_name=environment.name,
+            business_line=environment.business_line,
+            environment=environment.environment_type,
+            correlation_id=f'cloud-sync:{task.id}',
+            related_resources=[
+                build_resource('multicloud', 'cloud_credential', environment.credential_id, environment.credential.name),
+                build_resource('multicloud', 'cloud_sync_task', task.id, task.summary),
+            ],
+            metadata={'task_type': task.task_type, 'status': task.status},
+        )
         return Response(
             {'message': task.summary, 'task': CloudSyncTaskSerializer(task).data, 'environment': CloudEnvironmentSerializer(environment).data},
             status=status.HTTP_200_OK,
@@ -122,6 +188,28 @@ class CloudEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         environment = self.get_object()
         task = sync_environment_to_cmdb(environment, operator=request.user.username)
         environment.refresh_from_db()
+        record_event(
+            request=request,
+            module='multicloud',
+            category='sync',
+            action='sync_cmdb',
+            title='同步云环境到 CMDB',
+            summary=task.summary,
+            result=EventRecord.RESULT_SUCCESS if task.status == 'success' else EventRecord.RESULT_FAILED,
+            severity=EventRecord.SEVERITY_WARNING,
+            resource_type='cloud_environment',
+            resource_id=environment.id,
+            resource_name=environment.name,
+            business_line=environment.business_line,
+            environment=environment.environment_type,
+            correlation_id=f'cloud-sync:{task.id}',
+            related_resources=[
+                build_resource('multicloud', 'cloud_credential', environment.credential_id, environment.credential.name),
+                build_resource('multicloud', 'cloud_sync_task', task.id, task.summary),
+                build_resource('cmdb', 'config_scope', environment.code, environment.name),
+            ],
+            metadata={'task_type': task.task_type, 'status': task.status},
+        )
         return Response(
             {'message': task.summary, 'task': CloudSyncTaskSerializer(task).data, 'environment': CloudEnvironmentSerializer(environment).data},
             status=status.HTTP_200_OK,
@@ -207,6 +295,26 @@ def batch_sync_view(request):
         operator=request.user.username,
         sync_cmdb=sync_cmdb,
     )
+    record_event(
+        request=request,
+        module='multicloud',
+        category='sync',
+        action='batch_sync',
+        title='批量同步多云目标',
+        summary=f'已提交 {len(results)} 个多云同步任务',
+        result=EventRecord.RESULT_SUCCESS,
+        severity=EventRecord.SEVERITY_INFO,
+        resource_type='cloud_batch_sync',
+        resource_id=f'batch-{len(results)}',
+        resource_name='批量同步',
+        correlation_id=f'multicloud-batch-sync:{len(results)}:{timezone.now().strftime("%Y%m%d%H%M%S")}',
+        metadata={
+            'environment_ids': environment_ids,
+            'credential_ids': credential_ids,
+            'sync_cmdb': sync_cmdb,
+            'count': len(results),
+        },
+    )
     return Response(
         {
             'message': f'Submitted {len(results)} batch sync tasks.',
@@ -240,4 +348,19 @@ def batch_action_view(request):
         result = execute_batch_action(scope=scope, action=action, ids=ids, operator=request.user.username, payload=payload)
     except ValueError as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    record_event(
+        request=request,
+        module='multicloud',
+        category='execution',
+        action=action,
+        title='执行多云批量动作',
+        summary=f'对 {scope} 执行批量动作 {action}，目标 {len(ids)} 个',
+        result=EventRecord.RESULT_SUCCESS,
+        severity=EventRecord.SEVERITY_WARNING if action in {'delete', 'sync_cmdb'} else EventRecord.SEVERITY_INFO,
+        resource_type=f'multicloud_{scope}',
+        resource_id='batch',
+        resource_name=scope,
+        correlation_id=f'multicloud-batch-action:{scope}:{action}',
+        metadata={'ids': ids, 'payload': payload},
+    )
     return Response(result, status=status.HTTP_200_OK)
