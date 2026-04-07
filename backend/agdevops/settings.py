@@ -97,12 +97,13 @@ INSTALLED_APPS = [
     'corsheaders',
     'channels',
     # Local
-    'ops',
+    'ops.apps.OpsConfig',
     'sqlaudit',
     'marketplace',
     'cmdb',
     'iac',
     'multicloud',
+    'aiops.apps.AiopsConfig',
     'rbac',
     'eventwall',
 ]

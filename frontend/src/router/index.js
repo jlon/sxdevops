@@ -269,6 +269,26 @@ const routes = [
         },
       },
       {
+        path: 'aiops/chat',
+        name: 'AIOpsChat',
+        component: () => import('@/views/AIOpsChatEntry.vue'),
+        meta: {
+          title: '智能助手',
+          icon: 'Service',
+          permission: 'aiops.chat.view',
+        },
+      },
+      {
+        path: 'aiops/config',
+        name: 'AIOpsConfig',
+        component: () => import('@/views/AIOpsConfig.vue'),
+        meta: {
+          title: 'AIOps 配置',
+          icon: 'ChatDotSquare',
+          permission: 'aiops.config.view',
+        },
+      },
+      {
         path: 'sql',
         name: 'SqlAudit',
         component: () => import('@/views/SqlAudit.vue'),

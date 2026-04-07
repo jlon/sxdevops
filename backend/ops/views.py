@@ -613,13 +613,14 @@ class HostTaskScheduleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, v
         else:
             schedule.next_run_at = None
         schedule.save(update_fields=['enabled', 'updated_by', 'next_run_at', 'updated_at'])
+        schedule_status = '启用' if schedule.enabled else '停用'
         record_event(
             request=request,
             module='ops',
             category='workflow',
             action='toggle_schedule',
             title='\u5207\u6362\u5b9a\u65f6\u4efb\u52a1\u72b6\u6001',
-            summary=f'\u5b9a\u65f6\u4efb\u52a1 {schedule.name} \u5df2{"\u542f\u7528" if schedule.enabled else "\u505c\u7528"}',
+            summary=f'定时任务 {schedule.name} 已{schedule_status}',
             resource_type='host_task_schedule',
             resource_id=schedule.id,
             resource_name=schedule.name,

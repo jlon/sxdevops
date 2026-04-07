@@ -27,6 +27,7 @@ urlpatterns = [
     path('api/cmdb/', include('cmdb.urls')),
     path('api/iac/', include('iac.urls')),
     path('api/multicloud/', include('multicloud.urls')),
+    path('api/aiops/', include('aiops.urls')),
     path('api/', include('eventwall.urls')),
     re_path(r'^(assets/.*)$', frontend_views.frontend_asset),
     path('', frontend_views.frontend_index),

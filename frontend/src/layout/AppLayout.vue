@@ -83,6 +83,7 @@
           </transition>
         </router-view>
       </main>
+      <AIOpsChatWidget />
     </div>
   </div>
 </template>
@@ -93,6 +94,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -250,6 +252,14 @@ const menuItems = [
     title: '用户管理',
     icon: 'User',
     anyPermissions: ['rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view'],
+  },
+  {
+    title: 'AIOps',
+    icon: 'ChatDotSquare',
+    children: [
+      { path: '/aiops/chat', title: '智能助手', icon: 'Service', permission: 'aiops.chat.view' },
+      { path: '/aiops/config', title: '机器人配置', icon: 'Tools', permission: 'aiops.config.view' },
+    ],
   },
 ]
 
