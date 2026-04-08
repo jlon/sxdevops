@@ -264,7 +264,7 @@ def execute_ansible_command(host, command_text, timeout_seconds):
     extra_vars = _build_ansible_extra_vars(host)
     process_env = _build_ansible_process_env()
 
-    with tempfile.TemporaryDirectory(prefix='agdevops_ansible_') as tmpdir:
+    with tempfile.TemporaryDirectory(prefix='sxdevops_ansible_') as tmpdir:
         inventory_path = Path(tmpdir) / 'inventory.ini'
         inventory_path.write_text(f'[targets]\n{alias} ansible_host={host.ip_address}\n', encoding='utf-8')
         command = [
@@ -316,7 +316,7 @@ def execute_ansible_playbook(host, playbook_content, timeout_seconds, playbook_n
         merged_extra_vars.update(extra_vars)
     process_env = _build_ansible_process_env()
 
-    with tempfile.TemporaryDirectory(prefix='agdevops_playbook_') as tmpdir:
+    with tempfile.TemporaryDirectory(prefix='sxdevops_playbook_') as tmpdir:
         inventory_path = Path(tmpdir) / 'inventory.ini'
         playbook_path = Path(tmpdir) / _normalize_playbook_filename(playbook_name)
         inventory_path.write_text(f'[targets]\n{alias} ansible_host={host.ip_address}\n', encoding='utf-8')

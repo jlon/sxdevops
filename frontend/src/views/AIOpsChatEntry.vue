@@ -6,11 +6,11 @@
           <span class="entry-icon"><el-icon><ChatDotSquare /></el-icon></span>
           <h2>AIOps 智能助手</h2>
         </div>
-        <p>这里是 AIOps 助手的页面入口。进入本页后，右下角聊天机器人会自动打开，你可以继续咨询平台资源、告警、分析排障和任务草稿。</p>
+        <p>这里是 AIOps 助手入口。打开页面后，右下角助手面板会自动展开，可继续咨询平台资源、告警、排障分析和任务草稿。</p>
       </div>
       <div class="entry-actions">
-        <el-button type="primary" @click="openWidget">打开智能助手</el-button>
-        <el-button v-if="canViewConfig" @click="router.push('/aiops/config')">机器人配置</el-button>
+        <el-button type="primary" @click="openWidget">打开助手</el-button>
+        <el-button v-if="canViewConfig" @click="router.push('/aiops/config')">智能体配置</el-button>
       </div>
     </section>
 
@@ -47,7 +47,7 @@ const authStore = useAuthStore()
 const canViewConfig = computed(() => authStore.hasPermission('aiops.config.view'))
 
 function openWidget() {
-  window.dispatchEvent(new Event('agdevops-aiops-open'))
+  window.dispatchEvent(new Event('sxdevops-aiops-open'))
 }
 
 onMounted(() => {
@@ -56,20 +56,22 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.aiops-entry-page{display:flex;flex-direction:column;gap:16px}
+.aiops-entry-page{display:flex;flex-direction:column;gap:8px}
 .aiops-entry-hero{display:flex;align-items:center;justify-content:space-between;gap:20px;border:1px solid #dbe4f0;border-radius:24px;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);box-shadow:0 12px 28px rgba(15,23,42,.06)}
 .entry-copy{max-width:760px}
 .entry-title-row{display:flex;align-items:center;gap:12px}
 .entry-title-row h2{margin:0;color:#0f172a}
 .entry-icon{width:40px;height:40px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe}
-.entry-copy p{margin:12px 0 0;font-size:13px;line-height:1.8;color:#475569}
-.entry-actions{display:flex;gap:12px;flex-wrap:wrap}
+.entry-copy p{margin:8px 0 0;font-size:13px;line-height:1.8;color:#475569}
+.entry-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.entry-actions :deep(.el-button){min-height:38px;padding:0 16px;border-radius:12px}
 .entry-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
 .entry-card{padding:18px;border-radius:18px;border:1px solid #dbe4f0;background:#fff;box-shadow:0 10px 24px rgba(15,23,42,.05)}
 .entry-card h3{margin:0;font-size:16px;color:#0f172a}
-.entry-card p{margin:10px 0 0;font-size:13px;line-height:1.75;color:#475569}
+.entry-card p{margin:8px 0 0;font-size:13px;line-height:1.75;color:#475569}
 @media (max-width: 900px){
   .aiops-entry-hero{flex-direction:column;align-items:flex-start}
   .entry-grid{grid-template-columns:1fr}
 }
+.hero.panel.aiops-entry-hero{border-radius:20px}
 </style>

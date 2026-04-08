@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="logs-page">
     <section class="hero panel">
       <div>
@@ -647,10 +647,10 @@ onUnmounted(() => {
 
 .panel {
   background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
-  border: 1px solid #e5e7eb;
-  border-radius: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 20px;
   padding: 22px;
-  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
 }
 
 .hero {
@@ -680,7 +680,7 @@ onUnmounted(() => {
 
 .subtitle {
   color: #475569;
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   max-width: 620px;
 }
 
@@ -692,6 +692,16 @@ onUnmounted(() => {
 .log-meta {
   display: flex;
   gap: 12px;
+}
+.hero-actions {
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.hero-actions :deep(.el-button) {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 12px;
 }
 
 .provider-grid,
@@ -707,7 +717,7 @@ onUnmounted(() => {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   min-width: 220px;
   padding: 18px;
   text-align: left;
@@ -747,7 +757,7 @@ onUnmounted(() => {
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .filter-row {
@@ -767,7 +777,7 @@ onUnmounted(() => {
 
 .stats-grid {
   display: grid;
-  gap: 12px;
+  gap: 8px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -822,7 +832,7 @@ onUnmounted(() => {
 .log-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .log-card {
@@ -843,7 +853,7 @@ onUnmounted(() => {
 .log-meta {
   flex-wrap: wrap;
   font-size: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .log-message {
@@ -868,7 +878,7 @@ onUnmounted(() => {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .attribute-card {
@@ -916,5 +926,7 @@ pre {
     flex-direction: column;
   }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+
 

@@ -892,7 +892,7 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
             deployment,
             actor=request.user.username,
             action_type='rerun',
-            change_summary=serializer.validated_data.get('change_summary') or f'闁插秵鏌婇幍褑顢?#{deployment.id}',
+            change_summary=serializer.validated_data.get('change_summary') or f'重新执行 #{deployment.id}',
             previous_success=deployment if deployment.approval_status == 'approved' and deployment.execution_count else deployment.previous_success,
             rerun_source=deployment,
         )
@@ -910,7 +910,7 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
             previous_release,
             actor=request.user.username,
             action_type='rollback',
-            change_summary=serializer.validated_data.get('change_summary') or f'閸ョ偞绮撮崚?v{previous_release.version}',
+            change_summary=serializer.validated_data.get('change_summary') or f'回滚到 v{previous_release.version}',
             previous_success=deployment if deployment.approval_status == 'approved' and deployment.execution_count else deployment.previous_success,
             rollback_source=deployment,
         )

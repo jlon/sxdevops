@@ -1,39 +1,5 @@
 <template>
   <div class="fade-in dashboard-page overview-page">
-    <section class="hero panel dashboard-hero overview-hero">
-      <div class="hero-copy">
-        <div class="release-hero-title-row release-hero-title-inline">
-          <span class="release-header-icon"><el-icon><DataAnalysis /></el-icon></span>
-          <h2>运营总览</h2>
-          <el-tag size="small" :type="overviewTone.type" effect="light">{{ overviewTone.label }}</el-tag>
-        </div>
-        <p class="hero-intro">围绕主机健康、告警压力、资源利用率和交付动态整理首页视图，保持信息清晰、节奏紧凑，适合日常运维与值班巡检。</p>
-        <div class="hero-signal-strip">
-          <div v-for="item in heroSignals" :key="item.label" class="hero-signal-chip">
-            <span>{{ item.label }}</span>
-            <strong>{{ item.value }}</strong>
-          </div>
-        </div>
-      </div>
-      <div class="hero-actions">
-        <div class="hero-brief">
-          <span class="hero-brief__label">当前稳定度</span>
-          <strong>{{ stabilityScore }}</strong>
-          <p>{{ stabilityCopy }}</p>
-        </div>
-        <div class="hero-button-group">
-          <el-button :loading="loading" @click="handleRefresh">
-            <el-icon><RefreshRight /></el-icon>
-            刷新数据
-          </el-button>
-          <el-button type="primary" @click="router.push('/alerts')">
-            <el-icon><Bell /></el-icon>
-            进入告警中心
-          </el-button>
-        </div>
-      </div>
-    </section>
-
     <div class="stats-grid release-stats dashboard-stats">
       <article v-for="card in summaryCards" :key="card.label" class="stat-card release-stat-card" :class="card.tone">
         <div class="stat-card-top">
@@ -49,7 +15,7 @@
     </div>
 
     <div v-if="alertStripItems.length" class="dashboard-alert-strip">
-      <span class="dashboard-alert-strip__label">运行提示</span>
+      <span class="dashboard-alert-strip__label">平台提醒</span>
       <span v-for="item in alertStripItems" :key="item" class="dashboard-alert-strip__item">{{ item }}</span>
     </div>
 
@@ -203,13 +169,12 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Bell, CircleCheck, DataAnalysis, Monitor, Promotion, RefreshRight } from '@element-plus/icons-vue'
+import { Bell, CircleCheck, Monitor, Promotion } from '@element-plus/icons-vue'
 import echarts from '@/lib/echarts'
 import { getDashboardStats } from '@/api/modules/ops'
 
 const router = useRouter()
 
-const loading = ref(false)
 const stats = ref({})
 const hostChartRef = ref(null)
 const resourceChartRef = ref(null)
@@ -246,12 +211,6 @@ const overviewTone = computed(() => {
   if ((stats.value.alerts?.warning || 0) > 0 || (stats.value.deployments?.failed || 0) > 0) return { type: 'warning', label: '持续关注' }
   return { type: 'success', label: '整体稳定' }
 })
-
-const heroSignals = computed(() => [
-  { label: '稳定度', value: stabilityScore.value },
-  { label: '主机可用率', value: `${hostAvailability.value}%` },
-  { label: '交付成功率', value: `${deploymentSuccessRate.value}%` },
-])
 
 const summaryCards = computed(() => [
   {
@@ -461,7 +420,6 @@ function handleResize() {
 }
 
 async function fetchStats(showMessage = false) {
-  loading.value = true
   try {
     stats.value = await getDashboardStats()
     await nextTick()
@@ -470,13 +428,7 @@ async function fetchStats(showMessage = false) {
   } catch (error) {
     console.error('获取仪表盘统计失败', error)
     ElMessage.error('获取仪表盘数据失败')
-  } finally {
-    loading.value = false
   }
-}
-
-async function handleRefresh() {
-  await fetchStats(true)
 }
 
 onMounted(async () => {
@@ -506,164 +458,52 @@ onUnmounted(() => {
   background: var(--overview-bg);
 }
 
-.overview-hero {
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 18px;
-  border: 1px solid var(--overview-border);
-  border-radius: 24px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  box-shadow: var(--overview-shadow);
-}
-
-.hero-copy,
-.hero-actions {
-  position: relative;
-}
-
-.release-hero-title-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.release-hero-title-inline {
-  flex-wrap: wrap;
-}
-
-.release-header-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #1d4ed8;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
-}
-
-.hero h2 {
-  margin: 0;
-  color: var(--overview-text);
-}
-
-.hero-intro {
-  max-width: 700px;
-  margin: 12px 0 0;
-  font-size: 13px;
-  line-height: 1.75;
-  color: var(--overview-muted);
-}
-
-.hero-signal-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 18px;
-}
-
-.hero-signal-chip {
-  min-width: 128px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  border: 1px solid #dbe4f0;
-  background: #ffffff;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
-}
-
-.hero-signal-chip span {
-  display: block;
-  font-size: 12px;
-  color: var(--overview-muted);
-}
-
-.hero-signal-chip strong {
-  display: block;
-  margin-top: 8px;
-  font-size: 22px;
-  line-height: 1;
-  color: var(--overview-text);
-}
-
-.hero-actions {
-  min-width: 280px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 16px;
-}
-
-.hero-brief {
-  width: 100%;
-  padding: 18px;
-  border-radius: 18px;
-  border: 1px solid #dbe4f0;
-  background: #ffffff;
-}
-
-.hero-brief__label {
-  display: block;
-  font-size: 12px;
-  color: var(--overview-muted);
-}
-
-.hero-brief strong {
-  display: block;
-  margin-top: 10px;
-  font-size: 32px;
-  line-height: 1;
-  color: var(--overview-text);
-}
-
-.hero-brief p {
-  margin: 10px 0 0;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--overview-muted);
-}
-
-.hero-button-group {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
 .dashboard-stats {
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .release-stat-card {
   position: relative;
-  min-height: 120px;
-  padding: 16px;
+  min-height: 128px;
+  padding: 18px 18px 17px;
   border-radius: 18px;
-  border: 1px solid var(--overview-border);
-  background: var(--overview-panel-strong);
-  box-shadow: var(--overview-shadow);
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  box-shadow:
+    0 8px 20px rgba(15, 23, 42, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
   overflow: hidden;
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
 }
 
 .release-stat-card::before {
   content: '';
   position: absolute;
-  inset: 0 0 auto;
+  top: 14px;
+  left: 18px;
+  width: 34px;
   height: 3px;
-  background: linear-gradient(90deg, #60a5fa 0%, #2563eb 48%, #0ea5e9 100%);
+  border-radius: 999px;
+  background: linear-gradient(90deg, #60a5fa 0%, #3b82f6 100%);
 }
 
 .release-stat-card::after {
   content: '';
   position: absolute;
-  right: -18px;
-  bottom: -26px;
-  width: 88px;
-  height: 88px;
+  right: -20px;
+  bottom: -24px;
+  width: 78px;
+  height: 78px;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(191,219,254,.45) 0%, rgba(191,219,254,0) 72%);
+  background: radial-gradient(circle, rgba(191,219,254,.22) 0%, rgba(191,219,254,0) 72%);
+}
+
+.release-stat-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(191, 219, 254, 0.98);
+  box-shadow:
+    0 12px 28px rgba(37, 99, 235, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
 }
 
 .success-card::before {
@@ -690,6 +530,22 @@ onUnmounted(() => {
   background: radial-gradient(circle, rgba(254,202,202,.56) 0%, rgba(254,202,202,0) 72%);
 }
 
+.context-card {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+}
+
+.success-card {
+  background: linear-gradient(180deg, #ffffff 0%, #f7fcf9 100%);
+}
+
+.warning-card {
+  background: linear-gradient(180deg, #ffffff 0%, #fffaf4 100%);
+}
+
+.danger-card {
+  background: linear-gradient(180deg, #ffffff 0%, #fff7f7 100%);
+}
+
 .stat-card-top {
   position: relative;
   z-index: 1;
@@ -702,24 +558,34 @@ onUnmounted(() => {
 .stat-icon-shell {
   width: 40px;
   height: 40px;
-  border-radius: 12px;
+  border-radius: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: #f5f9ff;
+  color: #3b82f6;
+  border: 1px solid rgba(219, 234, 254, 0.95);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.94);
 }
 
 .metric-badge {
   display: inline-flex;
   align-items: center;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
+  justify-content: center;
+  min-width: auto;
+  height: auto;
+  padding: 0;
+  border-radius: 0;
   font-size: 12px;
-  color: #475569;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #8a94a6;
+  background: transparent;
+  border: none;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  white-space: nowrap;
+  line-height: 1.05;
 }
 
 .stat-value,
@@ -730,34 +596,67 @@ onUnmounted(() => {
 }
 
 .stat-value {
-  margin-top: 18px;
-  font-size: 28px;
-  line-height: 1;
+  margin-top: 20px;
+  font-size: 29px;
+  line-height: 1.02;
   font-weight: 700;
   color: var(--overview-text);
+  letter-spacing: -0.02em;
 }
 
 .stat-label {
   margin-top: 10px;
   font-size: 13px;
-  color: #334155;
+  font-weight: 600;
+  color: #374151;
 }
 
 .stat-meta {
-  margin-top: 6px;
+  margin-top: 7px;
   font-size: 12px;
-  color: var(--overview-muted);
+  color: #7b8794;
+  line-height: 1.6;
+}
+
+.success-card .stat-icon-shell {
+  background: #f1fbf6;
+  color: #10b981;
+  border-color: rgba(187, 247, 208, 0.95);
+}
+
+.warning-card .stat-icon-shell {
+  background: #fffaf0;
+  color: #f59e0b;
+  border-color: rgba(254, 240, 138, 0.95);
+}
+
+.danger-card .stat-icon-shell {
+  background: #fff5f5;
+  color: #ef4444;
+  border-color: rgba(254, 202, 202, 0.96);
+}
+
+.success-card .metric-badge {
+  color: #10b981;
+}
+
+.warning-card .metric-badge {
+  color: #f59e0b;
+}
+
+.danger-card .metric-badge {
+  color: #ef4444;
 }
 
 .dashboard-alert-strip {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   padding: 12px 16px;
   border-radius: 16px;
-  border: 1px solid #fed7aa;
-  background: #fff7ed;
+  border: 1px solid #dbeafe;
+  background: linear-gradient(180deg, #f8fbff 0%, #f3f8ff 100%);
   box-shadow: none;
   flex-wrap: wrap;
 }
@@ -769,20 +668,20 @@ onUnmounted(() => {
   padding: 0 10px;
   border-radius: 999px;
   font-size: 12px;
-  color: #c2410c;
-  background: rgba(255, 237, 213, 0.92);
+  color: #1d4ed8;
+  background: rgba(219, 234, 254, 0.96);
 }
 
 .dashboard-alert-strip__item {
   font-size: 12px;
   line-height: 1.6;
-  color: #9a3412;
+  color: #33527f;
 }
 
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.9fr);
-  gap: 16px;
+  gap: 8px;
 }
 
 .panel {
@@ -805,11 +704,11 @@ onUnmounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 .section-head.compact {
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .section-head h3 {
@@ -829,7 +728,7 @@ onUnmounted(() => {
 .pulse-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) 260px;
-  gap: 16px;
+  gap: 8px;
   align-items: center;
 }
 
@@ -847,7 +746,7 @@ onUnmounted(() => {
 .risk-stack,
 .execution-list {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .score-card {
@@ -941,8 +840,8 @@ onUnmounted(() => {
 }
 
 .risk-card.info {
-  border-color: #bae6fd;
-  background: #f0f9ff;
+  border-color: rgba(226, 232, 240, 0.95);
+  background: #f8fafc;
 }
 
 .risk-card.neutral {
@@ -1014,7 +913,7 @@ onUnmounted(() => {
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .execution-rate span {
@@ -1106,22 +1005,7 @@ onUnmounted(() => {
   }
 }
 
-@media (max-width: 900px) {
-  .overview-hero {
-    flex-direction: column;
-  }
-
-  .hero-actions {
-    align-items: flex-start;
-  }
-
-  .hero-button-group {
-    justify-content: flex-start;
-  }
-}
-
 @media (max-width: 768px) {
-  .hero-signal-strip,
   .release-stats {
     grid-template-columns: 1fr;
   }

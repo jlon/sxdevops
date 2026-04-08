@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="fade-in">
     <section class="hero panel">
       <div class="release-hero-copy">
@@ -17,8 +17,7 @@
           <el-icon><Plus /></el-icon> 新增角色
         </el-button>
         <el-button v-if="activeTab === 'groups' && canManageGroups" type="primary" @click="openGroupDialog()">
-          <el-icon><Plus /></el-icon> 新增用户组
-        </el-button>
+          <el-icon><Plus /></el-icon> 新增用户组</el-button>
       </div>
     </section>
 
@@ -69,7 +68,7 @@
             <template #default="{ row }">
               <el-button link type="primary" @click="openUserDialog(row)">编辑</el-button>
               <el-button link type="warning" @click="openPasswordDialog(row)">重置密码</el-button>
-              <el-popconfirm title="确定删除该用户？" @confirm="handleDeleteUser(row.id)">
+              <el-popconfirm title="确定删除该用户吗？" @confirm="handleDeleteUser(row.id)">
                 <template #reference>
                   <el-button link type="danger">删除</el-button>
                 </template>
@@ -77,7 +76,7 @@
             </template>
           </el-table-column>
         </el-table>
-        <div style="display:flex; justify-content:flex-end; margin-top:16px;">
+        <div style="display:flex; justify-content:flex-end; margin-top:8px;">
           <el-pagination
             v-model:current-page="userPage"
             :page-size="20"
@@ -107,7 +106,7 @@
           <el-table-column v-if="canManageRoles" label="操作" width="140" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click="openRoleDialog(row)">编辑</el-button>
-              <el-popconfirm title="确定删除该角色？" @confirm="handleDeleteRole(row.id)">
+              <el-popconfirm title="确定删除该角色吗？" @confirm="handleDeleteRole(row.id)">
                 <template #reference>
                   <el-button link type="danger" :disabled="row.is_builtin">删除</el-button>
                 </template>
@@ -136,7 +135,7 @@
           <el-table-column v-if="canManageGroups" label="操作" width="140" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click="openGroupDialog(row)">编辑</el-button>
-              <el-popconfirm title="确定删除该用户组？" @confirm="handleDeleteGroup(row.id)">
+              <el-popconfirm title="确定删除该用户组吗？" @confirm="handleDeleteGroup(row.id)">
                 <template #reference>
                   <el-button link type="danger" :disabled="row.is_builtin">删除</el-button>
                 </template>
@@ -626,7 +625,7 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .release-hero-title-row {
@@ -687,7 +686,7 @@ onMounted(async () => {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .table-card {
@@ -697,7 +696,7 @@ onMounted(async () => {
 }
 
 .table-card :deep(.el-tabs__header) {
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .table-card :deep(.el-tabs__nav-wrap::after) {
@@ -720,4 +719,7 @@ onMounted(async () => {
     align-items: stretch;
   }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+
+

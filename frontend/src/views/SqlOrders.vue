@@ -64,7 +64,7 @@
           </el-table-column>
         </el-table>
 
-        <div style="display:flex; justify-content:flex-end; margin-top:16px;">
+        <div style="display:flex; justify-content:flex-end; margin-top:8px;">
           <el-pagination v-model:current-page="page" :page-size="20" :total="total"
             layout="total, prev, pager, next" @current-change="fetchData" />
         </div>
@@ -426,7 +426,7 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
   padding: 14px 16px;
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));

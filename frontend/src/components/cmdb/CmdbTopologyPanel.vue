@@ -591,7 +591,7 @@ onBeforeUnmount(() => {
 .topology-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
 }
 
 .topology-toolbar {
@@ -705,7 +705,7 @@ onBeforeUnmount(() => {
 .sidebar-placeholder {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
 }
 
 .sidebar-header {

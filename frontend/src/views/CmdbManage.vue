@@ -12,7 +12,7 @@
 
     <div v-if="canViewHosts" class="cmdb-host-entry-strip">
       <span>主机能力已独立到一级菜单，CMDB 继续承载关系、拓扑、成本与优化视图。</span>
-      <el-button link type="primary" size="small" @click="router.push('/hosts/assets')">进入主机中心</el-button>
+      <el-button link type="primary" size="small" @click="router.push('/hosts/assets')">查看主机中心</el-button>
     </div>
 
     <!-- 主 Tab 栏 (Pill Tab Theme: Purple) -->
@@ -27,7 +27,7 @@
     <div v-if="activeTab === 'items'" class="tab-content cmdb-items-layout">
       <!-- 左侧资源树 -->
       <div class="cmdb-resource-tree-panel">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <span style="font-weight:600;color:var(--text-primary,#e2e8f0);font-size:14px;cursor:pointer;" @click="clearTreeFilter" title="点击查看全部"><el-icon style="margin-right:4px;vertical-align:-2px;"><Connection /></el-icon>业务资源树</span>
           <el-button v-if="canManageCi" link type="primary" size="small" @click="openNodeDialog()">
             <el-icon><Plus /></el-icon>
@@ -56,7 +56,7 @@
       <!-- 右侧主体 -->
       <div class="cmdb-items-main">
       <!-- 工具栏 -->
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <el-select v-model="filterType" placeholder="CI 类型" clearable style="width:130px" size="small" @change="fetchItems">
             <el-option v-for="t in ciTypes" :key="t.id" :label="t.name" :value="t.id" />
@@ -143,7 +143,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <div style="display:flex;justify-content:flex-end;margin-top:12px;">
+      <div style="display:flex;justify-content:flex-end;margin-top:8px;">
         <el-pagination size="small" background layout="prev,pager,next" :total="itemsTotal" :page-size="20" v-model:current-page="itemsPage" @current-change="fetchItems" />
       </div>
       </div>
@@ -243,7 +243,7 @@
         </div>
       </div>
 
-      <div class="cost-charts-row" style="margin-top:16px;">
+      <div class="cost-charts-row" style="margin-top:8px;">
         <div class="cost-chart-box">
           <div class="chart-title">环境成本分布</div>
           <div class="chart-bars">
@@ -315,7 +315,7 @@
         </div>
       </div>
 
-      <div class="cost-chart-box" style="margin-top:16px;">
+      <div class="cost-chart-box" style="margin-top:8px;">
         <div class="risk-toolbar">
           <div class="risk-toolbar-filters">
             <el-select v-model="costRiskFilterLevel" placeholder="风险等级" clearable size="small" style="width:110px">
@@ -415,7 +415,7 @@
         </div>
       </div>
 
-      <div class="cost-chart-box" style="margin-top:16px;">
+      <div class="cost-chart-box" style="margin-top:8px;">
         <div class="chart-title">本月先做这几项</div>
         <div class="cost-preview-list">
           <div v-for="item in (optimization.quick_wins || [])" :key="item.ci_id + item.type + '-quick'" class="cost-preview-item">
@@ -429,7 +429,7 @@
         </div>
       </div>
 
-      <div class="cost-trend-row" style="margin-top:16px;">
+      <div class="cost-trend-row" style="margin-top:8px;">
         <div class="cost-chart-box">
           <div class="chart-title">落地执行节奏</div>
           <div class="execution-plan">
@@ -461,7 +461,7 @@
       </div>
 
       <div v-if="!(optimization.suggestions||[]).length && !loading" class="empty-state">
-        <el-icon :size="64" style="color:#94a3b8;margin-bottom:12px"><CircleCheck /></el-icon>
+        <el-icon :size="64" style="color:#94a3b8;margin-bottom:8px"><CircleCheck /></el-icon>
         <div style="font-size:16px;font-weight:600;color:#64748b;">暂无优化建议</div>
         <div style="font-size:13px;color:#94a3b8;margin-top:4px;">所有资源运行良好，无需优化</div>
       </div>
@@ -544,7 +544,7 @@
         </div>
       </div>
 
-      <div class="cost-chart-box" style="margin-top:16px;">
+      <div class="cost-chart-box" style="margin-top:8px;">
         <div class="chart-title">已完成节省归档</div>
         <div class="archive-summary-row">
           <div class="archive-summary-item">
@@ -651,7 +651,7 @@
 
     <!-- ============ CI 类型管理弹窗 ============ -->
     <el-dialog v-if="canManageCi" v-model="typeDialogVisible" title="管理 CI 类型" width="90%" style="max-width:500px;" top="5vh" append-to-body destroy-on-close>
-      <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <div style="display:flex;gap:8px;margin-bottom:8px;">
         <el-input v-model="newTypeName" placeholder="新类型名称" size="small" style="flex:1" />
         <el-button type="primary" size="small" @click="addType" :disabled="!newTypeName">添加</el-button>
       </div>
@@ -1502,13 +1502,13 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .release-hero-title-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 .release-hero-title-inline {
   flex-wrap: wrap;
@@ -1541,7 +1541,7 @@ onMounted(() => {
 .custom-tree-node:hover { background: rgba(139,92,246,0.05); }
 .tree-actions { opacity: 0; transition: opacity 0.2s; }
 .el-tree-node__content:hover .tree-actions { opacity: 1; }
-.cmdb-items-layout { display: flex; gap: 16px; }
+.cmdb-items-layout { display: flex; gap: 8px; }
 .cmdb-host-entry-strip {
   display: flex;
   align-items: center;
@@ -1602,7 +1602,7 @@ onMounted(() => {
 
 /* ====== 统计卡片行 ====== */
 .cmdb-stats-row {
-  display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px;
+  display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px;
 }
 .cmdb-stat-card {
   display: flex; align-items: center; gap: 10px;
@@ -1647,8 +1647,8 @@ onMounted(() => {
 }
 
 /* ====== 成本卡片 ====== */
-.cost-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
-.cost-summary-row { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.cost-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px; }
+.cost-summary-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .cost-card {
   display: flex; align-items: center; justify-content: flex-start; flex: 1; min-width: 220px;
   border-radius: 16px; padding: 18px 20px; color: #fff;
@@ -1666,8 +1666,8 @@ onMounted(() => {
 .cost-insight-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .cost-insight-card {
   padding: 14px 16px;
@@ -1686,8 +1686,8 @@ onMounted(() => {
 .cost-brief-row {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .cost-brief-box { min-width: 0; }
 .focus-list,
@@ -1695,7 +1695,7 @@ onMounted(() => {
 .leaderboard-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .focus-item,
 .provider-focus-item,
@@ -1703,7 +1703,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   padding: 12px 14px;
   border-radius: 12px;
   background: rgba(148,163,184,0.08);
@@ -1743,8 +1743,8 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
 }
 .risk-toolbar-filters {
@@ -1761,7 +1761,7 @@ onMounted(() => {
 .owner-workbench {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 .owner-card,
 .archive-item,
@@ -1797,7 +1797,7 @@ onMounted(() => {
   white-space: nowrap;
 }
 .owner-card-list {
-  margin-top: 12px;
+  margin-top: 8px;
   display: grid;
   gap: 8px;
 }
@@ -1818,8 +1818,8 @@ onMounted(() => {
 .archive-summary-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .archive-summary-item {
   padding: 12px 14px;
@@ -1827,7 +1827,7 @@ onMounted(() => {
   background: rgba(148,163,184,0.08);
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   font-size: 12px;
   color: #94a3b8;
 }
@@ -1840,7 +1840,7 @@ onMounted(() => {
   flex: 1;
 }
 .owner-workbench-tasks {
-  margin-top: 12px;
+  margin-top: 8px;
   display: grid;
   gap: 8px;
 }
@@ -1875,15 +1875,15 @@ onMounted(() => {
 }
 
 .cost-charts-row,
-.cost-trend-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.cost-trend-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .cost-chart-box {
   flex: 1; min-width: 300px; background: var(--card-bg, #1e293b); border-radius: 16px;
   padding: 16px 20px; border: 1px solid rgba(139,92,246,0.12);
 }
 .cost-trend-box { min-width: 420px; }
 .cost-preview-box { min-width: 320px; }
-.chart-title { font-weight: 700; font-size: 14px; margin-bottom: 14px; color: var(--text-primary, #e2e8f0); }
-.chart-bars { display: flex; flex-direction: column; gap: 10px; }
+.chart-title { font-weight: 700; font-size: 14px; margin-bottom: 8px; color: var(--text-primary, #e2e8f0); }
+.chart-bars { display: flex; flex-direction: column; gap: 8px; }
 .bar-item { display: flex; align-items: center; gap: 10px; }
 .bar-label { font-size: 12px; color: #94a3b8; width: 86px; text-align: right; flex-shrink: 0; }
 .bar-label.wide { width: 110px; }
@@ -1896,7 +1896,7 @@ onMounted(() => {
 .bar-fill-saving { background: linear-gradient(90deg, #10b981, #34d399); }
 .bar-value { font-size: 12px; font-weight: 600; color: #f59e0b; width: 92px; text-align: right; }
 .empty-chart { text-align: center; padding: 30px; color: #64748b; }
-.trend-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 12px; align-items: end; min-height: 220px; }
+.trend-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; align-items: end; min-height: 220px; }
 .trend-item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .trend-bar {
   width: 100%; max-width: 56px; height: 140px; display: flex; align-items: end; justify-content: center;
@@ -1913,8 +1913,8 @@ onMounted(() => {
 
 .preview-summary {
   display: flex;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
 }
 .preview-summary-item {
@@ -1926,7 +1926,7 @@ onMounted(() => {
   color: #cbd5e1;
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   font-size: 12px;
 }
 .preview-summary-item strong { color: #f8fafc; font-size: 14px; }
@@ -1943,7 +1943,7 @@ onMounted(() => {
 .severity-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 .severity-card {
   padding: 14px;
@@ -1961,7 +1961,7 @@ onMounted(() => {
 .execution-plan {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 .execution-step {
   padding: 14px;
@@ -1993,10 +1993,10 @@ onMounted(() => {
   min-height: 38px;
 }
 .execution-metrics {
-  margin-top: 12px;
+  margin-top: 8px;
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
   font-size: 12px;
   color: #cbd5e1;
@@ -2025,7 +2025,7 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 .opt-plan-item {
   padding: 10px 12px;
@@ -2047,7 +2047,7 @@ onMounted(() => {
 .opt-card-actions {
   display: flex;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 8px;
   flex-wrap: wrap;
 }
 
@@ -2055,7 +2055,7 @@ onMounted(() => {
 .opt-card {
   display: flex; align-items: stretch; gap: 16px;
   background: var(--card-bg, #1e293b); border-radius: 16px; padding: 16px 20px;
-  margin-bottom: 12px; border-left: 4px solid; transition: transform 0.15s;
+  margin-bottom: 8px; border-left: 4px solid; transition: transform 0.15s;
 }
 .opt-card:hover { transform: translateX(4px); }
 .opt-warning { border-left-color: #f59e0b; }
@@ -2172,6 +2172,8 @@ onMounted(() => {
 
 .fade-in { animation: fadeInUp 0.3s ease; }
 @keyframes fadeInUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+.hero.panel { border-radius: 20px; }
 </style>
+
 
 

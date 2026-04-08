@@ -1,5 +1,5 @@
 ﻿<template>
-  <div v-if="available" class="aiops-widget">
+  <div v-if="available" class="aiops-widget" :style="fabStyle">
     <transition name="aiops-panel">
       <div v-if="visible" class="aiops-layer">
         <button type="button" class="aiops-backdrop" @click="closePanel" />
@@ -236,7 +236,14 @@
       </div>
     </transition>
 
-    <button type="button" class="aiops-fab" @click="toggleVisible">
+    <button
+      type="button"
+      ref="fabButtonRef"
+      class="aiops-fab"
+      :class="{ dragging: fabDragging }"
+      @pointerdown="handleFabPointerDown"
+      @click="toggleVisible"
+    >
       <span class="aiops-fab-ring"></span>
       <span class="aiops-fab-core">
         <img :src="botAvatar" alt="AIOps bot" class="aiops-fab-avatar" />
@@ -266,10 +273,10 @@ import {
 import botAvatar from '@/assets/aiops-bot.svg'
 import { useAuthStore } from '@/stores/auth'
 
-const STORAGE_SESSION_KEY = 'agdevops_aiops_current_session'
-const STORAGE_VISIBLE_KEY = 'agdevops_aiops_visible'
-const STORAGE_ANALYSIS_KEY = 'agdevops_aiops_analysis_only'
-const STORAGE_DRAFT_PREFIX = 'agdevops_aiops_draft_'
+const STORAGE_SESSION_KEY = 'sxdevops_aiops_current_session'
+const STORAGE_VISIBLE_KEY = 'sxdevops_aiops_visible'
+const STORAGE_ANALYSIS_KEY = 'sxdevops_aiops_analysis_only'
+const STORAGE_DRAFT_PREFIX = 'sxdevops_aiops_draft_'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -287,10 +294,30 @@ const messageListRef = ref(null)
 const composerRef = ref(null)
 const mobileSessionVisible = ref(false)
 const isMobile = ref(typeof window !== 'undefined' ? window.innerWidth <= 920 : false)
+const fabPosition = ref(null)
+const fabDragging = ref(false)
+const fabButtonRef = ref(null)
+const fabPointerState = {
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  originLeft: 0,
+  originTop: 0,
+}
+let ignoreNextFabClick = false
 
 const available = computed(() => bootstrap.value.enabled && authStore.hasPermission('aiops.chat.view'))
 const renderMessages = computed(() => pendingAssistantMessage.value ? [...messages.value, pendingAssistantMessage.value] : messages.value)
 const currentSession = computed(() => sessions.value.find(item => item.id === currentSessionId.value) || null)
+const fabStyle = computed(() => {
+  if (!fabPosition.value || visible.value) return null
+  return {
+    left: `${fabPosition.value.left}px`,
+    top: `${fabPosition.value.top}px`,
+    right: 'auto',
+    bottom: 'auto',
+  }
+})
 const runtimeLabel = computed(() => {
   if (!bootstrap.value.runtime?.allow_action_execution) return '仅分析/草稿'
   return bootstrap.value.runtime?.require_confirmation ? '执行需确认' : '可直接执行'
@@ -335,6 +362,80 @@ function handleResize() {
   if (!isMobile.value) {
     mobileSessionVisible.value = false
   }
+  if (fabPosition.value) {
+    fabPosition.value = clampFabPosition(fabPosition.value.left, fabPosition.value.top)
+  }
+}
+
+function getFabOffsets() {
+  return isMobile.value ? { right: 12, bottom: 12 } : { right: 24, bottom: 24 }
+}
+
+function getFabRect() {
+  const fabEl = fabButtonRef.value
+  if (!fabEl) return { width: 132, height: 58 }
+  const rect = fabEl.getBoundingClientRect()
+  return { width: rect.width, height: rect.height }
+}
+
+function clampFabPosition(left, top) {
+  const { width, height } = getFabRect()
+  const minX = 8
+  const minY = 8
+  const maxX = Math.max(minX, window.innerWidth - width - 8)
+  const maxY = Math.max(minY, window.innerHeight - height - 8)
+  return {
+    left: Math.min(Math.max(left, minX), maxX),
+    top: Math.min(Math.max(top, minY), maxY),
+  }
+}
+
+function resetFabPosition() {
+  fabPosition.value = null
+  fabDragging.value = false
+}
+
+function handleFabPointerMove(event) {
+  if (fabPointerState.pointerId !== event.pointerId) return
+  const deltaX = event.clientX - fabPointerState.startX
+  const deltaY = event.clientY - fabPointerState.startY
+  if (!fabDragging.value && Math.hypot(deltaX, deltaY) < 6) return
+  fabDragging.value = true
+  fabPosition.value = clampFabPosition(
+    fabPointerState.originLeft + deltaX,
+    fabPointerState.originTop + deltaY,
+  )
+}
+
+function cleanupFabPointerListeners() {
+  window.removeEventListener('pointermove', handleFabPointerMove)
+  window.removeEventListener('pointerup', handleFabPointerUp)
+  window.removeEventListener('pointercancel', handleFabPointerUp)
+}
+
+function handleFabPointerUp(event) {
+  if (fabPointerState.pointerId !== event.pointerId) return
+  if (fabDragging.value) {
+    ignoreNextFabClick = true
+  }
+  fabPointerState.pointerId = null
+  cleanupFabPointerListeners()
+}
+
+function handleFabPointerDown(event) {
+  if (visible.value) return
+  const fabEl = event.currentTarget
+  fabButtonRef.value = fabEl
+  const rect = fabEl.getBoundingClientRect()
+  fabPointerState.pointerId = event.pointerId
+  fabPointerState.startX = event.clientX
+  fabPointerState.startY = event.clientY
+  fabPointerState.originLeft = fabPosition.value?.left ?? rect.left
+  fabPointerState.originTop = fabPosition.value?.top ?? rect.top
+  fabDragging.value = false
+  window.addEventListener('pointermove', handleFabPointerMove)
+  window.addEventListener('pointerup', handleFabPointerUp)
+  window.addEventListener('pointercancel', handleFabPointerUp)
 }
 
 function parseAssistantContent(content) {
@@ -631,6 +732,7 @@ function openTaskCenter() {
 }
 
 async function handleOpenRequest() {
+  resetFabPosition()
   visible.value = true
   localStorage.setItem(STORAGE_VISIBLE_KEY, '1')
   if (!bootstrap.value.enabled && !loading.value.bootstrap) {
@@ -662,6 +764,13 @@ function handleGlobalKeydown(event) {
 }
 
 async function toggleVisible() {
+  if (ignoreNextFabClick) {
+    ignoreNextFabClick = false
+    return
+  }
+  if (!visible.value) {
+    resetFabPosition()
+  }
   visible.value = !visible.value
   localStorage.setItem(STORAGE_VISIBLE_KEY, visible.value ? '1' : '0')
   if (visible.value) {
@@ -704,7 +813,7 @@ onMounted(async () => {
   if (!authStore.isAuthenticated) return
   window.addEventListener('resize', handleResize)
   window.addEventListener('keydown', handleGlobalKeydown)
-  window.addEventListener('agdevops-aiops-open', handleOpenRequest)
+  window.addEventListener('sxdevops-aiops-open', handleOpenRequest)
   await fetchBootstrap()
   if (visible.value) {
     await fetchSessions()
@@ -712,9 +821,10 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  cleanupFabPointerListeners()
   window.removeEventListener('resize', handleResize)
   window.removeEventListener('keydown', handleGlobalKeydown)
-  window.removeEventListener('agdevops-aiops-open', handleOpenRequest)
+  window.removeEventListener('sxdevops-aiops-open', handleOpenRequest)
 })
 </script>
 
@@ -722,8 +832,9 @@ onBeforeUnmount(() => {
 .aiops-widget{position:fixed;right:24px;bottom:24px;z-index:80}
 .aiops-layer{position:fixed;inset:0;z-index:79;overflow:hidden}
 .aiops-backdrop{position:absolute;inset:0;border:none;background:rgba(15,23,42,.12);backdrop-filter:blur(4px);cursor:pointer}
-.aiops-fab{position:relative;z-index:81;display:flex;align-items:center;gap:9px;min-width:132px;height:58px;padding:7px 12px 7px 7px;border:none;border-radius:999px;background:linear-gradient(135deg,#ffffff 0%,#f7fbff 100%);box-shadow:0 12px 24px rgba(59,130,246,.12);cursor:pointer;border:1px solid #bdd5fb;transition:transform .18s ease,box-shadow .18s ease}
+.aiops-fab{position:relative;z-index:81;display:flex;align-items:center;gap:9px;min-width:132px;height:58px;padding:7px 12px 7px 7px;border:none;border-radius:999px;background:linear-gradient(135deg,#ffffff 0%,#f7fbff 100%);box-shadow:0 12px 24px rgba(59,130,246,.12);cursor:grab;border:1px solid #bdd5fb;transition:transform .18s ease,box-shadow .18s ease;touch-action:none;user-select:none}
 .aiops-fab:hover{transform:translateY(-2px);box-shadow:0 16px 30px rgba(59,130,246,.16)}
+.aiops-fab.dragging{cursor:grabbing;transform:none;box-shadow:0 18px 34px rgba(59,130,246,.2)}
 .aiops-fab-ring{position:absolute;inset:-2px;border-radius:999px;border:1px solid rgba(59,130,246,.16);box-shadow:0 0 0 1px rgba(255,255,255,.92);pointer-events:none}
 .aiops-fab-core{position:relative;display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:20px;background:linear-gradient(145deg,#eef5ff 0%,#f6fbff 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.96),0 8px 16px rgba(59,130,246,.08)}
 .aiops-fab-avatar{width:30px;height:30px;display:block}

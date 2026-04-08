@@ -1,10 +1,10 @@
-<template>
+﻿<template>
   <div class="fade-in">
     <section class="hero panel">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="market-header-icon"><el-icon><Shop /></el-icon></span>
-          <h2>工具市场</h2>
+          <h2>服务市场</h2>
           <p class="page-desc inline-subtitle">支持 Docker Compose 单机与 Kubernetes 集群两种部署模式，统一查看模板与部署实例。</p>
         </div>
       </div>
@@ -12,7 +12,7 @@
 
     <div class="market-tabs">
       <button class="tab-btn" :class="{ active: activeTab === 'market' }" @click="activeTab = 'market'">
-        <el-icon><Shop /></el-icon> 工具市场
+        <el-icon><Shop /></el-icon> 服务市场
       </button>
       <button
         v-if="canViewMarketplaceDeployments"
@@ -245,7 +245,7 @@
           </el-descriptions-item>
           <el-descriptions-item label="创建时间" :span="2">{{ formatTime(detailDep.created_at) }}</el-descriptions-item>
         </el-descriptions>
-        <el-divider content-position="left">部署日志</el-divider>
+        <el-divider content-position="left">閮ㄧ讲日志</el-divider>
         <pre class="log-output">{{ detailDep.deploy_log || '暂无日志' }}</pre>
       </template>
     </el-dialog>
@@ -287,20 +287,20 @@ const categories = [
 const ICON_MAP = {
   mysql: '🛢️',
   mongodb: '🍃',
-  redis: '🟥',
+  redis: '🧠',
   postgresql: '🐘',
   nginx: '🌐',
-  jenkins: '🧰',
+  jenkins: '🛠️',
   gitlab: '🦊',
   grafana: '📊',
   elasticsearch: '🔎',
   loki: '🪵',
   jumpserver: '🛡️',
-  nacos: '🧭',
-  xxljob: '⏰',
+  nacos: '🧩',
+  xxljob: '⏱️',
   java: '☕',
   python: '🐍',
-  go: '🐹',
+  go: '🚀',
   nodejs: '🟢',
 }
 
@@ -466,7 +466,7 @@ function buildDefaultForm(template) {
 
 function openDeployDialog(template) {
   if (!canManageMarketplaceDeployments.value) {
-    ElMessage.warning('当前账号没有部署权限')
+    ElMessage.warning('褰撳墠璐﹀彿娌℃湁閮ㄧ讲权限')
     return
   }
   deployTemplate.value = template
@@ -576,7 +576,7 @@ function viewDeployLog(deployment) {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .release-hero-title-row {
@@ -623,24 +623,25 @@ function viewDeployLog(deployment) {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 14px;
-  padding: 6px;
+  margin-bottom: 8px;
+  padding: 4px;
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
   border: 1px solid rgba(148,163,184,.16);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.04);
 }
 
 .market-tabs .tab-btn {
-  min-height: auto;
-  padding: 10px 24px;
+  min-height: 38px;
+  padding: 0 20px;
   border-radius: 8px;
 }
 
 .table-card {
   border-radius: 20px;
   background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92));
-  box-shadow: 0 18px 36px rgba(15,23,42,.06);
+  box-shadow: 0 12px 28px rgba(15,23,42,.05);
+  border: 1px solid rgba(148,163,184,.16);
 }
 
 .service-card.disabled {
@@ -651,7 +652,11 @@ function viewDeployLog(deployment) {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
+.hero.panel { border-radius: 20px; }
 </style>
+
+
+

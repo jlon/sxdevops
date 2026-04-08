@@ -6,7 +6,7 @@ def build_runtime_compose(service_name, image, env_lines, mount_lines, bootstrap
 services:
   {service_name}:
     image: {image}
-    container_name: agdevops_{service_name}
+    container_name: sxdevops_{service_name}
     restart: always
     working_dir: "{{{{workspace}}}}"
     environment:
@@ -42,7 +42,7 @@ TEMPLATES = [
 services:
   mysql:
     image: mysql:{{version}}
-    container_name: agdevops_mysql
+    container_name: sxdevops_mysql
     restart: always
     ports:
       - "{{port}}:3306"
@@ -71,7 +71,7 @@ volumes:
 services:
   redis:
     image: redis:{{version}}-alpine
-    container_name: agdevops_redis
+    container_name: sxdevops_redis
     restart: always
     ports:
       - "{{port}}:6379"
@@ -97,7 +97,7 @@ volumes:
 services:
   postgres:
     image: postgres:{{version}}
-    container_name: agdevops_postgres
+    container_name: sxdevops_postgres
     restart: always
     ports:
       - "{{port}}:5432"
@@ -126,7 +126,7 @@ volumes:
 services:
   mongodb:
     image: mongo:{{version}}
-    container_name: agdevops_mongodb
+    container_name: sxdevops_mongodb
     restart: always
     ports:
       - "{{port}}:27017"
@@ -155,7 +155,7 @@ volumes:
 services:
   nginx:
     image: nginx:{{version}}
-    container_name: agdevops_nginx
+    container_name: sxdevops_nginx
     restart: always
     ports:
       - "{{http_port}}:80"
@@ -182,7 +182,7 @@ volumes:
 services:
   jenkins:
     image: jenkins/jenkins:{{version}}
-    container_name: agdevops_jenkins
+    container_name: sxdevops_jenkins
     restart: always
     ports:
       - "{{port}}:8080"
@@ -210,7 +210,7 @@ volumes:
 services:
   gitlab:
     image: gitlab/gitlab-ce:{{version}}
-    container_name: agdevops_gitlab
+    container_name: sxdevops_gitlab
     restart: always
     ports:
       - "{{http_port}}:80"
@@ -240,7 +240,7 @@ volumes:
 services:
   grafana:
     image: grafana/grafana:{{version}}
-    container_name: agdevops_grafana
+    container_name: sxdevops_grafana
     restart: always
     ports:
       - "{{port}}:3000"
@@ -267,7 +267,7 @@ volumes:
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:{{version}}.0
-    container_name: agdevops_elasticsearch
+    container_name: sxdevops_elasticsearch
     restart: always
     ports:
       - "{{port}}:9200"
@@ -296,7 +296,7 @@ volumes:
 services:
   loki:
     image: grafana/loki:{{version}}
-    container_name: agdevops_loki
+    container_name: sxdevops_loki
     restart: always
     ports:
       - "{{port}}:3100"
@@ -316,13 +316,13 @@ volumes:
         'sort_order': 11,
         'env_schema': [
             {'key': 'port', 'label': 'HTTP 端口', 'default': '80', 'required': True},
-            {'key': 'secret_key', 'label': 'Secret Key', 'default': 'agdevops_jumpserver_secret', 'required': True},
+            {'key': 'secret_key', 'label': 'Secret Key', 'default': 'sxdevops_jumpserver_secret', 'required': True},
         ],
         'docker_compose_template': '''version: "3.8"
 services:
   jumpserver:
     image: jumpserver/jms_all:{{version}}
-    container_name: agdevops_jumpserver
+    container_name: sxdevops_jumpserver
     restart: always
     ports:
       - "{{port}}:80"
@@ -352,7 +352,7 @@ volumes:
 services:
   nacos:
     image: nacos/nacos-server:{{version}}
-    container_name: agdevops_nacos
+    container_name: sxdevops_nacos
     restart: always
     ports:
       - "{{port}}:8848"
@@ -385,7 +385,7 @@ volumes:
 services:
   xxl-job-admin:
     image: xuxueli/xxl-job-admin:{{version}}
-    container_name: agdevops_xxljob
+    container_name: sxdevops_xxljob
     restart: always
     ports:
       - "{{port}}:8080"

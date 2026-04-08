@@ -35,3 +35,6 @@ frontend/*.err.log
 # Local verification artifacts
 frontend/cmdb-cost-check*.png
 frontend/cmdb-cost-check*.json
+
+# Local dev runtime
+.runlogs/

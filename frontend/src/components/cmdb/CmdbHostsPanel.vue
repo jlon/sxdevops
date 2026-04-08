@@ -368,7 +368,7 @@ onMounted(fetchHosts)
   flex-direction: column;
 }
 .cmdb-items-main { flex: 1; min-width: 0; }
-.panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .panel-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; cursor: pointer; }
 .resource-tree { flex: 1; overflow-y: auto; background: transparent; }
 .custom-tree-node { display: flex; align-items: center; font-size: 13px; }
@@ -380,7 +380,7 @@ onMounted(fetchHosts)
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
 }
 .toolbar-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

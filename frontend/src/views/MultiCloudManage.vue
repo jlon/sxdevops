@@ -1,14 +1,12 @@
-<template>
+﻿<template>
   <div class="multicloud-page fade-in">
     <section class="hero panel">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="release-header-icon"><el-icon><Promotion /></el-icon></span>
           <h2>多云环境</h2>
-          <p class="subtitle inline-subtitle">多云资源统一管理平台，覆盖资源拓扑、批量动作、成本趋势和同步 CMDB。</p>
+          <p class="subtitle inline-subtitle">多云资源统一管理平台，覆盖资源拓扑、批量动作、成本趋势与 CMDB 同步。</p>
         </div>
-        <h2>多云环境</h2>
-        <p class="page-subtitle">多云资源统一管理平台，覆盖资源拓扑、批量动作、成本趋势和同步 CMDB。</p>
       </div>
       <div class="hero-actions">
         <el-button @click="refreshAll"><el-icon><RefreshRight /></el-icon>刷新</el-button>
@@ -133,7 +131,7 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane :label="`云账号 (${credentials.length})`" name="credentials">
+      <el-tab-pane :label="`云账号(${credentials.length})`" name="credentials">
         <div class="card-panel">
           <div class="section-head">
             <span>云账号</span>
@@ -146,7 +144,7 @@
             </div>
           </div>
           <div v-if="canManage" class="batch-toolbar">
-            <el-button :disabled="!selectedCredentialIds.length" @click="runBatchAction('credentials', 'test_connection')">批量连通性</el-button>
+            <el-button :disabled="!selectedCredentialIds.length" @click="runBatchAction('credentials', 'test_connection')">批量连通检测</el-button>
             <el-button :disabled="!selectedCredentialIds.length" @click="runBatchAction('credentials', 'enable')">批量启用</el-button>
             <el-button :disabled="!selectedCredentialIds.length" @click="runBatchAction('credentials', 'disable')">批量禁用</el-button>
             <el-button :disabled="!selectedCredentialIds.length" @click="runBatchAction('credentials', 'demo_on')">批量开启 Demo</el-button>
@@ -165,20 +163,20 @@
                 </el-space>
               </template>
             </el-table-column>
-            <el-table-column label="连通性" width="100"><template #default="{ row }"><el-tag size="small" :type="statusTag(row.last_test_status)">{{ statusText(row.last_test_status) }}</el-tag></template></el-table-column>
+            <el-table-column label="连通状态" width="100"><template #default="{ row }"><el-tag size="small" :type="statusTag(row.last_test_status)">{{ statusText(row.last_test_status) }}</el-tag></template></el-table-column>
             <el-table-column label="操作" fixed="right" width="320">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openCredentialDialog(row)">编辑</el-button>
-                <el-button link type="success" @click="handleTestCredential(row)">连通性</el-button>
+                <el-button link type="success" @click="handleTestCredential(row)">连通检测</el-button>
                 <el-tooltip
                   v-if="canSync"
-                  content="同步该云账号下绑定的全部环境资源清单，不会直接写入 CMDB。"
+                  content="同步该云账号下未绑定环境的资源清单，不会直接写入 CMDB。"
                   placement="top"
                 >
                   <el-button link type="warning" @click="handleSyncCredential(row)">同步</el-button>
                 </el-tooltip>
                 <el-button link type="info" @click="focusCredential(row)">定位拓扑</el-button>
-                <el-popconfirm v-if="canManage" title="确认删除该云账号吗" @confirm="handleDeleteCredential(row)">
+                <el-popconfirm v-if="canManage" title="确认删除该云账号吗？" @confirm="handleDeleteCredential(row)">
                   <template #reference><el-button link type="danger">删除</el-button></template>
                 </el-popconfirm>
               </template>
@@ -187,7 +185,7 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane :label="`云环境 (${environments.length})`" name="envs">
+      <el-tab-pane :label="`云环境(${environments.length})`" name="envs">
         <div class="card-panel">
           <div class="section-head">
             <span>云环境</span>
@@ -226,7 +224,7 @@
                 <el-button v-if="canManage" link type="primary" @click="openEnvironmentDialog(row)">编辑</el-button>
                 <el-tooltip
                   v-if="canSync"
-                  content="从云厂商拉取该环境的最新资源，更新到多云资源表。"
+                  content="从云厂商拉取该环境的最新资源，并刷新多云资源表。"
                   placement="top"
                 >
                   <el-button link type="success" @click="handleSyncEnvironment(row)">同步资源</el-button>
@@ -238,7 +236,7 @@
                 >
                   <el-button link type="warning" @click="handleSyncEnvironmentCmdb(row)">同步 CMDB</el-button>
                 </el-tooltip>
-                <el-popconfirm v-if="canManage" title="确认删除该云环境吗" @confirm="handleDeleteEnvironment(row)">
+                <el-popconfirm v-if="canManage" title="确认删除该云环境吗？" @confirm="handleDeleteEnvironment(row)">
                   <template #reference><el-button link type="danger">删除</el-button></template>
                 </el-popconfirm>
               </template>
@@ -247,7 +245,7 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane :label="`云资源 (${assets.length})`" name="assets">
+      <el-tab-pane :label="`云资源(${assets.length})`" name="assets">
         <div class="card-panel">
           <div class="section-head">
             <span>云资源</span>
@@ -266,10 +264,10 @@
             </div>
           </div>
           <div v-if="canManage" class="batch-toolbar">
-            <el-button :disabled="!selectedAssetIds.length" @click="runBatchAction('assets', 'set_warning')">批量设风险</el-button>
-            <el-button :disabled="!selectedAssetIds.length" @click="runBatchAction('assets', 'set_normal')">批量清风险</el-button>
-            <el-button :disabled="!selectedAssetIds.length" @click="runBatchAction('assets', 'mark_drift')">批量标漂移</el-button>
-            <el-button :disabled="!selectedAssetIds.length" @click="runBatchAction('assets', 'mark_synced')">批量标同步</el-button>
+            <el-button :disabled="!selectedAssetIds.length" @click="runBatchAction('assets', 'set_warning')">批量设为风险</el-button>
+            <el-button :disabled="!selectedAssetIds.length" @click="runBatchAction('assets', 'set_normal')">批量清除风险</el-button>
+            <el-button :disabled="!selectedAssetIds.length" @click="runBatchAction('assets', 'mark_drift')">批量标记漂移</el-button>
+            <el-button :disabled="!selectedAssetIds.length" @click="runBatchAction('assets', 'mark_synced')">批量标记同步</el-button>
           </div>
           <el-table :data="assets" stripe v-loading="loading.assets" @selection-change="rows => selectedAssetIds = rows.map(item => item.id)">
             <el-table-column v-if="canManage" type="selection" width="50" />
@@ -285,7 +283,7 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane :label="`同步任务 (${tasks.length})`" name="tasks">
+      <el-tab-pane :label="`同步任务(${tasks.length})`" name="tasks">
         <div class="card-panel">
           <div class="section-head">
             <span>同步任务</span>
@@ -496,7 +494,7 @@ function expandAllTopologyLanes() {
 function renderCostTrend() {
   costTrendChart = ensureChart(costTrendChart, costTrendChartRef.value)
   if (!costTrendChart) return
-  costTrendChart.setOption({ tooltip: { trigger: 'axis' }, legend: { top: 0 }, grid: { left: 20, right: 20, bottom: 20, top: 50, containLabel: true }, xAxis: { type: 'category', data: costTrend.value.labels || [] }, yAxis: { type: 'value', axisLabel: { formatter: value => `楼${value}` } }, series: (costTrend.value.series || []).map(item => ({ name: item.label, type: 'line', smooth: true, data: item.values })) })
+  costTrendChart.setOption({ tooltip: { trigger: 'axis' }, legend: { top: 0 }, grid: { left: 20, right: 20, bottom: 20, top: 50, containLabel: true }, xAxis: { type: 'category', data: costTrend.value.labels || [] }, yAxis: { type: 'value', axisLabel: { formatter: value => `妤?{value}` } }, series: (costTrend.value.series || []).map(item => ({ name: item.label, type: 'line', smooth: true, data: item.values })) })
 }
 
 function providerPalette(provider) {
@@ -840,7 +838,7 @@ function buildLayeredTopologyLayout() {
     })
     graphics.push({
       type: 'text',
-      style: { x: leftPadding + 261, y: y + 32, text: (envNode.risk_count || 0) > 0 ? `风险 ${envNode.risk_count || 0}` : '健康', fill: (envNode.risk_count || 0) > 0 ? '#b45309' : '#15803d', font: '600 11px sans-serif' },
+      style: { x: leftPadding + 261, y: y + 32, text: (envNode.risk_count || 0) > 0 ? `椋庨櫓 ${envNode.risk_count || 0}` : '鍋ュ悍', fill: (envNode.risk_count || 0) > 0 ? '#b45309' : '#15803d', font: '600 11px sans-serif' },
       silent: true,
       z: -3,
     })
@@ -1032,38 +1030,40 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); cost
 </script>
 
 <style scoped>
-.multicloud-page { display: flex; flex-direction: column; gap: 10px; }
+.multicloud-page { display: flex; flex-direction: column; gap: 8px; }
 .filter-inline, .batch-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid #dbe4f0; border-radius: 24px; box-shadow: 0 14px 34px rgba(15,23,42,.06); padding: 14px 22px; }
+.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid rgba(148,163,184,.16); border-radius: 20px; box-shadow: 0 12px 28px rgba(15,23,42,.05); padding: 12px 14px; }
 .hero { background: linear-gradient(135deg, #fff7ed 0%, #f8fbff 100%); display: flex; gap: 12px; justify-content: space-between; }
 .hero h2 { color: #0f172a; margin: 0; }
-.subtitle { color: #475569; margin: 10px 0 0; max-width: 620px; }
-.hero-actions { display: flex; gap: 12px; }
+.subtitle { color: #475569; margin: 8px 0 0; max-width: 620px; }
+.hero-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .release-hero-title-row { display: flex; align-items: center; gap: 12px; }
 .release-hero-title-inline { flex-wrap: wrap; }
 .inline-subtitle { margin: 0; max-width: none; font-size: 13px; line-height: 1.45; }
+.hero-actions :deep(.el-button) { min-height: 38px; padding: 0 16px; border-radius: 12px; }
 .release-header-icon { width: 42px; height: 42px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; color: #fff; background: linear-gradient(135deg, #409eff, #36cfc9); box-shadow: 0 10px 20px rgba(64,158,255,.2); }
 .page-badge, .page-subtitle, .release-hero-copy > h2, .release-hero-copy > .page-subtitle, .metric-grid { display: none; }
 .muted-text { color: var(--text-secondary); }
-.release-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
-.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.18); box-shadow: 0 16px 34px rgba(15,23,42,.07); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
+.release-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.16); box-shadow: 0 12px 26px rgba(15,23,42,.05); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
 .release-stat-card::after { content: ''; position: absolute; inset: auto -24px -30px auto; width: 108px; height: 108px; border-radius: 50%; background: radial-gradient(circle, rgba(64,158,255,.16) 0%, rgba(64,158,255,0) 70%); }
 .warning-card::after { background: radial-gradient(circle, rgba(245,158,11,.18) 0%, rgba(245,158,11,0) 70%); }
 .success-card::after { background: radial-gradient(circle, rgba(16,185,129,.18) 0%, rgba(16,185,129,0) 70%); }
 .danger-card::after { background: radial-gradient(circle, rgba(239,68,68,.18) 0%, rgba(239,68,68,0) 70%); }
 .release-stat-card .stat-value { font-size: 26px; line-height: 1.05; }
 .release-stat-card .stat-label { margin-top: 4px; color: #64748b; }
-.card-panel { border-radius: 18px; background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92)); box-shadow: 0 18px 36px rgba(15,23,42,.06); }
-.module-tabs { margin-top: -8px; padding: 18px; border-radius: 20px; background: rgba(255,255,255,.86); box-shadow: 0 18px 36px rgba(15,23,42,.06); }
-.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; align-items: start; }
+.card-panel { border-radius: 18px; background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92)); box-shadow: 0 12px 26px rgba(15,23,42,.05); border: 1px solid rgba(148,163,184,.16); }
+.module-tabs { margin-top: -8px; padding: 12px; border-radius: 20px; background: rgba(255,255,255,.9); box-shadow: 0 12px 26px rgba(15,23,42,.04); border: 1px solid rgba(148,163,184,.16); }
+.module-tabs :deep(.el-tabs__item) { height: 38px; line-height: 38px; padding: 0 16px; font-size: 13px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; align-items: start; }
 .card-panel { padding: 12px 16px; }
 .card-panel--drawer { box-shadow: none; background: transparent; padding: 0; }
-.section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
 .section-head span { font-weight: 700; color: var(--text-primary); }
-.section-head--drawer { margin-top: 16px; }
-.suggest-list { display: flex; flex-direction: column; gap: 10px; min-height: 180px; }
+.section-head--drawer { margin-top: 8px; }
+.suggest-list { display: flex; flex-direction: column; gap: 8px; min-height: 180px; }
 .suggest-item { padding: 12px; border-radius: 14px; background: rgba(248,250,252,.9); border: 1px solid rgba(226,232,240,.9); }
-.suggest-item strong { display: block; margin: 8px 0; }
+.suggest-item strong { display: block; margin: 6px 0; }
 .chart-block { width: 100%; height: 320px; }
 .chart-block--topology { height: 560px; }
 .overview-card--table :deep(.el-table th.el-table__cell),
@@ -1073,10 +1073,10 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); cost
 .overview-card--governance .suggest-list { min-height: 152px; gap: 6px; }
 .overview-card--governance .suggest-item { padding: 8px 10px; font-size: 12px; line-height: 1.4; }
 .overview-card--governance .suggest-item strong { margin: 4px 0 2px; font-size: 12px; }
-.overview-trend-card .section-head { margin-bottom: 10px; }
+.overview-trend-card .section-head { margin-bottom: 8px; }
 .overview-trend-card .chart-block { height: 280px; }
-.batch-toolbar { margin-bottom: 12px; }
-.topology-lane-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 12px 14px; border-radius: 16px; background: rgba(248,250,252,.8); border: 1px solid rgba(226,232,240,.9); }
+.batch-toolbar { margin-bottom: 8px; }
+.topology-lane-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; padding: 12px 14px; border-radius: 16px; background: rgba(248,250,252,.8); border: 1px solid rgba(226,232,240,.9); }
 .topology-lane-actions, .topology-lane-tags, .topology-lane-chip__meta { display: flex; align-items: center; gap: 10px; }
 .topology-lane-tags { flex: 1; flex-wrap: wrap; justify-content: flex-end; }
 .topology-lane-chip { display: inline-flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 168px; padding: 8px 12px; border: 1px solid rgba(203,213,225,.95); border-radius: 12px; background: rgba(255,255,255,.96); color: #334155; cursor: pointer; transition: all .18s ease; }
@@ -1086,4 +1086,8 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); cost
 .topology-lane-chip__state { font-size: 12px; font-weight: 700; }
 @media (max-width: 1200px) { .release-stats, .grid-2 { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 768px) { .hero { flex-direction: column; } .hero-actions { justify-content: flex-start; } .release-stats, .grid-2 { grid-template-columns: 1fr; } .chart-block--topology { height: 420px; } .topology-lane-toolbar, .topology-lane-tags { flex-direction: column; align-items: stretch; } .topology-lane-chip { width: 100%; } }
+.hero.panel { border-radius: 20px; }
 </style>
+
+
+

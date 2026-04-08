@@ -1,6 +1,6 @@
-# AgDevOps 运维与平台工程演示项目
+# SxDevOps 运维与平台工程演示项目
 
-AgDevOps 是一个基于 `Django + Django REST framework + Channels + Vue 3 + Element Plus` 的平台工程与运维一体化演示项目，覆盖 **CMDB、应用发布、容器运维、日志与可观测性、SQL 审计、工具市场、IaC 资源编排** 等核心场景。
+SxDevOps 是一个基于 `Django + Django REST framework + Channels + Vue 3 + Element Plus` 的平台工程与运维一体化演示项目，覆盖 **CMDB、应用发布、容器运维、日志与可观测性、SQL 审计、工具市场、IaC 资源编排** 等核心场景。
 
 这个仓库不是单页 Demo，也不是纯 CRUD 后台。它把资源治理、变更执行、排障分析和权限控制串成了一条完整闭环，适合用于：
 
@@ -207,6 +207,28 @@ npm run dev
 ```
 
 前端默认地址：`http://localhost:3000`
+
+### 2.1 一键启动（Windows）
+
+在仓库根目录可直接使用：
+
+```powershell
+.\start-dev.ps1
+```
+
+或双击：
+
+```bat
+start-dev.cmd
+```
+
+停止服务：
+
+```powershell
+.\stop-dev.ps1
+```
+
+脚本会同时启动前端 `3000` 与后端 `8000`，并将日志写入 `.runlogs/`。
 
 ### 3. 常用演示账号
 

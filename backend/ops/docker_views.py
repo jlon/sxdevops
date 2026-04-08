@@ -283,8 +283,8 @@ def _demo_inspect_for_container(docker_host, container):
             'Image': container['image'],
             'Hostname': docker_host.name,
             'Labels': {
-                'com.agdevops.demo': 'true',
-                'com.agdevops.host': docker_host.name,
+                'com.sxdevops.demo': 'true',
+                'com.sxdevops.host': docker_host.name,
             },
         },
         'NetworkSettings': {

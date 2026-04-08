@@ -184,7 +184,7 @@
           </div>
 
           <div class="tips-box compact-card">
-            <strong>查询提示</strong>
+            <strong>查询提醒</strong>
             <p v-if="isLoki">Loki 当前可暂时忽略，后续恢复连通后可再演示。</p>
             <p v-else-if="isElk">可直接演示 `payment error`、`gateway warning`、`checkout error`。</p>
             <p v-else-if="isSls">可直接演示 `timeout`、`auth error`、`cache`，并切换不同 Logstore。</p>
@@ -318,7 +318,7 @@
           </ul>
         </div>
         <div class="syntax-block">
-          <strong>使用提示</strong>
+          <strong>使用说明</strong>
           <ul>
             <li v-for="item in currentHelpDoc.tips" :key="item">{{ item }}</li>
           </ul>
@@ -1314,15 +1314,16 @@ onUnmounted(() => {
 
 .log-center-tabs {
   margin-bottom: 0;
-  padding: 6px;
+  padding: 4px;
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
   border: 1px solid rgba(148,163,184,.16);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.04);
 }
 
 .log-center-tabs .neo-tab-btn {
-  padding: 10px 24px;
+  min-height: 38px;
+  padding: 0 20px;
   border-radius: 8px;
 }
 
@@ -1341,7 +1342,7 @@ onUnmounted(() => {
   background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.92));
   border: 1px solid rgba(148,163,184,.16);
   border-radius: 20px;
-  box-shadow: 0 18px 36px rgba(15,23,42,.06);
+  box-shadow: 0 12px 28px rgba(15,23,42,.05);
   padding: 12px 14px;
 }
 
@@ -1409,7 +1410,7 @@ onUnmounted(() => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .quick-range-btn {
@@ -1443,18 +1444,27 @@ onUnmounted(() => {
 
 .inline-tip {
   font-size: 12px;
+  line-height: 1.45;
   margin-left: 10px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.14);
 }
 
 .source-card,
 .tips-box {
-  border-radius: 14px;
-  padding: 14px;
+  border-radius: 10px;
+  padding: 8px 11px;
+}
+
+.tips-box {
+  margin-top: -10px;
 }
 
 .compact-card {
-  background: linear-gradient(135deg, #eff6ff, #fff7ed);
-  border: 1px solid #dbeafe;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.14);
 }
 
 .source-title-row {
@@ -1471,7 +1481,7 @@ onUnmounted(() => {
 .summary-list {
   display: grid;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .summary-item {
@@ -1495,7 +1505,7 @@ onUnmounted(() => {
 
 .compact-stats {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -1525,7 +1535,7 @@ onUnmounted(() => {
 .stat-card.neutral { background: linear-gradient(135deg, #e2e8f0, #cbd5e1); }
 
 .compact-panel {
-  padding-top: 14px;
+  padding-top: 10px;
 }
 
 .chart {
@@ -1609,7 +1619,7 @@ onUnmounted(() => {
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .saved-list {
@@ -1669,7 +1679,7 @@ onUnmounted(() => {
 .syntax-help {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
 }
 
 .syntax-desc {
@@ -1679,24 +1689,31 @@ onUnmounted(() => {
 }
 
 .syntax-block {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 12px 14px;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.14);
+  border-radius: 10px;
+  margin-top: -10px;
+  padding: 8px 11px;
 }
 
+.tips-box strong,
 .syntax-block strong {
   color: #0f172a;
+  display: block;
+  font-size: 12px;
+  margin-bottom: 6px;
 }
 
 .syntax-block ul {
-  margin: 10px 0 0;
+  margin: 6px 0 0;
   padding-left: 18px;
 }
 
+.tips-box p,
 .syntax-block li {
-  color: #475569;
-  line-height: 1.8;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 .syntax-block code {
@@ -1713,14 +1730,14 @@ onUnmounted(() => {
 }
 
 .detail-actions {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .compact-grid {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .compact-attr {
@@ -1790,4 +1807,6 @@ pre {
     margin-top: 8px;
   }
 }
+.hero.panel.hero-panel { border-radius: 20px; }
 </style>
+

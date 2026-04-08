@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="observability-page">
     <section class="hero panel">
       <div class="hero-copy">
@@ -7,7 +7,7 @@
             <el-icon><Histogram /></el-icon>
           </span>
           <h2>监控看板</h2>
-          <p class="page-inline-desc">集成 Grafana 看板，支持筛选与嵌入查看</p>
+          <p class="page-inline-desc">集中查看 Grafana 看板</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -18,7 +18,7 @@
         <el-button size="small" v-if="canViewTracing" @click="router.push('/observability/tracing')">链路追踪</el-button>
         <el-button size="small" v-if="canQueryLogs" @click="router.push('/logs/query')">日志查询</el-button>
         <el-button size="small" v-if="canViewAlerts" @click="router.push('/alerts')">告警中心</el-button>
-        <el-button size="small" v-if="grafana.url" type="primary" @click="openGrafana">打开 Grafana</el-button>
+        <el-button size="small" v-if="grafana.url" type="primary" @click="openGrafana">外部打开</el-button>
       </div>
     </section>
 
@@ -31,16 +31,16 @@
 
     <div class="runtime-strip">
       <el-icon><InfoFilled /></el-icon>
-      <span>{{ overview.tips?.[1] || '已集成 Grafana 时可直接嵌入查看，未配置时保留推荐看板占位。' }}</span>
+      <span>{{ overview.tips?.[1] || '已接入时支持嵌入查看，未接入时展示推荐看板。' }}</span>
     </div>
 
     <section class="panel">
       <div class="section-head">
         <h3>看板筛选</h3>
-        <el-tag size="small" :type="grafana.configured ? 'success' : 'warning'">{{ grafana.status_text || '待加载' }}</el-tag>
+        <el-tag size="small" :type="grafana.configured ? 'success' : 'warning'">{{ grafana.status_text || '待接入' }}</el-tag>
       </div>
       <div class="toolbar-grid">
-        <el-input size="small" v-model.trim="filters.keyword" placeholder="按看板名或说明搜索" clearable />
+        <el-input size="small" v-model.trim="filters.keyword" placeholder="按看板名称或说明搜索" clearable />
         <el-select size="small" v-model="filters.tag" clearable placeholder="按标签筛选">
           <el-option v-for="item in tagOptions" :key="item" :label="item" :value="item" />
         </el-select>
@@ -79,7 +79,7 @@
                   <span v-for="tag in item.tags" :key="`${item.key}-${tag}`" class="dashboard-chip">{{ tag }}</span>
                 </div>
                 <div class="dashboard-actions">
-                  <el-button size="small" v-if="item.url" link type="primary" @click.stop="openExternal(item.url)">打开看板</el-button>
+                  <el-button size="small" v-if="item.url" link type="primary" @click.stop="openExternal(item.url)">外部打开</el-button>
                   <el-button size="small" v-else link disabled>等待配置 URL</el-button>
                 </div>
               </article>
@@ -115,7 +115,7 @@
           />
           <el-alert
             v-else
-            title="当前未配置 GRAFANA_URL 或默认看板路径，暂时只展示推荐看板信息。"
+            title="当前未配置 `GRAFANA_URL` 或默认看板路径，暂时仅展示推荐看板信息。"
             type="info"
             show-icon
             :closable="false"
@@ -159,9 +159,9 @@ const filteredDashboards = computed(() => {
 
 function dashboardGroupMeta(item) {
   const text = `${item.key} ${item.title} ${item.description} ${(item.tags || []).join(' ')}`.toLowerCase()
-  if (/(log|audit|loki|sls|elk)/.test(text)) return { key: 'logs', label: '日志排障', hint: '面向日志回放、审计与错误钻取' }
+  if (/(log|audit|loki|sls|elk)/.test(text)) return { key: 'logs', label: '日志排障', hint: '面向日志回放、审计与错误定位' }
   if (/(nginx|ingress|gateway|availability|latency)/.test(text)) return { key: 'ingress', label: '入口与可用性', hint: '关注入口流量、延迟和 SLO' }
-  if (/(infra|node|cpu|memory|pod|disk)/.test(text)) return { key: 'infra', label: '基础设施', hint: '覆盖主机、节点和资源使用率' }
+  if (/(infra|node|cpu|memory|pod|disk)/.test(text)) return { key: 'infra', label: '基础设施', hint: '覆盖主机、节点和资源使用情况' }
   return { key: 'apm', label: '应用与链路', hint: '优先查看链路、吞吐和错误趋势' }
 }
 
@@ -370,13 +370,20 @@ onMounted(loadOverview)
 
 .runtime-strip {
   align-items: center;
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.12), rgba(249, 115, 22, 0.1));
-  border: 1px solid rgba(245, 158, 11, 0.16);
-  border-radius: 12px;
-  color: #0f172a;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.14);
+  border-radius: 10px;
+  color: #64748b;
   display: flex;
-  gap: 6px;
+  font-size: 12px;
+  gap: 0;
+  line-height: 1.45;
+  margin-top: -10px;
   padding: 8px 11px;
+}
+
+.runtime-strip :deep(.el-icon) {
+  display: none;
 }
 
 .section-head {
@@ -511,4 +518,6 @@ onMounted(loadOverview)
     grid-template-columns: 1fr;
   }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+

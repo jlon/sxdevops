@@ -1,14 +1,14 @@
-<template>
+﻿<template>
   <div class="aiops-config-page">
     <section class="hero panel">
       <div class="hero-copy">
         <div class="hero-title-row">
           <span class="hero-icon"><el-icon><ChatDotSquare /></el-icon></span>
-          <h2>AIOps 配置</h2>
+          <h2>运维智能体配置</h2>
         </div>
       </div>
       <div class="hero-actions">
-        <el-button size="small" :loading="loading.page" @click="loadAll">刷新数据</el-button>
+        <el-button size="small" :loading="loading.page" @click="loadAll">刷新</el-button>
         <el-button size="small" type="primary" :loading="saving.config" @click="saveConfig">保存策略</el-button>
       </div>
     </section>
@@ -34,16 +34,16 @@
 
     <div class="runtime-strip">
       <el-icon><InfoFilled /></el-icon>
-      <span>模型 Key 在后端加密保存；高风险动作默认建议启用确认；MCP 与 Skill 第一阶段以受控接入为主。</span>
+      <span>模型 Key 加密保存；高风险动作默认二次确认；MCP 与 Skill 受控接入。</span>
     </div>
 
     <section class="panel">
       <el-tabs v-model="activeTab">
-        <el-tab-pane label="机器人策略" name="strategy" />
-        <el-tab-pane label="模型配置" name="providers" />
+        <el-tab-pane label="智能体策略" name="strategy" />
+        <el-tab-pane label="模型提供商" name="providers" />
         <el-tab-pane label="MCP" name="mcp" />
         <el-tab-pane label="Skill" name="skills" />
-        <el-tab-pane label="审计概览" name="audit" />
+        <el-tab-pane label="审计" name="audit" />
       </el-tabs>
 
       <template v-if="activeTab === 'strategy'">
@@ -62,7 +62,7 @@
               <el-form-item label="建议问题">
                 <el-select v-model="configForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" />
               </el-form-item>
-              <el-form-item label="系统提示词">
+              <el-form-item label="系统提示语">
                 <el-input v-model="configForm.system_prompt" type="textarea" :rows="8" />
               </el-form-item>
             </el-form>
@@ -91,7 +91,7 @@
                 <el-switch v-model="configForm.allow_analysis" />
               </div>
             </div>
-            <el-form :model="configForm" label-width="118px" style="margin-top:14px;">
+            <el-form :model="configForm" label-width="118px" style="margin-top:8px;">
               <el-form-item label="历史消息窗口">
                 <el-input-number v-model="configForm.max_history_messages" :min="4" :max="40" />
               </el-form-item>
@@ -430,7 +430,7 @@ async function saveConfig() {
   saving.config = true
   try {
     await updateAIOpsConfig({ ...configForm })
-    ElMessage.success('机器人策略已保存')
+    ElMessage.success('智能体策略已保存')
     await loadAll()
   } finally {
     saving.config = false
@@ -465,7 +465,7 @@ async function handleTestProvider(row) {
 }
 
 async function handleDeleteProvider(row) {
-  await ElMessageBox.confirm(`确认删除模型提供商 ${row.name}？`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除模型提供商 ${row.name} 吗？`, '删除确认', { type: 'warning' })
   await deleteAIOpsProvider(row.id)
   ElMessage.success('模型提供商已删除')
   await loadAll()
@@ -491,7 +491,7 @@ async function saveMcp() {
 }
 
 async function handleDeleteMcp(row) {
-  await ElMessageBox.confirm(`确认删除 MCP ${row.name}？`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除 MCP ${row.name} 吗？`, '删除确认', { type: 'warning' })
   await deleteAIOpsMcpServer(row.id)
   ElMessage.success('MCP 已删除')
   await loadAll()
@@ -517,7 +517,7 @@ async function saveSkill() {
 }
 
 async function handleDeleteSkill(row) {
-  await ElMessageBox.confirm(`确认删除 Skill ${row.name}？`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除 Skill ${row.name} 吗？`, '删除确认', { type: 'warning' })
   await deleteAIOpsSkill(row.id)
   ElMessage.success('Skill 已删除')
   await loadAll()
@@ -532,15 +532,21 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.aiops-config-page{display:flex;flex-direction:column;gap:10px}
-.panel{background:linear-gradient(180deg,#fff 0%,#fffdf8 100%);border:1px solid #e5e7eb;border-radius:16px;box-shadow:0 10px 24px rgba(15,23,42,.05);padding:14px 16px}
-.hero,.hero-copy,.hero-title-row,.hero-actions,.config-grid,.switch-list,.section-toolbar,.audit-grid{display:flex;gap:10px}
+.aiops-config-page{display:flex;flex-direction:column;gap:8px}
+.panel{background:linear-gradient(180deg,#fff 0%,#fffdf8 100%);border:1px solid rgba(148,163,184,.16);border-radius:20px;box-shadow:0 12px 28px rgba(15,23,42,.05);padding:14px 16px}
+.hero,.hero-copy,.hero-title-row,.hero-actions,.config-grid,.switch-list,.section-toolbar,.audit-grid{display:flex;gap:8px}
+.hero-actions{align-items:center;flex-wrap:wrap}
+.hero-actions :deep(.el-button){min-height:38px;padding:0 16px;border-radius:12px}
 .hero{align-items:center;justify-content:space-between;background:linear-gradient(135deg,#fff7ed 0%,#f0fdf4 100%)}
 .hero-title-row{align-items:center}.hero-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;color:#fff;background:linear-gradient(135deg,#0f766e,#0ea5e9)}.hero h2{margin:0;font-size:24px}
-.stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.release-stat-card{padding:14px 16px;border-radius:16px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.18);box-shadow:0 16px 34px rgba(15,23,42,.07)}.stat-value{font-size:28px;font-weight:700;color:#0f172a}.stat-label{margin-top:6px;color:#64748b;font-size:13px}.success-card{background:linear-gradient(145deg,#f0fdf4 0%,#ecfeff 100%)}.warning-card{background:linear-gradient(145deg,#fff7ed 0%,#fffbeb 100%)}
-.runtime-strip{display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:14px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe}
-.config-grid{align-items:flex-start}.config-section{flex:1;padding:8px 0}.section-title{font-size:14px;font-weight:700;color:#0f172a;margin-bottom:12px}.switch-list{flex-direction:column}.switch-item{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}
-.section-toolbar{justify-content:flex-end;margin-bottom:12px}.dialog-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px}.audit-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.audit-card{padding:16px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;display:flex;flex-direction:column;gap:8px}.audit-card strong{font-size:28px;color:#0f172a}
-.audit-section{margin-top:18px}
+.stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.release-stat-card{padding:14px 16px;border-radius:16px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.16);box-shadow:0 12px 26px rgba(15,23,42,.05)}.stat-value{font-size:28px;font-weight:700;color:#0f172a}.stat-label{margin-top:6px;color:#64748b;font-size:13px}.success-card{background:linear-gradient(145deg,#f0fdf4 0%,#ecfeff 100%)}.warning-card{background:linear-gradient(145deg,#fff7ed 0%,#fffbeb 100%)}
+.runtime-strip{display:flex;align-items:center;gap:0;padding:8px 11px;border-radius:10px;background:linear-gradient(90deg,rgba(59,130,246,.08) 0%,rgba(14,165,233,.04) 100%);color:#64748b;border:1px solid rgba(59,130,246,.14);font-size:12px;line-height:1.45;margin-top:-10px}.runtime-strip :deep(.el-icon){display:none}
+.config-grid{align-items:flex-start}.config-section{flex:1;padding:8px 0}.section-title{font-size:14px;font-weight:700;color:#0f172a;margin-bottom:8px}.switch-list{flex-direction:column}.switch-item{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}
+.section-toolbar{justify-content:flex-end;margin-bottom:8px}.dialog-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px}.audit-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.audit-card{padding:16px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;display:flex;flex-direction:column;gap:8px}.audit-card strong{font-size:28px;color:#0f172a}
+.audit-section{margin-top:8px}
 @media (max-width: 960px){.stats-grid,.audit-grid,.dialog-grid{grid-template-columns:1fr}.config-grid{flex-direction:column}}
+.hero.panel { border-radius: 20px; }
 </style>
+
+
+

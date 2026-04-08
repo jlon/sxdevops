@@ -2,8 +2,8 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { getCurrentUser, login as loginApi, logout as logoutApi } from '@/api/modules/rbac'
 
-const TOKEN_KEY = 'agdevops_token'
-const USER_KEY = 'agdevops_user'
+const TOKEN_KEY = 'sxdevops_token'
+const USER_KEY = 'sxdevops_user'
 
 function loadStoredUser() {
   try {

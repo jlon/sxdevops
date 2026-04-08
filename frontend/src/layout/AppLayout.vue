@@ -5,7 +5,7 @@
         <div class="logo-icon">
           <el-icon><Cpu /></el-icon>
         </div>
-        <span class="logo-text">AgDevOps</span>
+        <span class="logo-text">SxDevOps</span>
       </div>
 
       <el-menu

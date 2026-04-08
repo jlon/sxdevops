@@ -128,7 +128,7 @@ class AwsCloudAdapter(BaseCloudAdapter):
         base_session = boto3.session.Session(region_name=region_name, **session_kwargs)
         if not self.credential.role_arn:
             return base_session
-        params = {'RoleArn': self.credential.role_arn, 'RoleSessionName': f'agdevops-{self.credential.id}'}
+        params = {'RoleArn': self.credential.role_arn, 'RoleSessionName': f'sxdevops-{self.credential.id}'}
         if self.credential.external_id:
             params['ExternalId'] = self.credential.external_id
         creds = base_session.client('sts', region_name=region_name).assume_role(**params)['Credentials']

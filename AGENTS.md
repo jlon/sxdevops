@@ -23,8 +23,16 @@ For new management or console-style pages, default to the same top structure alr
 - Do not add a second explanatory text row under the title unless the user explicitly asks for it.
 - Follow the `hero + stats cards + compact alert strip + tabs/content` pattern.
 - Reuse the `release-stat-card` visual style for the top metric cards instead of older icon-box summary cards.
-- Keep a compact `运行提示` strip near the top when the page has operational hints, warnings, or current-context reminders.
+- Keep a compact runtime hint strip near the top when the page has operational hints, warnings, or current-context reminders.
 - If the page has context filters such as environment, cluster, namespace, or domain, place them in a compact toolbar below the tabs or in the top control area, not in an old-style `page-header`.
+
+## Chinese Encoding Guardrails
+- Any source file that contains Chinese text must be saved as `UTF-8`.
+- Do not round-trip source text through `GBK`, `ANSI`, or editor auto-detected legacy encodings.
+- Preserve readable Chinese in comments, labels, tooltips, alerts, backend responses, and operation logs.
+- If a task touches Chinese text, run a quick mojibake scan before finishing and also check for any replacement-character artifacts.
+- Do not paste terminal output back into source files when terminal encoding is uncertain. Prefer direct file edits and then reopen the file to verify the saved text.
+- For UI or API changes involving Chinese, validate the affected page or build output and fix any newly introduced mojibake before closing the task.
 
 ## Testing Guidelines
 Backend tests use Django's built-in `TestCase`; add coverage in the nearest app-level `tests.py` or a `test_*.py` module. Name tests by behavior, for example `test_refresh_info_marks_host_offline_on_ssh_failure`. Frontend has no automated test suite yet, so every UI change should at minimum pass `npm run build` and a manual browser check.

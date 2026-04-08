@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="observability-page">
     <section class="hero panel">
       <div class="hero-copy">
@@ -7,13 +7,13 @@
             <el-icon><DataLine /></el-icon>
           </span>
           <h2>可观测性平台</h2>
-          <p class="page-inline-desc">统一查看日志、告警、链路与看板入口</p>
+          <p class="page-inline-desc">统一查看日志、告警、链路与看板</p>
         </div>
       </div>
       <div class="hero-actions">
         <el-button size="small" @click="loadOverview" :loading="loading">
           <el-icon><RefreshRight /></el-icon>
-          刷新总览
+          刷新
         </el-button>
       </div>
     </section>
@@ -27,7 +27,7 @@
 
     <div class="runtime-strip">
       <el-icon><InfoFilled /></el-icon>
-      <span>{{ overview.tips?.[0] || '可观测性总览会根据当前权限收敛可见模块。' }}</span>
+      <span>{{ overview.tips?.[0] || '按当前权限展示可用模块。' }}</span>
     </div>
 
     <section class="panel">
@@ -39,7 +39,7 @@
         <article v-for="item in overview.navigation || []" :key="item.path" class="nav-card" :class="`tone-${item.tone || 'info'}`">
           <strong>{{ item.title }}</strong>
           <p>{{ item.description }}</p>
-          <el-button size="small" type="primary" plain @click="go(item.path)">进入模块</el-button>
+          <el-button size="small" type="primary" plain @click="go(item.path)">打开</el-button>
         </article>
       </div>
     </section>
@@ -65,7 +65,7 @@
               <span>默认 {{ overview.modules.logs.default_count }}</span>
             </div>
             <div class="module-actions">
-              <el-button size="small" link type="primary" @click="go('/logs')">进入日志中心</el-button>
+              <el-button size="small" link type="primary" @click="go('/logs')">查看日志</el-button>
               <el-button size="small" v-if="canViewLogDatasources" link @click="go('/logs/datasources')">管理数据源</el-button>
             </div>
           </article>
@@ -86,7 +86,7 @@
               <span>警告 {{ overview.modules.alerts.warning }}</span>
             </div>
             <div class="module-actions">
-              <el-button size="small" link type="primary" @click="go('/alerts')">处理告警</el-button>
+              <el-button size="small" link type="primary" @click="go('/alerts')">查看告警</el-button>
             </div>
           </article>
 
@@ -107,7 +107,7 @@
             </div>
             <div class="module-actions">
               <el-button size="small" link type="primary" @click="go('/observability/tracing')">查看链路</el-button>
-              <el-button size="small" v-if="overview.modules.tracing.ui_url" link @click="openExternal(overview.modules.tracing.ui_url)">打开 SkyWalking</el-button>
+              <el-button size="small" v-if="overview.modules.tracing.ui_url" link @click="openExternal(overview.modules.tracing.ui_url)">外部打开</el-button>
             </div>
           </article>
 
@@ -136,7 +136,7 @@
 
       <section class="panel">
         <div class="section-head">
-          <h3>运行提示</h3>
+          <h3>平台提醒</h3>
         </div>
         <div class="tips-list">
           <article v-for="item in overview.tips || []" :key="item" class="tip-card">
@@ -150,7 +150,7 @@
       <section v-if="overview.recent_alerts?.length" class="panel">
         <div class="section-head">
           <h3>最近告警</h3>
-          <el-button size="small" link type="primary" @click="go('/alerts')">全部告警</el-button>
+          <el-button size="small" link type="primary" @click="go('/alerts')">查看全部</el-button>
         </div>
         <el-table :data="overview.recent_alerts" stripe size="small" style="width: 100%">
           <el-table-column prop="title" label="标题" min-width="180" />
@@ -172,7 +172,7 @@
       <section v-if="overview.recent_traces?.length" class="panel">
         <div class="section-head">
           <h3>最近 Trace</h3>
-          <el-button size="small" link type="primary" @click="go('/observability/tracing')">全部链路</el-button>
+          <el-button size="small" link type="primary" @click="go('/observability/tracing')">查看全部</el-button>
         </div>
         <el-table :data="overview.recent_traces" stripe size="small" style="width: 100%">
           <el-table-column prop="trace_id" label="Trace ID" min-width="170" show-overflow-tooltip />
@@ -214,7 +214,7 @@ const canViewLogDatasources = computed(() => authStore.hasPermission('ops.log.da
 const statCards = computed(() => [
   { label: '日志数据源', value: overview.value.summary?.datasource_count || 0, tone: '' },
   { label: '待处理告警', value: overview.value.summary?.unacknowledged_alerts || 0, tone: 'danger-card' },
-  { label: '当前 Trace', value: overview.value.summary?.trace_count || 0, tone: 'warning-card' },
+  { label: 'Trace 数', value: overview.value.summary?.trace_count || 0, tone: 'warning-card' },
   { label: 'Grafana 看板', value: overview.value.summary?.dashboard_count || 0, tone: 'success-card' },
 ])
 
@@ -381,13 +381,20 @@ onMounted(loadOverview)
 
 .runtime-strip {
   align-items: center;
-  background: linear-gradient(90deg, rgba(37, 99, 235, 0.12), rgba(14, 165, 233, 0.1));
-  border: 1px solid rgba(37, 99, 235, 0.16);
-  border-radius: 12px;
-  color: #0f172a;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.14);
+  border-radius: 10px;
+  color: #64748b;
   display: flex;
-  gap: 6px;
+  font-size: 12px;
+  gap: 0;
+  line-height: 1.45;
+  margin-top: -10px;
   padding: 8px 11px;
+}
+
+.runtime-strip :deep(.el-icon) {
+  display: none;
 }
 
 .section-head {
@@ -518,4 +525,8 @@ onMounted(loadOverview)
     grid-template-columns: 1fr;
   }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+
+
+

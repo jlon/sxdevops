@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="fade-in">
     <!-- Header -->
     <div class="page-header">
@@ -39,7 +39,7 @@
       </div>
     </div>
 
-    <!-- 主 Tab 栏 (Pill Tab Theme: Green) -->
+    <!-- 主 Tab 样式（Pill Tab Theme: Green） -->
     <section class="hero panel nginx-hero">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
@@ -63,7 +63,7 @@
     </div>
 
     <div class="middleware-alert-strip nginx-alert-strip">
-      <span class="middleware-alert-strip__label">运行提示</span>
+      <span class="middleware-alert-strip__label">平台提醒</span>
       <el-tooltip
         v-for="(tip, index) in activeTips.slice(0, 2)"
         :key="`${activeTab}-${index}`"
@@ -82,7 +82,7 @@
         </template>
         <div class="alert-popover">
           <div v-for="(tip, index) in activeTips" :key="`nginx-tip-${index}`" class="alert-popover__item">
-            <el-tag size="small" type="info">提示</el-tag>
+            <el-tag size="small" type="info">提醒</el-tag>
             <span>{{ tip }}</span>
           </div>
         </div>
@@ -119,8 +119,8 @@
 
     <!-- ============ 环境管理 ============ -->
     <div v-if="activeTab === 'envs'" class="tab-content">
-      <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-        <el-button v-if="canManageNginx" type="primary" size="small" @click="openEnvDialog()"><el-icon><Plus /></el-icon> 添加环境</el-button>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+        <el-button v-if="canManageNginx" type="primary" size="small" @click="openEnvDialog()"><el-icon><Plus /></el-icon> 新增环境</el-button>
       </div>
       <el-table :data="envs" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="环境名称" min-width="140">
@@ -138,7 +138,7 @@
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="row.status==='connected'?'success':row.status==='error'?'danger':'info'" size="small">
-              {{ row.status==='connected'?'已连接':row.status==='error'?'异常':'未连接' }}
+              {{ row.status === 'connected' ? '已连接' : row.status === 'error' ? '异常' : '未连接' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -155,10 +155,10 @@
       </el-table>
     </div>
 
-    <!-- ============ 域名管理 ============ -->
+    <!-- ============ 域名绠＄悊 ============ -->
     <div v-if="activeTab === 'domains'" class="tab-content">
       <div class="content-toolbar">
-        <el-alert title="提示：修改配置和调整启用状态后，请点击【发布配置】实际生效" type="info" :closable="false" show-icon class="content-toolbar__alert" style="padding:4px 12px; width:auto; background:var(--bg-main);" />
+        <el-alert title="平台提醒：修改配置和调整启用状态后，请点击【发布配置】实际生效。" type="info" :closable="false" show-icon class="content-toolbar__alert" style="padding:4px 12px; width:auto; background:var(--bg-main);" />
         <div class="content-toolbar__actions content-toolbar__actions--push">
           <div class="filter-inline-context">
             <span class="filter-inline-label">当前环境</span>
@@ -170,7 +170,7 @@
               </el-option>
             </el-select>
           </div>
-          <el-button v-if="canManageNginx" type="primary" size="small" @click="openDomainDialog()" :disabled="!filterEnvId"><el-icon><Plus /></el-icon> 添加域名</el-button>
+          <el-button v-if="canManageNginx" type="primary" size="small" @click="openDomainDialog()" :disabled="!filterEnvId"><el-icon><Plus /></el-icon> 新增域名</el-button>
         </div>
       </div>
       <el-table :data="filteredDomains" stripe v-loading="loading" style="width:100%">
@@ -184,7 +184,7 @@
         </el-table-column>
         <el-table-column label="SSL" width="100">
           <template #default="{ row }">
-            <el-tag v-if="row.ssl_enabled" type="success" size="small">✓ :{{ row.ssl_port }}</el-tag>
+            <el-tag v-if="row.ssl_enabled" type="success" size="small">已启用:{{ row.ssl_port }}</el-tag>
             <el-tag v-else type="info" size="small">未关联</el-tag>
           </template>
         </el-table-column>
@@ -204,7 +204,7 @@
             <el-button v-if="canManageNginx" link type="info" size="small" @click="openDomainDialog(row)">编辑</el-button>
             <el-button link type="warning" size="small" @click="handlePreviewConf(row)">预览</el-button>
             <el-button v-if="canManageNginx" link type="success" size="small" @click="handleDeployConf(row)">发布配置</el-button>
-            <el-popconfirm v-if="canManageNginx" title="确定删除该域名？" @confirm="delDomain(row.id)">
+            <el-popconfirm v-if="canManageNginx" title="确定删除该域名吗？" @confirm="delDomain(row.id)">
               <template #reference><el-button link type="danger" size="small">删除</el-button></template>
             </el-popconfirm>
           </template>
@@ -215,7 +215,7 @@
     <!-- ============ 路由配置 ============ -->
     <div v-if="activeTab === 'routes'" class="tab-content">
       <div class="content-toolbar">
-        <el-alert title="提示：配置完路由后，请到【域名管理】选择对应域名【预览】并确认，无误后点击【发布配置】生效" type="info" :closable="false" show-icon class="content-toolbar__alert content-toolbar__alert--nowrap" style="padding:4px 12px; width:auto; background:var(--bg-main);" />
+        <el-alert title="平台提醒：配置完路由后，请到【域名管理】选择对应域名【预览】并确认，无误后点击【发布配置】生效。" type="info" :closable="false" show-icon class="content-toolbar__alert content-toolbar__alert--nowrap" style="padding:4px 12px; width:auto; background:var(--bg-main);" />
         <div class="content-toolbar__actions content-toolbar__actions--push">
           <div class="filter-inline-context">
             <span class="filter-inline-label">当前环境</span>
@@ -233,7 +233,7 @@
               <el-option v-for="d in filteredDomains" :key="d.id" :label="`${d.domain}:${d.listen_port}`" :value="d.id" />
             </el-select>
           </div>
-          <el-button v-if="canManageNginx" type="primary" size="small" @click="openRouteDialog()" :disabled="!filterDomainId"><el-icon><Plus /></el-icon> 添加路由</el-button>
+          <el-button v-if="canManageNginx" type="primary" size="small" @click="openRouteDialog()" :disabled="!filterDomainId"><el-icon><Plus /></el-icon> 新增路由</el-button>
         </div>
       </div>
       <div v-if="!filterEnvId || !filterDomainId" style="text-align:center;padding:40px;color:#94a3b8;">
@@ -257,12 +257,12 @@
           </template>
         </el-table-column>
         <el-table-column prop="enabled" label="启用" width="80">
-          <template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled?'是':'否' }}</el-tag></template>
+          <template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template>
         </el-table-column>
         <el-table-column v-if="canManageNginx" label="操作" width="130" fixed="right">
           <template #default="{ row }">
             <el-button link type="info" size="small" @click="openRouteDialog(row)">编辑</el-button>
-            <el-popconfirm title="确定删除该路由？" @confirm="delRoute(row.id)">
+            <el-popconfirm title="确定删除该路由吗？" @confirm="delRoute(row.id)">
               <template #reference><el-button link type="danger" size="small">删除</el-button></template>
             </el-popconfirm>
           </template>
@@ -272,17 +272,17 @@
 
     <!-- ============ 证书管理 ============ -->
     <div v-if="activeTab === 'certs'" class="tab-content">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
         <el-alert class="cert-alert" type="info" :closable="false" show-icon style="padding:4px 12px; width:auto; background:var(--bg-main);">
           <template #title>
             <span style="line-height:1.6; display:inline-block;">
-              提示：<br>
-              1. 关联环境后证书会自动推送到对应环境的 ssl 目录下，取消关联后删除远程证书<br>
-              2. 如更新证书请编辑后点击【重新推送】
+              平台提醒：<br>
+              1. 关联环境后，证书会自动推送到对应环境的 `ssl` 目录；取消关联后会删除远程证书。<br>
+              2. 如更新证书内容，请编辑后点击“重新推送”。
             </span>
           </template>
         </el-alert>
-        <el-button v-if="canManageNginx" type="primary" size="small" @click="openCertDialog()"><el-icon><Plus /></el-icon> 添加证书</el-button>
+        <el-button v-if="canManageNginx" type="primary" size="small" @click="openCertDialog()"><el-icon><Plus /></el-icon> 新增证书</el-button>
       </div>
       <el-table :data="certs" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="domain" label="证书域名" min-width="180">
@@ -308,7 +308,7 @@
             <el-button link type="info" size="small" @click="openCertDialog(row)">编辑</el-button>
             <el-button link type="primary" size="small" @click="openLinkEnvDialog(row)">关联环境</el-button>
             <el-button link type="warning" size="small" @click="handlePushAll(row)">重新推送</el-button>
-            <el-popconfirm title="确定删除该证书？" @confirm="delCert(row.id)">
+            <el-popconfirm title="确定删除该证书吗？" @confirm="delCert(row.id)">
               <template #reference><el-button link type="danger" size="small">删除</el-button></template>
             </el-popconfirm>
           </template>
@@ -319,7 +319,7 @@
     <!-- ========== MODALS ========== -->
 
     <!-- 环境弹窗 -->
-    <el-dialog v-model="envDialog" :title="envForm.id ? '编辑 Nginx 环境' : '添加 Nginx 环境'" width="90%" style="max-width:600px;" top="5vh" append-to-body destroy-on-close>
+    <el-dialog v-model="envDialog" :title="envForm.id ? '编辑 Nginx 环境' : '新增 Nginx 环境'" width="90%" style="max-width:600px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="envForm" label-width="110px">
         <el-form-item label="环境名称" required><el-input v-model="envForm.name" placeholder="例如 web-prod-01" /></el-form-item>
         <el-form-item label="IP 地址" required><el-input v-model="envForm.ip_address" placeholder="192.168.1.100" /></el-form-item>
@@ -338,19 +338,19 @@
     </el-dialog>
 
     <!-- 域名弹窗 -->
-    <el-dialog v-model="domainDialog" :title="domainForm.id ? '编辑域名' : '添加域名'" width="90%" style="max-width:650px;" top="5vh" append-to-body destroy-on-close>
+    <el-dialog v-model="domainDialog" :title="domainForm.id ? '编辑域名' : '新增域名'" width="90%" style="max-width:650px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="domainForm" label-width="110px">
-        <el-alert title="没有域名也可以直接填写 IP 地址" type="info" :closable="false" style="margin-bottom:16px;" />
+        <el-alert title="没有域名时也可以直接填写 IP 地址" type="info" :closable="false" style="margin-bottom:8px;" />
         <el-form-item label="域名/IP" required><el-input v-model="domainForm.domain" placeholder="example.com 或 192.168.1.100" /></el-form-item>
         <div style="display:flex; gap:10px;">
           <el-form-item label="HTTP 端口" style="flex:1"><el-input v-model.number="domainForm.listen_port" type="number" /></el-form-item>
           <el-form-item label="SSL 端口" style="flex:1" label-width="80px"><el-input v-model.number="domainForm.ssl_port" type="number" /></el-form-item>
         </div>
         <el-form-item label="关联证书">
-          <el-select v-model="domainForm.certificate" placeholder="不关联证书（无SSL）" clearable style="width:100%">
+          <el-select v-model="domainForm.certificate" placeholder="不关联证书（则不启用 SSL）" clearable style="width:100%">
             <el-option v-for="c in certs" :key="c.id" :label="c.domain" :value="c.id" />
           </el-select>
-          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">关联证书后自动开启 SSL，不关联则不启用 SSL</div>
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">关联证书后自动启用 SSL，不关联则不启用 SSL。</div>
         </el-form-item>
         <el-form-item label="是否启用此域名">
           <el-switch v-model="domainForm.enabled" />
@@ -363,13 +363,13 @@
     </el-dialog>
 
     <!-- 路由弹窗 -->
-    <el-dialog v-model="routeDialog" :title="routeForm.id ? '编辑路由' : '添加路由'" width="90%" style="max-width:700px;" top="3vh" append-to-body destroy-on-close>
+    <el-dialog v-model="routeDialog" :title="routeForm.id ? '编辑路由' : '新增路由'" width="90%" style="max-width:700px;" top="3vh" append-to-body destroy-on-close>
       <el-form :model="routeForm" label-width="130px">
         <el-divider content-position="left">基础信息（必填）</el-divider>
         <el-form-item label="Location 路径" required><el-input v-model="routeForm.location" placeholder="/" /></el-form-item>
         <el-form-item label="后端地址" required>
-          <el-input v-model="routeForm.upstream_servers" type="textarea" :rows="3" placeholder="每行一个后端地址，如：&#10;http://127.0.0.1:8080&#10;http://127.0.0.1:8081" />
-          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">多个地址会自动生成 upstream 负载均衡配置</div>
+          <el-input v-model="routeForm.upstream_servers" type="textarea" :rows="3" placeholder="每行一个后端地址，例如：&#10;http://127.0.0.1:8080&#10;http://127.0.0.1:8081" />
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">多个地址会自动生成 upstream 负载均衡配置。</div>
         </el-form-item>
         <el-form-item label="是否启用此路由">
           <el-switch v-model="routeForm.enabled" />
@@ -387,17 +387,17 @@
         </el-form-item>
         <el-form-item label="自定义 Header">
           <el-input v-model="routeForm.custom_headers" type="textarea" :rows="2" placeholder='[{"name":"X-Custom","value":"val"}]' />
-          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">JSON 数组格式，用于 add_header 指令</div>
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">JSON 数组格式，用于生成 `add_header` 指令。</div>
         </el-form-item>
         <el-form-item label="proxy_set_header">
           <el-input v-model="routeForm.proxy_set_headers" type="textarea" :rows="2" placeholder='[{"name":"Host","value":"$host"}]' />
-          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">JSON 数组格式，覆盖默认的 proxy_set_header</div>
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">JSON 数组格式，用于覆盖默认的 `proxy_set_header`。</div>
         </el-form-item>
         <el-form-item label="上传大小限制">
           <el-input v-model="routeForm.client_max_body_size" placeholder="10m" style="width:120px" />
         </el-form-item>
         <el-form-item label="额外指令">
-          <el-input v-model="routeForm.extra_directives" type="textarea" :rows="3" placeholder="原始 Nginx 指令，每行一条，如：&#10;proxy_connect_timeout 60s&#10;proxy_read_timeout 120s" />
+          <el-input v-model="routeForm.extra_directives" type="textarea" :rows="3" placeholder="原始 Nginx 指令，每行一条，例如：&#10;proxy_connect_timeout 60s&#10;proxy_read_timeout 120s" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -407,14 +407,14 @@
     </el-dialog>
 
     <!-- 证书弹窗 -->
-    <el-dialog v-model="certDialog" :title="certForm.id ? '编辑证书' : '添加证书'" width="90%" style="max-width:650px;" top="5vh" append-to-body destroy-on-close>
+    <el-dialog v-model="certDialog" :title="certForm.id ? '编辑证书' : '新增证书'" width="90%" style="max-width:650px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="certForm" label-width="110px">
         <el-form-item label="证书 (PEM)" required>
-          <el-input v-model="certForm.cert_content" type="textarea" :rows="4" placeholder="粘贴完整的包含公约的 PEM 证书内容，比如 -----BEGIN CERTIFICATE-----" />
-          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">系统会自动解析证书绑定的域名和过期时间</div>
+          <el-input v-model="certForm.cert_content" type="textarea" :rows="4" placeholder="粘贴完整 PEM 证书内容，例如 -----BEGIN CERTIFICATE-----" />
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;">系统会自动解析证书绑定的域名和过期时间。</div>
         </el-form-item>
         <el-form-item label="私钥 (KEY)" required>
-          <el-input v-model="certForm.key_content" type="textarea" :rows="4" placeholder="粘贴私钥内容（-----BEGIN PRIVATE KEY-----）" />
+          <el-input v-model="certForm.key_content" type="textarea" :rows="4" placeholder="粘贴私钥内容，例如 -----BEGIN PRIVATE KEY-----" />
         </el-form-item>
         <el-form-item label="描述"><el-input v-model="certForm.description" /></el-form-item>
       </el-form>
@@ -439,7 +439,7 @@
       </el-form>
       <template #footer>
         <el-button @click="linkEnvDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleLinkEnv" :loading="saving">关联并推送</el-button>
+          <el-button type="primary" @click="handleLinkEnv" :loading="saving">关联并推送</el-button>
       </template>
     </el-dialog>
 
@@ -509,7 +509,7 @@ const activeTips = computed(() => ({
   envs: ['新增或编辑环境后，建议先执行连接测试再进行配置操作。'],
   domains: ['修改配置或启用状态后，需要执行发布配置才会在目标环境生效。', '建议先预览生成配置，再进行正式发布。'],
   routes: ['新增路由后，先在域名管理中预览配置并确认，再执行发布。', '切换环境后请重新确认当前域名与路由归属关系。'],
-  certs: ['证书关联环境后会自动推送到目标 ssl 目录。', '更新证书内容后可执行重新推送，确保远端文件同步。'],
+  certs: ['证书关联环境后会自动推送到目标 SSL 目录。', '更新证书内容后可执行重新推送，确保远端文件同步。'],
 }[activeTab.value] || []))
 
 const envDialog = ref(false)
@@ -661,7 +661,7 @@ async function delEnv(id) {
   try { await deleteNginxEnvironment(id); ElMessage.success('删除成功'); fetchEnvs() } catch (e) { } }
 async function testEnv(id) {
   if (!canManageNginx.value) return
-  ElMessage.info('测试连接中...')
+  ElMessage.info('正在测试连接...')
   try { const res = await testNginxConnection(id); res.success ? ElMessage.success(res.message) : ElMessage.error(res.message); fetchEnvs() } catch (e) { ElMessage.error('连接失败') }
 }
 
@@ -690,7 +690,7 @@ async function delDomain(id) {
   try { await deleteNginxDomain(id); ElMessage.success('删除成功'); fetchDomains() } catch (e) { } }
 async function handleDeployConf(row) {
   if (!canManageNginx.value) return
-  ElMessage.info('正在发布配置...')
+  ElMessage.info('姝ｅ湪发布配置...')
   try { const res = await deployDomainConf(row.id); res.success ? ElMessage.success(res.message) : ElMessage.error(res.message) } catch (e) { ElMessage.error('发布失败') }
 }
 async function handlePreviewConf(row) {
@@ -730,8 +730,8 @@ function openCertDialog(row) {
 }
 async function saveCert() {
   if (!canManageNginx.value) return
-  if (!certForm.value.id && !certForm.value.cert_content) return ElMessage.warning('请填写证书(PEM)内容')
-  if (!certForm.value.id && !certForm.value.key_content) return ElMessage.warning('请填写私钥(KEY)内容')
+  if (!certForm.value.id && !certForm.value.cert_content) return ElMessage.warning('请填写证书 PEM 内容')
+  if (!certForm.value.id && !certForm.value.key_content) return ElMessage.warning('请填写私钥 KEY 内容')
   saving.value = true
   try {
     const payload = { ...certForm.value }
@@ -786,7 +786,7 @@ async function handlePushAll(row) {
   try {
     const res = await pushCertAll(row.id)
     if (res.success) {
-      const msgs = (res.results || []).map(r => `${r.env}: ${r.success ? '✓' : '✗ ' + r.message}`).join('\n')
+      const msgs = (res.results || []).map(r => `${r.env}: ${r.success ? '成功' : `失败 ${r.message || ''}`}`.trim()).join('\n')
       ElMessage.success({ message: msgs || '推送完成', duration: 5000 })
     } else { ElMessage.error(res.message) }
   } catch (e) { ElMessage.error('推送失败') }
@@ -796,20 +796,21 @@ async function handlePushAll(row) {
 <style scoped>
 .nginx-page { display: flex; flex-direction: column; gap: 0; }
 .page-header { display: none; }
-.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid #dbe4f0; border-radius: 24px; box-shadow: 0 14px 34px rgba(15,23,42,.06); padding: 14px 22px; }
+.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid rgba(148,163,184,.16); border-radius: 20px; box-shadow: 0 12px 28px rgba(15,23,42,.05); padding: 12px 14px; }
 .hero { background: linear-gradient(135deg, #fff7ed 0%, #f8fbff 100%); display: flex; gap: 12px; justify-content: space-between; }
 .hero h2 { color: #0f172a; margin: 0; }
-.subtitle { color: #475569; margin: 10px 0 0; max-width: 620px; }
-.hero-actions { display: flex; gap: 12px; }
+.subtitle { color: #475569; margin: 8px 0 0; max-width: 620px; }
+.hero-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .release-hero-title-row { display: flex; align-items: center; gap: 12px; }
 .release-hero-title-inline { flex-wrap: wrap; }
 .inline-subtitle { margin: 0; max-width: none; font-size: 13px; line-height: 1.45; }
+.hero-actions :deep(.el-button) { min-height: 38px; padding: 0 16px; border-radius: 12px; }
 .release-header-icon { width: 42px; height: 42px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; color: #fff; background: linear-gradient(135deg, #409eff, #36cfc9); box-shadow: 0 10px 20px rgba(64,158,255,.2); }
 .nginx-header-icon { background: linear-gradient(135deg, #2563eb, #14b8a6); }
-.nginx-hero { margin-bottom: 16px; }
-.release-stats { gap: 16px; }
-.nginx-stats { margin-bottom: 16px; }
-.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.18); box-shadow: 0 16px 34px rgba(15,23,42,.07); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
+.nginx-hero { margin-bottom: 8px; }
+.release-stats { gap: 8px; }
+.nginx-stats { margin-bottom: 8px; }
+.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.16); box-shadow: 0 12px 26px rgba(15,23,42,.05); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
 .release-stat-card::after { content: ''; position: absolute; inset: auto -24px -30px auto; width: 108px; height: 108px; border-radius: 50%; background: radial-gradient(circle, rgba(64,158,255,.16) 0%, rgba(64,158,255,0) 70%); }
 .warning-card::after { background: radial-gradient(circle, rgba(245,158,11,.18) 0%, rgba(245,158,11,0) 70%); }
 .success-card::after { background: radial-gradient(circle, rgba(16,185,129,.18) 0%, rgba(16,185,129,0) 70%); }
@@ -817,12 +818,12 @@ async function handlePushAll(row) {
 .release-stat-card .stat-value { font-size: 26px; line-height: 1.05; color: #0f172a; }
 .release-stat-card .stat-label { margin-top: 4px; color: #64748b; }
 .nginx-stat-meta { margin-top: 6px; color: #94a3b8; font-size: 12px; }
-.middleware-alert-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; padding: 10px 12px; border-radius: 12px; background: rgba(248,250,252,.88); border: 1px solid rgba(148,163,184,.18); }
+.middleware-alert-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; padding: 10px 12px; border-radius: 12px; background: rgba(248,250,252,.88); border: 1px solid rgba(148,163,184,.18); }
 .middleware-alert-strip__label { font-size: 12px; font-weight: 700; color: #475569; }
 .middleware-alert-strip__tag { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
 .alert-popover { display: flex; flex-direction: column; gap: 8px; }
 .alert-popover__item { display: flex; gap: 8px; align-items: flex-start; color: #334155; line-height: 1.5; }
-.toolbar-shell { margin-bottom: 16px; }
+.toolbar-shell { margin-bottom: 8px; }
 .w-full { width: 100%; }
 
 .k8s-toolbar {
@@ -918,9 +919,9 @@ async function handlePushAll(row) {
 .content-toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .content-toolbar__alert {
@@ -1018,7 +1019,13 @@ async function handlePushAll(row) {
     width: 100%;
   }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+
+
+
+
+
 
 
 

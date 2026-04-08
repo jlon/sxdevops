@@ -1,7 +1,7 @@
-<template>
+﻿<template>
   <div class="fade-in">
     <div class="page-header">
-      <h2>☸️ K8s 集群管理</h2>
+      <h2>K8s 集群管理</h2>
       <div class="k8s-toolbar" v-if="activeTab !== 'clusters'">
         <div class="toolbar-filter-bar">
           <div class="toolbar-filter-pill toolbar-filter-pill--cluster">
@@ -44,13 +44,13 @@
       </div>
     </div>
 
-    <!-- 主 Tab 栏 (Pill Tab Theme: Blue) -->
+    <!-- 主 Tab 样式（Pill Tab Theme: Blue） -->
     <section class="hero panel k8s-hero">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="release-header-icon k8s-header-icon"><el-icon><Monitor /></el-icon></span>
           <h2>K8s 集群管理</h2>
-          <p class="subtitle inline-subtitle">统一查看集群、节点、工作负载、网络与存储资源，并支持连接测试和运维操作。</p>
+          <p class="subtitle inline-subtitle">统一查看集群、工作负载、网络与存储，并支持常用运维操作。</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -68,7 +68,7 @@
     </div>
 
     <div v-if="activeTips.length" class="k8s-hero-alert-strip">
-      <span class="k8s-alert-strip__label">运行提示</span>
+      <span class="k8s-alert-strip__label">平台提醒</span>
       <el-tooltip
         v-for="(alert, index) in activeTips.slice(0, 2)"
         :key="index"
@@ -151,16 +151,16 @@
     </div>
 
     <div v-if="activeTab !== 'clusters' && selectedClusterId && !selectedClusterConnected" class="empty-state">
-      <div class="empty-icon">☸️</div>
-      <div class="empty-text">当前集群未连接，请先测试连接或切换到已连接集群</div>
-      <div style="display:flex;gap:8px;margin-top:16px;">
+      <div class="empty-icon">⚙</div>
+      <div class="empty-text">当前集群未连接，请先测试连接或切换到已连接集群。</div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
         <el-button type="primary" @click="switchTab('clusters')">前往集群管理</el-button>
         <el-button @click="refreshView">重新加载</el-button>
       </div>
     </div>
 
     <template v-else-if="activeTab !== 'clusters' && selectedClusterId">
-      <div class="stats-grid k8s-summary-grid" style="margin-bottom:16px;">
+      <div class="stats-grid k8s-summary-grid" style="margin-bottom:8px;">
         <div class="stat-card k8s-summary-card">
           <div class="stat-icon primary"><el-icon><Connection /></el-icon></div>
           <div class="stat-info">
@@ -191,7 +191,7 @@
         </div>
       </div>
 
-      <div class="filter-bar filter-bar--context" style="margin-bottom:12px;">
+      <div class="filter-bar filter-bar--context" style="margin-bottom:8px;">
         <el-input v-model="tableSearchKeyword" clearable placeholder="搜索当前列表名称、镜像、IP 或描述" style="max-width:360px" />
         <div class="filter-inline-group filter-inline-group--push">
           <div class="filter-inline-context">
@@ -236,7 +236,7 @@
       </div>
 
       <div v-if="summary.alerts?.length" class="k8s-alert-strip">
-        <span class="k8s-alert-strip__label">运行提示</span>
+        <span class="k8s-alert-strip__label">平台提醒</span>
         <el-tooltip
           v-for="(alert, index) in summary.alerts.slice(0, 2)"
           :key="index"
@@ -273,8 +273,8 @@
 
     <!-- ============ 集群管理 ============ -->
     <div v-if="activeTab === 'clusters'" class="tab-content">
-      <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-        <el-button v-if="canManageK8s" type="primary" size="small" @click="openClusterDialog()"><el-icon><Plus /></el-icon> 添加集群</el-button>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+        <el-button v-if="canManageK8s" type="primary" size="small" @click="openClusterDialog()"><el-icon><Plus /></el-icon> 新增集群</el-button>
       </div>
       <el-table :data="clusters" stripe v-loading="loading" style="width:100%">
         <el-table-column prop="name" label="集群名称" min-width="160">
@@ -288,7 +288,7 @@
         <el-table-column prop="api_server" label="API Server" min-width="220" show-overflow-tooltip />
         <el-table-column prop="status" label="状态" width="110">
           <template #default="{ row }">
-            <el-tag :type="row.status==='connected'?'success':'danger'" size="small">{{ row.status==='connected'?'运行中':'未连接' }}</el-tag>
+            <el-tag :type="row.status === 'connected' ? 'success' : 'danger'" size="small">{{ row.status === 'connected' ? '运行中' : '未连接' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip />
@@ -316,13 +316,13 @@
           </template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="90">
-          <template #default="{ row }"><el-tag :type="row.status==='Ready'?'success':'danger'" size="small">{{ row.status==='Ready'?'就绪':'未就绪' }}</el-tag></template>
+            <template #default="{ row }"><el-tag :type="row.status === 'Ready' ? 'success' : 'danger'" size="small">{{ row.status === 'Ready' ? '就绪' : '未就绪' }}</el-tag></template>
         </el-table-column>
         <el-table-column prop="roles" label="角色" width="120">
           <template #default="{ row }"><el-tag size="small" type="info">{{ row.roles }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="version" label="Kubelet版本" width="120" />
-        <el-table-column prop="internal_ip" label="内部IP" width="140" />
+        <el-table-column prop="version" label="Kubelet 版本" width="120" />
+        <el-table-column prop="internal_ip" label="内部 IP" width="140" />
         <el-table-column label="CPU/内存" width="150">
           <template #default="{ row }">
             <div style="font-size:12px">CPU: <b>{{ row.cpu }}</b></div>
@@ -568,7 +568,7 @@
         </el-table-column>
         <el-table-column prop="namespace" label="命名空间" width="130" />
         <el-table-column prop="schedule" label="调度策略" width="140"><template #default="{ row }"><code style="font-size:12px;background:#f1f5f9;padding:2px 6px;border-radius:3px">{{ row.schedule }}</code></template></el-table-column>
-        <el-table-column label="是否暂停" width="88"><template #default="{ row }"><el-tag :type="row.suspend?'danger':'success'" size="small">{{ row.suspend?'是':'否' }}</el-tag></template></el-table-column>
+            <el-table-column label="是否暂停" width="88"><template #default="{ row }"><el-tag :type="row.suspend ? 'danger' : 'success'" size="small">{{ row.suspend ? '是' : '否' }}</el-tag></template></el-table-column>
         <el-table-column prop="last_schedule" label="最近调度" min-width="140" show-overflow-tooltip />
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
@@ -718,7 +718,7 @@
         <el-table-column prop="provisioner" label="Provisioner" min-width="220" show-overflow-tooltip />
         <el-table-column prop="reclaim_policy" label="回收策略" width="100" />
         <el-table-column prop="binding_mode" label="绑定模式" width="180" />
-        <el-table-column label="允许扩展" width="90"><template #default="{ row }"><el-tag :type="row.allow_expansion?'success':'info'" size="small">{{ row.allow_expansion?'是':'否' }}</el-tag></template></el-table-column>
+            <el-table-column label="允许扩展" width="90"><template #default="{ row }"><el-tag :type="row.allow_expansion ? 'success' : 'info'" size="small">{{ row.allow_expansion ? '是' : '否' }}</el-tag></template></el-table-column>
         <el-table-column label="操作" width="80" fixed="right">
           <template #default="{ row }">
             <div style="display:flex;gap:6px;">
@@ -789,10 +789,10 @@
       </el-table>
     </div>
 <!-- ============ 集群弹窗 ============ -->
-    <el-dialog v-model="clusterDialogVisible" :title="editingClusterId ? '编辑集群' : '添加 K8s 集群'" width="90%" style="max-width:600px;" top="5vh" append-to-body destroy-on-close>
+    <el-dialog v-model="clusterDialogVisible" :title="editingClusterId ? '编辑集群' : '新增 K8s 集群'" width="90%" style="max-width:600px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="clusterForm" label-width="110px">
         <el-form-item label="集群名称"><el-input v-model="clusterForm.name" placeholder="例如 prod-cluster" /></el-form-item>
-        <el-form-item label="API Server"><el-input v-model="clusterForm.api_server" placeholder="例如 https://10.0.0.1:6443 (可选)" /></el-form-item>
+        <el-form-item label="API Server"><el-input v-model="clusterForm.api_server" placeholder="例如 https://10.0.0.1:6443（可选）" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="clusterForm.description" placeholder="集群用途描述" /></el-form-item>
         <el-form-item label="KubeConfig"><el-input v-model="clusterForm.kubeconfig" type="textarea" :rows="12" placeholder="粘贴 kubeconfig YAML 内容" style="font-family:monospace;font-size:12px;" /></el-form-item>
       </el-form>
@@ -803,7 +803,7 @@
     </el-dialog>
 
     <!-- ============ YAML 查看弹窗 ============ -->
-    <el-dialog v-model="yamlDialogVisible" :title="'📄 YAML - ' + yamlResourceName" width="90%" style="max-width:800px;" top="3vh" append-to-body destroy-on-close>
+    <el-dialog v-model="yamlDialogVisible" :title="'YAML - ' + yamlResourceName" width="90%" style="max-width:800px;" top="3vh" append-to-body destroy-on-close>
       <div class="yaml-viewer-toolbar">
         <span class="yaml-viewer-badge">{{ yamlResourceType }}</span>
         <el-button size="small" type="primary" plain @click="copyYaml"><el-icon><DocumentCopy /></el-icon> 复制</el-button>
@@ -814,7 +814,7 @@
     </el-dialog>
 
     <!-- ============ Pod 详情弹窗 ============ -->
-    <el-dialog v-model="podDialogVisible" :title="'🔲 Pod 列表 - ' + podWorkloadName" width="95%" style="max-width:1200px;" top="3vh" append-to-body destroy-on-close>
+    <el-dialog v-model="podDialogVisible" :title="'Pod 列表 - ' + podWorkloadName" width="95%" style="max-width:1200px;" top="3vh" append-to-body destroy-on-close>
       <el-table :data="filterRows(podList, ['name', 'namespace', 'status', 'node', 'pod_ip', 'host_ip', 'cpu_request', 'memory_request'])" stripe v-loading="podLoading" style="width:100%" size="small">
         <el-table-column prop="name" label="Pod 名称" min-width="280">
           <template #default="{ row }">
@@ -882,7 +882,7 @@
     </el-dialog>
 
     <!-- ============ 日志查看弹窗 ============ -->
-    <el-dialog v-model="logDialogVisible" :title="'🖥️ 日志 - ' + logPodName" width="90%" style="max-width:900px;" top="3vh" append-to-body destroy-on-close>
+    <el-dialog v-model="logDialogVisible" :title="'日志 - ' + logPodName" width="90%" style="max-width:900px;" top="3vh" append-to-body destroy-on-close>
       <div class="log-viewer-toolbar">
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="yaml-viewer-badge" style="background:linear-gradient(135deg,#10b981,#059669)">{{ logContainer }}</span>
@@ -904,10 +904,10 @@
     </el-dialog>
 
     <!-- ============ 事件查看弹窗 ============ -->
-    <el-dialog v-model="eventsDialogVisible" :title="'🔔 事件 - ' + eventsResourceName" width="90%" style="max-width:800px;" top="3vh" append-to-body destroy-on-close>
+    <el-dialog v-model="eventsDialogVisible" :title="'事件 - ' + eventsResourceName" width="90%" style="max-width:800px;" top="3vh" append-to-body destroy-on-close>
       <div v-loading="eventsLoading" style="min-height:120px;">
         <div v-if="eventsList.length === 0 && !eventsLoading" style="text-align:center;padding:40px;color:#94a3b8;">
-          <el-icon :size="48" style="margin-bottom:12px;opacity:0.4"><Bell /></el-icon>
+          <el-icon :size="48" style="margin-bottom:8px;opacity:0.4"><Bell /></el-icon>
           <div>暂无事件</div>
         </div>
         <div v-else class="events-timeline">
@@ -917,7 +917,7 @@
               <div class="event-header">
                 <el-tag :type="ev.type==='Warning'?'warning':''" size="small" effect="dark" style="font-size:11px">{{ ev.type }}</el-tag>
                 <span class="event-reason">{{ ev.reason }}</span>
-                <span v-if="ev.count > 1" class="event-count">×{{ ev.count }}</span>
+                <span v-if="ev.count > 1" class="event-count">脳{{ ev.count }}</span>
                 <span class="event-time">{{ formatEventTime(ev.last_time) }}</span>
               </div>
               <div class="event-message">{{ ev.message }}</div>
@@ -929,7 +929,7 @@
     </el-dialog>
 
     <el-dialog v-model="execDialogVisible" :title="'Pod Terminal - ' + execForm.pod_name" width="92%" style="max-width:1100px;" top="4vh" append-to-body destroy-on-close>
-      <div class="filter-bar" style="margin-bottom:12px;">
+      <div class="filter-bar" style="margin-bottom:8px;">
         <el-tag size="large" type="info">{{ execForm.namespace }}</el-tag>
         <el-select
           v-if="execContainers.length > 1"
@@ -945,9 +945,9 @@
         <el-button size="small" plain :disabled="!execDialogVisible" @click="reconnectExecTerminal">
           <el-icon><RefreshRight /></el-icon> 重连
         </el-button>
-        <el-button size="small" plain :disabled="!execSessionLog" @click="downloadExecSessionLog">下载会话日志</el-button>
+        <el-button size="small" plain :disabled="!execSessionLog" @click="downloadExecSessionLog">下载浼氳瘽日志</el-button>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
         <el-button
           v-for="preset in execPresetCommands"
           :key="preset.command"
@@ -975,12 +975,12 @@
       </el-form>
       <template #footer>
         <el-button @click="scaleDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="scaleLoading" @click="submitScale">应用</el-button>
+        <el-button type="primary" :loading="scaleLoading" @click="submitScale">搴旂敤</el-button>
       </template>
     </el-dialog>
 
     <el-dialog v-model="configEditorVisible" :title="configDialogTitle" width="90%" style="max-width:980px;" top="3vh" append-to-body destroy-on-close>
-      <div class="filter-bar" style="margin-bottom:12px;">
+      <div class="filter-bar" style="margin-bottom:8px;">
         <el-tag type="info">{{ configForm.namespace }}</el-tag>
         <el-tag>{{ configForm.type }}</el-tag>
         <el-tag v-if="configForm.rollback_available" type="warning">可回滚</el-tag>
@@ -1016,7 +1016,7 @@
           </el-table-column>
         </el-table>
       </div>
-      <div style="display:flex;justify-content:space-between;gap:8px;margin-top:12px;flex-wrap:wrap;">
+      <div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px;flex-wrap:wrap;">
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <el-button @click="configEditorVisible = false">关闭</el-button>
           <el-button type="info" plain :loading="configPreviewLoading" @click="previewConfigChange">预览本次变更</el-button>
@@ -1141,7 +1141,7 @@ const podSearchFields = [
   (row) => (row.containers || []).map(item => typeof item === 'string' ? item : item?.image),
 ]
 
-// ====== 各 Tab 数据 ======
+// ====== 鍚?Tab 鏁版嵁 ======
 const nodes = ref([])
 const nsData = ref([])
 const pods = ref([])
@@ -1411,7 +1411,7 @@ async function showYaml(type, name, namespace) {
 
 function copyYaml() {
   navigator.clipboard.writeText(yamlContent.value).then(() => {
-    ElMessage.success('已复制到剪贴板')
+  ElMessage.success('已复制到剪贴板')
   }).catch(() => {
     ElMessage.error('复制失败')
   })
@@ -1559,7 +1559,7 @@ function appendExecSystemLine(message) {
 
 function sendExecInput(data) {
   if (!execSocket || execSocket.readyState !== WebSocket.OPEN) {
-    ElMessage.warning('终端未连接')
+  ElMessage.warning('终端未连接')
     return false
   }
   execSocket.send(JSON.stringify({ type: 'input', data }))
@@ -1617,7 +1617,7 @@ function initExecTerminal() {
   execTerminal.loadAddon(execFitAddon)
   execTerminal.open(execTerminalRef.value)
   execFitAddon.fit()
-  execTerminal.writeln('\x1b[1;36mAgDevOps Pod Terminal\x1b[0m')
+  execTerminal.writeln('\x1b[1;36mSxDevOps Pod Terminal\x1b[0m')
   execTerminal.writeln('\x1b[2mConnecting to pod...\x1b[0m')
   execTerminal.writeln('')
 
@@ -1649,7 +1649,7 @@ function connectExecTerminal() {
   if (!selectedClusterId.value || !execForm.value.pod_name || !execTerminal) return
   disconnectExecSocket()
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const token = localStorage.getItem('agdevops_token') || ''
+  const token = localStorage.getItem('sxdevops_token') || ''
   const params = new URLSearchParams({
     token,
     pod_name: execForm.value.pod_name,
@@ -1857,7 +1857,7 @@ async function saveConfigResource() {
     const res = await updateK8sConfigResource(selectedClusterId.value, { ...configForm.value })
     configForm.value.content = res.resource?.text || configForm.value.content
     syncConfigRevisionState(res.resource)
-    ElMessage.success(res.message || '配置已更新')
+      ElMessage.success(res.message || '配置已更新')
     await fetchConfigRevisions()
     await fetchCurrentTab()
     await fetchSummary()
@@ -2095,20 +2095,21 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 }
 
 .page-header { display: none; }
-.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid #dbe4f0; border-radius: 24px; box-shadow: 0 14px 34px rgba(15,23,42,.06); padding: 14px 22px; }
+.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid rgba(148,163,184,.16); border-radius: 20px; box-shadow: 0 12px 28px rgba(15,23,42,.05); padding: 12px 14px; }
 .hero { background: linear-gradient(135deg, #fff7ed 0%, #f8fbff 100%); display: flex; gap: 12px; justify-content: space-between; }
 .hero h2 { color: #0f172a; margin: 0; }
-.subtitle { color: #475569; margin: 10px 0 0; max-width: 620px; }
-.hero-actions { display: flex; gap: 12px; }
+.subtitle { color: #475569; margin: 8px 0 0; max-width: 620px; }
+.hero-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .release-hero-title-row { display: flex; align-items: center; gap: 12px; }
 .release-hero-title-inline { flex-wrap: wrap; }
 .inline-subtitle { margin: 0; max-width: none; font-size: 13px; line-height: 1.45; }
+.hero-actions :deep(.el-button) { min-height: 38px; padding: 0 16px; border-radius: 12px; }
 .release-header-icon { width: 42px; height: 42px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; color: #fff; background: linear-gradient(135deg, #409eff, #36cfc9); box-shadow: 0 10px 20px rgba(64,158,255,.2); }
 .k8s-header-icon { background: linear-gradient(135deg, #2563eb, #0ea5e9); }
-.k8s-hero { margin-bottom: 16px; }
-.release-stats { gap: 16px; }
-.k8s-top-stats { margin-bottom: 16px; }
-.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.18); box-shadow: 0 16px 34px rgba(15,23,42,.07); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
+.k8s-hero { margin-bottom: 8px; }
+.release-stats { gap: 8px; }
+.k8s-top-stats { margin-bottom: 8px; }
+.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.16); box-shadow: 0 12px 26px rgba(15,23,42,.05); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
 .release-stat-card::after { content: ''; position: absolute; inset: auto -24px -30px auto; width: 108px; height: 108px; border-radius: 50%; background: radial-gradient(circle, rgba(64,158,255,.16) 0%, rgba(64,158,255,0) 70%); }
 .warning-card::after { background: radial-gradient(circle, rgba(245,158,11,.18) 0%, rgba(245,158,11,0) 70%); }
 .success-card::after { background: radial-gradient(circle, rgba(16,185,129,.18) 0%, rgba(16,185,129,0) 70%); }
@@ -2118,7 +2119,7 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 .release-stat-card.context-card { border-color: rgba(148, 163, 184, 0.18); background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%); }
 .release-stat-card.context-card::after { background: radial-gradient(circle, rgba(148, 163, 184, 0.16) 0%, rgba(148, 163, 184, 0) 72%); }
 .k8s-stat-meta { margin-top: 6px; color: #94a3b8; font-size: 12px; }
-.toolbar-shell { margin-bottom: 16px; }
+.toolbar-shell { margin-bottom: 8px; }
 .k8s-summary-grid { display: none; }
 .k8s-alert-strip { display: none; }
 .filter-bar :deep(.el-tag--large) {
@@ -2189,7 +2190,7 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 }
 
 .config-history-panel {
-  margin-top: 16px;
+  margin-top: 8px;
   padding: 14px;
   border: 1px solid rgba(96, 165, 250, 0.16);
   border-radius: 14px;
@@ -2202,7 +2203,7 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   align-items: flex-start;
   gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .config-history-title {
@@ -2227,7 +2228,7 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   padding: 10px 12px;
   border-radius: 12px;
   background: rgba(248, 250, 252, 0.88);
@@ -2294,4 +2295,9 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   }
 
 }
+.hero.panel { border-radius: 20px; }
 </style>
+
+
+
+

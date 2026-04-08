@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="fade-in host-center-page">
     <section class="hero panel">
       <div class="host-hero-copy">
@@ -9,7 +9,7 @@
         </div>
       </div>
       <div class="hero-actions">
-        <el-button size="small" :loading="overviewLoading" @click="reloadOverview">刷新总览</el-button>
+        <el-button size="small" :loading="overviewLoading" @click="reloadOverview">刷新</el-button>
       </div>
     </section>
 
@@ -88,18 +88,18 @@ const routeTabMap = {
 const activeTab = computed(() => routeTabMap[route.name] || tabs.value[0]?.key || 'assets')
 const activeTabMeta = computed(() => tabs.value.find(item => item.key === activeTab.value))
 const heroSubtitle = computed(() => {
-  if (activeTab.value === 'schedule-center') return '支持 SSH 直连与 Ansible 分发两种执行模型，可基于 Cron、间隔与单次规则到点自动生成任务。'
-  if (activeTab.value === 'task-center') return '支持 SSH 直连与 Ansible 分发两种执行模型，适合批量巡检、命令分发与 Playbook 编排。'
-  if (activeTab.value === 'requests') return '承接主机申请、审批与资产落库流程，保持申请视角与资产视角解耦。'
-  return '统一展示主机资产状态、业务归属、任务调度与申请流转，形成主机运维单一入口。'
+  if (activeTab.value === 'schedule-center') return '支持 SSH 与 Ansible 两种执行方式，可按 Cron、间隔或单次触发。'
+  if (activeTab.value === 'task-center') return '支持批量巡检、命令分发与 Playbook 执行。'
+  if (activeTab.value === 'requests') return '承接主机申请、审批与资产落库流程。'
+  return '统一查看主机状态、归属、任务与申请流转。'
 })
 
 const summaryCards = computed(() => {
   if (activeTab.value === 'schedule-center' && canViewSchedules.value) {
     return [
       { label: '编排总数', value: scheduleSummary.value.total, desc: '定时任务中心当前纳管的自动化编排数量', tone: '' },
-      { label: '已启用', value: scheduleSummary.value.enabled, desc: '正在等待调度器触发的编排任务数', tone: 'success-card' },
-      { label: '小时内到点', value: scheduleSummary.value.due_soon, desc: '未来 1 小时内即将触发的编排数量', tone: 'warning-card' },
+      { label: '已启用', value: scheduleSummary.value.enabled, desc: '正在等待调度器触发的编排任务数量', tone: 'success-card' },
+      { label: '1 小时内到点', value: scheduleSummary.value.due_soon, desc: '未来 1 小时内即将触发的编排数量', tone: 'warning-card' },
     ]
   }
   if (activeTab.value === 'task-center' && canViewTasks.value) {
@@ -207,15 +207,17 @@ onMounted(async () => { await reloadOverview() })
 </script>
 
 <style scoped>
-.host-center-page{display:flex;flex-direction:column;gap:6px}
+.host-center-page{display:flex;flex-direction:column;gap:8px}
 .panel{background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid #dbe4f0;border-radius:24px;box-shadow:0 14px 34px rgba(15,23,42,.06);padding:14px 22px}
 .hero{background:linear-gradient(135deg,#fff7ed 0%,#f8fbff 100%);display:flex;gap:12px;justify-content:space-between;align-items:center}
 .host-hero-copy{display:flex;flex-direction:column}.host-hero-title-row{display:flex;align-items:center;gap:12px}.host-hero-title-inline{flex-wrap:wrap}.host-header-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:20px;color:#fff;background:linear-gradient(135deg,#409eff,#36cfc9);box-shadow:0 10px 20px rgba(64,158,255,.2)}
 .hero-actions{display:flex;align-items:center;gap:8px}.hero h2{color:#0f172a;margin:0}.host-subtitle,.inline-subtitle{margin:0;max-width:none;font-size:13px;line-height:1.45;color:#475569}
-.stats-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.host-stats{gap:12px}
+.stats-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.host-stats{gap:8px}
 .release-stat-card{position:relative;min-height:76px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.18);box-shadow:0 16px 34px rgba(15,23,42,.07);text-align:left;padding:12px 16px;overflow:hidden}
 .release-stat-card::after{content:'';position:absolute;inset:auto -24px -30px auto;width:108px;height:108px;border-radius:50%;background:radial-gradient(circle,rgba(64,158,255,.16) 0%,rgba(64,158,255,0) 70%)}.warning-card::after{background:radial-gradient(circle,rgba(245,158,11,.18) 0%,rgba(245,158,11,0) 70%)}.success-card::after{background:radial-gradient(circle,rgba(16,185,129,.18) 0%,rgba(16,185,129,0) 70%)}
 .stat-value{font-size:24px;line-height:1.05;color:#0f172a;font-weight:700}.stat-label{margin-top:4px;color:#64748b;font-size:13px}.release-stat-desc{margin-top:6px;color:#64748b;font-size:12px}
-.host-center-tabs{width:100%;margin-top:-10px;padding:8px 12px;border-radius:18px;background:rgba(255,255,255,.86);box-shadow:0 14px 28px rgba(15,23,42,.06)}.host-center-content{min-width:0;margin-top:-8px}
+.host-center-tabs{width:100%;margin-top:-16px;padding:4px;border-radius:12px;background:rgba(255,255,255,.9);border:1px solid rgba(148,163,184,.16);box-shadow:0 12px 26px rgba(15,23,42,.04)}.host-center-content{min-width:0;margin-top:-4px}
 @media (max-width: 900px) { .hero{flex-direction:column;align-items:flex-start} .stats-grid{grid-template-columns:1fr} }
+.hero.panel { border-radius: 20px; }
 </style>
+

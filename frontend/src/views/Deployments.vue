@@ -391,7 +391,7 @@
         <el-divider content-position="left">运行状态</el-divider>
         <el-skeleton v-if="detailStatusLoading" :rows="4" animated />
         <template v-else-if="detailStatus">
-          <el-alert :title="detailStatus.summary || '状态详情'" :type="statusAlertType(detailStatus.status)" :closable="false" show-icon style="margin-bottom: 12px" />
+          <el-alert :title="detailStatus.summary || '状态详情'" :type="statusAlertType(detailStatus.status)" :closable="false" show-icon style="margin-bottom: 8px" />
           <div class="status-meta">
             <el-tag size="small" :type="strategyTagType(detailStatus.release_strategy)">{{ detailStatus.release_strategy_display || '标准发布' }}</el-tag>
             <span class="sub-text">{{ detailStatus.strategy_summary }}</span>
@@ -808,18 +808,20 @@ onMounted(async () => {
 
 <style scoped>
 .release-page{display:flex;flex-direction:column;gap:6px}
-.panel{background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid #dbe4f0;border-radius:24px;box-shadow:0 14px 34px rgba(15,23,42,.06);padding:14px 22px}
+.panel{background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid rgba(148,163,184,.16);border-radius:20px;box-shadow:0 12px 28px rgba(15,23,42,.05);padding:12px 14px}
 .hero{background:linear-gradient(135deg,#fff7ed 0%,#f8fbff 100%);display:flex;gap:12px;justify-content:space-between}
 .hero h2{color:#0f172a;margin:0}
-.subtitle{color:#475569;margin:10px 0 0;max-width:620px}
-.hero-actions,.status-meta{display:flex;gap:12px}
+.subtitle{color:#475569;margin:8px 0 0;max-width:620px}
+.hero-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.status-meta{display:flex;gap:10px}
 .release-hero-title-row{display:flex;align-items:center;gap:12px}
 .release-hero-title-inline{flex-wrap:wrap}
 .inline-subtitle{margin:0;max-width:none;font-size:13px;line-height:1.45}
+.hero-actions :deep(.el-button){min-height:38px;padding:0 16px;border-radius:12px}
 .release-header-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:20px;color:#fff;background:linear-gradient(135deg,#409eff,#36cfc9);box-shadow:0 10px 20px rgba(64,158,255,.2)}
 .sub-text{font-size:13px;color:var(--text-secondary);font-weight:400}
-.release-stats{gap:16px}
-.release-stat-card{position:relative;min-height:76px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.18);box-shadow:0 16px 34px rgba(15,23,42,.07);text-align:left;padding:12px 16px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease;overflow:hidden;appearance:none;width:100%;font:inherit;color:inherit}
+.release-stats{gap:8px}
+.release-stat-card{position:relative;min-height:76px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.16);box-shadow:0 12px 26px rgba(15,23,42,.05);text-align:left;padding:12px 16px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease;overflow:hidden;appearance:none;width:100%;font:inherit;color:inherit}
 .release-stat-card::after{content:'';position:absolute;inset:auto -24px -30px auto;width:108px;height:108px;border-radius:50%;background:radial-gradient(circle,rgba(64,158,255,.16) 0%,rgba(64,158,255,0) 70%)}
 .release-stat-card:hover{transform:translateY(-2px);box-shadow:0 18px 38px rgba(37,99,235,.12);border-color:rgba(96,165,250,.4)}
 .release-stat-card.active-card{border-color:#3b82f6;box-shadow:0 18px 40px rgba(59,130,246,.18)}
@@ -828,7 +830,8 @@ onMounted(async () => {
 .danger-card::after{background:radial-gradient(circle,rgba(239,68,68,.18) 0%,rgba(239,68,68,0) 70%)}
 .release-stat-card .stat-value{font-size:26px;line-height:1.05}
 .release-stat-card .stat-label{margin-top:4px;color:#64748b}
-.release-tabs{margin-top:-8px;padding:18px;border-radius:20px;background:rgba(255,255,255,.86);box-shadow:0 18px 36px rgba(15,23,42,.06)}
+.release-tabs{margin-top:-8px;padding:12px;border-radius:20px;background:rgba(255,255,255,.9);box-shadow:0 12px 26px rgba(15,23,42,.04);border:1px solid rgba(148,163,184,.16)}
+.release-tabs :deep(.el-tabs__item){height:38px;line-height:38px;padding:0 16px;font-size:13px}
 .release-tabs :deep(.el-tabs__header){margin-bottom:8px}.release-filter-bar{display:flex;align-items:center;gap:10px;flex-wrap:nowrap;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}.flow-toolbar-spacer{flex:1}.app-cell,.stack-cell,.strategy-cell{display:flex;flex-direction:column;gap:6px}.app-cell-title{display:flex;align-items:center;gap:8px}.app-name{font-weight:600}
 .filter-refresh-btn{margin-left:auto;flex-shrink:0}
 .tag-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -837,9 +840,11 @@ onMounted(async () => {
 :deep(.release-orders-table .el-table__fixed-right::before){left:72px;right:auto;width:8px;background:linear-gradient(90deg,rgba(15,23,42,.1),rgba(15,23,42,0))}
 .node-preview{display:flex;flex-wrap:wrap;gap:8px}.node-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:999px;background:rgba(64,158,255,.08);color:#409eff;font-size:12px}
 .release-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 18px}.release-form-grid :deep(.span-2){grid-column:span 2}
-.flow-nodes-card{margin-top:8px;border:1px solid var(--border-color-light);border-radius:16px;padding:16px;background:var(--el-bg-color-page)}.flow-nodes-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.section-title{font-size:15px;font-weight:600;color:var(--text-primary)}
-.status-meta{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px}.status-message{margin-bottom:12px}.approval-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.approval-step-card{padding:14px;border-radius:14px;border:1px solid var(--border-color-light);background:var(--el-fill-color-lighter);display:flex;flex-direction:column;gap:8px}.approval-step-top{display:flex;justify-content:space-between;align-items:center;gap:10px}.approval-step-title{font-weight:600}.approval-step-comment{font-size:13px;color:var(--text-regular);line-height:1.6}
+.flow-nodes-card{margin-top:8px;border:1px solid var(--border-color-light);border-radius:16px;padding:16px;background:var(--el-bg-color-page)}.flow-nodes-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}.section-title{font-size:15px;font-weight:600;color:var(--text-primary)}
+.status-meta{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:8px}.status-message{margin-bottom:8px}.approval-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px}.approval-step-card{padding:14px;border-radius:14px;border:1px solid var(--border-color-light);background:var(--el-fill-color-lighter);display:flex;flex-direction:column;gap:8px}.approval-step-top{display:flex;justify-content:space-between;align-items:center;gap:10px}.approval-step-title{font-weight:600}.approval-step-comment{font-size:13px;color:var(--text-regular);line-height:1.6}
 .log-output{max-height:56vh;overflow:auto;padding:12px;border-radius:12px;background:#0f172a;color:#e2e8f0;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
 @media (max-width:1200px){.release-form-grid{grid-template-columns:1fr}.release-form-grid :deep(.span-2){grid-column:span 1}}
 @media (max-width:768px){.hero{flex-direction:column}.hero-actions{justify-content:flex-start}}
+.hero.panel { border-radius: 20px; }
 </style>
+

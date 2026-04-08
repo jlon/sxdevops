@@ -52,7 +52,7 @@
             <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column>
             <el-table-column label="操作" width="260" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" size="small" @click="loadStack(row.id)">打开方案</el-button>
+                <el-button link type="primary" size="small" @click="loadStack(row.id)">查看方案</el-button>
                 <el-button link type="success" size="small" @click="handleDownloadTemplate(row)">下载工程</el-button>
                 <el-popconfirm v-if="canManageIac" title="确认删除该 Terraform 方案？" @confirm="handleDelete(row)">
                   <template #reference><el-button link type="danger" size="small">删除</el-button></template>
@@ -892,7 +892,7 @@ const currentStackStatus = computed(() => currentStack.value?.last_execution_sta
 const currentStackSyncAt = computed(() => currentStack.value?.last_cmdb_sync_at || '')
 const secretDialogTitle = computed(() => secretDialogMode.value === 'export' ? '导出可执行 ZIP' : `执行 Terraform ${pendingExecutionAction.value}`)
 const secretDialogHint = computed(() => secretDialogMode.value === 'export'
-  ? '输入的凭证和实例密码仅用于本次导出，不会保存到 AgDevOps 数据库。'
+  ? '输入的凭证和实例密码仅用于本次导出，不会保存到 SxDevOps 数据库。'
   : '执行 plan/apply/destroy 时会临时写入 terraform.tfvars 到工作目录，执行记录会保留日志，但不会落库存储敏感值。')
 const availableResourceOptions = computed(() => {
   const options = [
@@ -1606,4 +1606,6 @@ onBeforeUnmount(() => { stopNodeDrag() })
   .resource-switcher-grid, .summary-grid, .resource-pill-list, .resource-list, .relationship-list, .multi-card-list { grid-template-columns: 1fr; }
   .relation-item, .relation-actions { flex-direction: column; align-items: stretch; min-width: 0; }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+

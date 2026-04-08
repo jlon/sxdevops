@@ -31,7 +31,7 @@
         </el-button>
       </div>
 
-      <div class="sql-editor-wrapper" style="margin-top:12px;">
+      <div class="sql-editor-wrapper" style="margin-top:8px;">
         <textarea v-model="sqlContent" class="sql-editor"
           :placeholder="queryPlaceholder" rows="6"
           @keydown.ctrl.enter="handleQuery"></textarea>
@@ -39,7 +39,7 @@
       <div class="query-hint">{{ queryHint }}</div>
     </div>
 
-    <div class="table-card" v-if="queryResult || queryError" style="margin-bottom:20px;">
+    <div class="table-card" v-if="queryResult || queryError" style="margin-bottom:8px;">
       <div class="query-result-header">
         <h3 style="margin:0;">查询结果</h3>
         <div class="result-meta" v-if="queryResult">
@@ -48,11 +48,11 @@
         </div>
       </div>
 
-      <div v-if="queryError" style="margin-top:12px;">
+      <div v-if="queryError" style="margin-top:8px;">
         <el-alert :title="queryError" type="error" show-icon :closable="false" />
       </div>
 
-      <el-table v-else :data="queryResult.rows" stripe style="width: 100%; margin-top:12px;"
+      <el-table v-else :data="queryResult.rows" stripe style="width: 100%; margin-top:8px;"
         max-height="400" size="small">
         <el-table-column v-for="col in queryResult.columns" :key="col"
           :prop="col" :label="col" min-width="120" show-overflow-tooltip />
@@ -64,7 +64,7 @@
         <h3 style="margin:0;">查询历史</h3>
       </div>
 
-      <el-table :data="history" stripe v-loading="historyLoading" style="width: 100%; margin-top:12px;" size="small">
+      <el-table :data="history" stripe v-loading="historyLoading" style="width: 100%; margin-top:8px;" size="small">
         <el-table-column prop="datasource_name" label="数据源" width="130" />
         <el-table-column label="类型" width="110">
           <template #default="{ row }">
@@ -83,7 +83,7 @@
         </el-table-column>
       </el-table>
 
-      <div style="display:flex; justify-content:flex-end; margin-top:16px;">
+      <div style="display:flex; justify-content:flex-end; margin-top:8px;">
         <el-pagination v-model:current-page="historyPage" :page-size="20" :total="historyTotal"
           layout="total, prev, pager, next" @current-change="fetchHistory" />
       </div>
@@ -201,7 +201,7 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
   padding: 14px 16px;
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));

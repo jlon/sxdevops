@@ -18,10 +18,10 @@ REQUEST_TIMEOUT = 20
 DEFAULT_TRACE_LIMIT = 20
 
 DEMO_SERVICES = [
-    {'id': 'svc-gateway', 'name': 'gateway-service', 'short_name': 'gateway', 'layers': ['GENERAL'], 'group': 'agdevops'},
-    {'id': 'svc-order', 'name': 'order-service', 'short_name': 'order', 'layers': ['GENERAL'], 'group': 'agdevops'},
-    {'id': 'svc-payment', 'name': 'payment-service', 'short_name': 'payment', 'layers': ['GENERAL'], 'group': 'agdevops'},
-    {'id': 'svc-member', 'name': 'member-service', 'short_name': 'member', 'layers': ['GENERAL'], 'group': 'agdevops'},
+    {'id': 'svc-gateway', 'name': 'gateway-service', 'short_name': 'gateway', 'layers': ['GENERAL'], 'group': 'sxdevops'},
+    {'id': 'svc-order', 'name': 'order-service', 'short_name': 'order', 'layers': ['GENERAL'], 'group': 'sxdevops'},
+    {'id': 'svc-payment', 'name': 'payment-service', 'short_name': 'payment', 'layers': ['GENERAL'], 'group': 'sxdevops'},
+    {'id': 'svc-member', 'name': 'member-service', 'short_name': 'member', 'layers': ['GENERAL'], 'group': 'sxdevops'},
 ]
 
 DEMO_TRACES = [

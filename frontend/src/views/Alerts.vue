@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="alerts-page">
     <section class="hero panel">
       <div class="hero-copy">
@@ -7,11 +7,11 @@
             <el-icon><Bell /></el-icon>
           </span>
           <h2>告警中心</h2>
-          <p class="page-inline-desc">集中确认、筛选并联动定位异常告警</p>
+          <p class="page-inline-desc">集中查看、确认与定位告警</p>
         </div>
       </div>
       <div class="hero-actions">
-        <el-button size="small" @click="fetchData" :loading="loading">刷新告警</el-button>
+        <el-button size="small" @click="fetchData" :loading="loading">刷新</el-button>
         <el-button size="small" v-if="canQueryLogs" @click="router.push('/logs/query')">日志查询</el-button>
         <el-button size="small" v-if="canViewTracing" @click="router.push('/observability/tracing')">链路追踪</el-button>
         <el-button size="small" v-if="canViewGrafana" @click="router.push('/observability/grafana')">监控看板</el-button>
@@ -39,7 +39,7 @@
 
     <div class="runtime-strip">
       <el-icon><InfoFilled /></el-icon>
-      <span>运行提示：建议优先处理未确认的严重告警，再结合日志中心与链路追踪继续定位。</span>
+      <span>建议优先处理未确认的严重告警，再结合日志与链路继续定位。</span>
     </div>
 
     <section class="panel">
@@ -90,9 +90,9 @@
               <el-button v-if="canViewTracing" link type="warning" size="small" @click="openAlertTrace(row)">链路</el-button>
               <el-button v-if="canViewGrafana" link type="success" size="small" @click="openAlertDashboard(row)">大屏</el-button>
               <el-button v-if="canManageAlerts && !row.is_acknowledged" link type="primary" size="small" @click="handleAck(row)">确认</el-button>
-              <el-popconfirm v-if="canManageAlerts" title="确认删除该告警？" @confirm="handleDelete(row.id)">
+              <el-popconfirm v-if="canManageAlerts" title="确认删除该告警吗？" @confirm="handleDelete(row.id)">
                 <template #reference>
-                  <el-button link type="danger" size="small">删除</el-button>
+                  <el-button link type="danger" size="small">犻犻櫎</el-button>
                 </template>
               </el-popconfirm>
             </div>
@@ -368,13 +368,20 @@ onMounted(async () => {
 
 .runtime-strip {
   align-items: center;
-  background: linear-gradient(90deg, rgba(248, 113, 113, 0.12), rgba(251, 191, 36, 0.1));
-  border: 1px solid rgba(248, 113, 113, 0.16);
-  border-radius: 12px;
-  color: #0f172a;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.14);
+  border-radius: 10px;
+  color: #64748b;
   display: flex;
-  gap: 6px;
+  font-size: 12px;
+  gap: 0;
+  line-height: 1.45;
+  margin-top: -10px;
   padding: 8px 11px;
+}
+
+.runtime-strip :deep(.el-icon) {
+  display: none;
 }
 
 .filter-bar {
@@ -414,4 +421,7 @@ onMounted(async () => {
     flex-direction: column;
   }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+
+

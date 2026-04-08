@@ -1,7 +1,7 @@
-<template>
+﻿<template>
   <div class="fade-in">
     <div class="page-header">
-      <h2>🐳 Docker 环境</h2>
+      <h2>Docker 环境</h2>
       <div class="docker-toolbar" v-if="activeTab !== 'hosts'">
         <div class="toolbar-filter-bar">
           <div class="toolbar-filter-pill toolbar-filter-pill--env">
@@ -24,7 +24,7 @@
       </div>
     </div>
 
-    <!-- 主 Tab 栏 (Pill Tab Theme: Blue) -->
+    <!-- 主 Tab 样式（Pill Tab Theme: Blue） -->
     <section class="hero panel docker-hero">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
@@ -48,7 +48,7 @@
     </div>
 
     <div v-if="activeTips.length" class="docker-alert-strip">
-      <span class="docker-alert-strip__label">运行提示</span>
+      <span class="docker-alert-strip__label">平台提醒</span>
       <el-tooltip
         v-for="(tip, index) in activeTips.slice(0, 2)"
         :key="index"
@@ -67,7 +67,7 @@
         </template>
         <div class="alert-popover">
           <div v-for="(tip, index) in activeTips" :key="`docker-tip-${index}`" class="alert-popover__item">
-            <el-tag size="small" type="info">提示</el-tag>
+            <el-tag size="small" type="info">提醒</el-tag>
             <span>{{ tip }}</span>
           </div>
         </div>
@@ -104,7 +104,7 @@
 
     <!-- ============ 环境管理 ============ -->
     <div v-if="activeTab === 'hosts'" class="tab-content">
-      <div class="stats-grid docker-summary-grid" style="margin-bottom:16px;">
+      <div class="stats-grid docker-summary-grid" style="margin-bottom:8px;">
         <div class="stat-card docker-summary-card">
           <div class="stat-icon primary"><el-icon><Platform /></el-icon></div>
           <div class="stat-info">
@@ -116,14 +116,14 @@
           <div class="stat-icon success"><el-icon><CircleCheck /></el-icon></div>
           <div class="stat-info">
             <div class="stat-value">{{ dockerHostStats.connected }}</div>
-            <div class="stat-label">已连接环境</div>
+              <div class="stat-label">已连接环境</div>
           </div>
         </div>
         <div class="stat-card docker-summary-card">
           <div class="stat-icon warning"><el-icon><WarningFilled /></el-icon></div>
           <div class="stat-info">
             <div class="stat-value">{{ dockerHostStats.attention }}</div>
-            <div class="stat-label">待处理环境</div>
+              <div class="stat-label">待处理环境</div>
           </div>
         </div>
         <div class="stat-card docker-summary-card">
@@ -138,7 +138,7 @@
         <el-input v-model="hostSearchKeyword" clearable placeholder="搜索环境名称、IP、描述" style="max-width:320px" />
         <div style="display:flex;gap:8px;">
           <el-button size="small" @click="refreshView"><el-icon><RefreshRight /></el-icon> 刷新</el-button>
-          <el-button v-if="canManageDocker" type="primary" size="small" @click="openHostDialog()"><el-icon><Plus /></el-icon> 添加环境</el-button>
+          <el-button v-if="canManageDocker" type="primary" size="small" @click="openHostDialog()"><el-icon><Plus /></el-icon> 新增环境</el-button>
         </div>
       </div>
       <el-table :data="filteredHosts" stripe v-loading="loading" style="width:100%">
@@ -155,7 +155,7 @@
         <el-table-column prop="ssh_user" label="用户" width="90" />
         <el-table-column prop="status" label="状态" width="110">
           <template #default="{ row }">
-            <el-tag :type="row.status==='connected'?'success':'danger'" size="small">{{ row.status==='connected'?'已连接':'未连接' }}</el-tag>
+            <el-tag :type="row.status==='connected' ? 'success' : 'danger'" size="small">{{ row.status === 'connected' ? '已连接' : '未连接' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="docker_api_version" label="Docker 版本" width="120" />
@@ -175,11 +175,11 @@
     <!-- ============ 容器管理 ============ -->
     <div v-if="activeTab === 'containers'" class="tab-content">
       <div v-if="!selectedHostId" class="empty-state">
-        <div class="empty-icon">🐳</div>
+        <div class="empty-icon">📦</div>
         <div class="empty-text">请在右上角选择一个 Docker 环境</div>
       </div>
       <template v-else>
-        <div class="stats-grid docker-summary-grid" style="margin-bottom:16px;">
+        <div class="stats-grid docker-summary-grid" style="margin-bottom:8px;">
           <div class="stat-card docker-summary-card">
             <div class="stat-icon primary"><el-icon><Box /></el-icon></div>
             <div class="stat-info">
@@ -210,7 +210,7 @@
           </div>
         </div>
         <div class="filter-bar filter-bar--context" style="margin-bottom:12px;">
-          <el-input v-model="containerKeyword" clearable placeholder="搜索容器名称、镜像、端口" style="max-width:320px" />
+        <el-input v-model="containerKeyword" clearable placeholder="搜索容器名称、镜像、端口" style="max-width:320px" />
           <el-select v-model="containerStateFilter" style="width:140px">
             <el-option label="全部状态" value="all" />
             <el-option label="运行中" value="running" />
@@ -272,11 +272,11 @@
     <!-- ============ 镜像管理 ============ -->
     <div v-if="activeTab === 'images'" class="tab-content">
       <div v-if="!selectedHostId" class="empty-state">
-        <div class="empty-icon">📦</div>
+        <div class="empty-icon">🖼️</div>
         <div class="empty-text">请在右上角选择一个 Docker 环境</div>
       </div>
       <template v-else>
-        <div class="stats-grid docker-summary-grid" style="margin-bottom:16px;">
+        <div class="stats-grid docker-summary-grid" style="margin-bottom:8px;">
           <div class="stat-card docker-summary-card">
             <div class="stat-icon primary"><el-icon><Files /></el-icon></div>
             <div class="stat-info">
@@ -345,13 +345,13 @@
     </div>
 
     <!-- ============ 容器日志弹窗 ============ -->
-    <el-dialog v-model="logVisible" :title="'容器日志 — ' + logContainerName" width="90%" style="max-width:900px;" top="3vh" append-to-body destroy-on-close>
-      <div class="filter-bar" style="margin-bottom:12px;">
+    <el-dialog v-model="logVisible" :title="'容器日志 - ' + logContainerName" width="90%" style="max-width:900px;" top="3vh" append-to-body destroy-on-close>
+      <div class="filter-bar" style="margin-bottom:8px;">
         <el-select v-model="logTailLines" style="width:120px" @change="reloadContainerLogs">
-          <el-option :value="100" label="最近 100 行" />
-          <el-option :value="200" label="最近 200 行" />
-          <el-option :value="500" label="最近 500 行" />
-          <el-option :value="1000" label="最近 1000 行" />
+                <el-option :value="100" label="最近 100 行" />
+                <el-option :value="200" label="最近 200 行" />
+                <el-option :value="500" label="最近 500 行" />
+                <el-option :value="1000" label="最近 1000 行" />
         </el-select>
         <el-button size="small" @click="reloadContainerLogs" :disabled="!logContainerId"><el-icon><RefreshRight /></el-icon> 刷新日志</el-button>
       </div>
@@ -359,19 +359,19 @@
     </el-dialog>
 
     <!-- ============ 容器详情弹窗 ============ -->
-    <el-dialog v-model="inspectVisible" :title="'容器详情 — ' + inspectContainerName" width="90%" style="max-width:900px;" top="3vh" append-to-body destroy-on-close>
+    <el-dialog v-model="inspectVisible" :title="'容器详情 - ' + inspectContainerName" width="90%" style="max-width:900px;" top="3vh" append-to-body destroy-on-close>
       <pre class="log-output terminal-log">{{ inspectContent || '加载中...' }}</pre>
     </el-dialog>
 
-    <!-- ============ 新增/编辑 Docker 环境弹窗 ============ -->
-    <el-dialog v-model="hostDialogVisible" :title="editingHostId ? '编辑 Docker 环境' : '添加 Docker 环境'" width="90%" style="max-width:560px;" top="5vh" append-to-body destroy-on-close>
+    <!-- ============ 新增 / 编辑 Docker 环境弹窗 ============ -->
+    <el-dialog v-model="hostDialogVisible" :title="editingHostId ? '编辑 Docker 环境' : '新增 Docker 环境'" width="90%" style="max-width:560px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="hostForm" label-width="100px">
         <el-form-item label="环境名称"><el-input v-model="hostForm.name" placeholder="例如 prod-docker-01" /></el-form-item>
         <el-form-item label="IP 地址"><el-input v-model="hostForm.ip_address" placeholder="例如 192.168.1.100" /></el-form-item>
         <el-form-item label="SSH 端口"><el-input-number v-model="hostForm.ssh_port" :min="1" :max="65535" controls-position="right" style="width:150px" /></el-form-item>
         <el-form-item label="SSH 用户"><el-input v-model="hostForm.ssh_user" placeholder="root" /></el-form-item>
         <el-form-item label="SSH 密码"><el-input v-model="hostForm.ssh_password" type="password" show-password :placeholder="editingHostId ? '留空则不更新' : '请输入 SSH 密码'" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="hostForm.description" placeholder="环境用途简述" /></el-form-item>
+            <el-form-item label="描述"><el-input v-model="hostForm.description" placeholder="环境用途简述" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="hostDialogVisible = false">取消</el-button>
@@ -490,7 +490,7 @@ const summaryCards = computed(() => {
   ]
 })
 const activeTips = computed(() => {
-  if (activeTab.value !== 'hosts' && !selectedHostId.value) return ['请选择一个 Docker 环境后再查看容器或镜像数据。']
+  if (activeTab.value !== 'hosts' && !selectedHostId.value) return ['请先选择一个 Docker 环境，再查看容器或镜像数据。']
   return {
     hosts: ['新增环境后建议先执行连接测试，再进入容器或镜像管理。'],
     containers: ['容器操作会作用到当前选中的 Docker 环境。', '查看日志和详情前建议先确认容器状态是否正常。'],
@@ -725,20 +725,21 @@ onMounted(() => {
 
 <style scoped>
 .page-header { display: none; }
-.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid #dbe4f0; border-radius: 24px; box-shadow: 0 14px 34px rgba(15,23,42,.06); padding: 14px 22px; }
+.panel { background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); border: 1px solid rgba(148,163,184,.16); border-radius: 20px; box-shadow: 0 12px 28px rgba(15,23,42,.05); padding: 12px 14px; }
 .hero { background: linear-gradient(135deg, #fff7ed 0%, #f8fbff 100%); display: flex; gap: 12px; justify-content: space-between; }
 .hero h2 { color: #0f172a; margin: 0; }
-.subtitle { color: #475569; margin: 10px 0 0; max-width: 620px; }
-.hero-actions { display: flex; gap: 12px; }
+.subtitle { color: #475569; margin: 8px 0 0; max-width: 620px; }
+.hero-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .release-hero-title-row { display: flex; align-items: center; gap: 12px; }
 .release-hero-title-inline { flex-wrap: wrap; }
 .inline-subtitle { margin: 0; max-width: none; font-size: 13px; line-height: 1.45; }
+.hero-actions :deep(.el-button) { min-height: 38px; padding: 0 16px; border-radius: 12px; }
 .release-header-icon { width: 42px; height: 42px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; color: #fff; background: linear-gradient(135deg, #409eff, #36cfc9); box-shadow: 0 10px 20px rgba(64,158,255,.2); }
 .docker-header-icon { background: linear-gradient(135deg, #2563eb, #14b8a6); }
-.docker-hero { margin-bottom: 16px; }
-.release-stats { gap: 16px; }
-.docker-top-stats { margin-bottom: 16px; }
-.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.18); box-shadow: 0 16px 34px rgba(15,23,42,.07); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
+.docker-hero { margin-bottom: 8px; }
+.release-stats { gap: 8px; }
+.docker-top-stats { margin-bottom: 8px; }
+.release-stat-card { position: relative; min-height: 76px; background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%); border: 1px solid rgba(148,163,184,.16); box-shadow: 0 12px 26px rgba(15,23,42,.05); text-align: left; padding: 12px 16px; overflow: hidden; width: 100%; color: inherit; }
 .release-stat-card::after { content: ''; position: absolute; inset: auto -24px -30px auto; width: 108px; height: 108px; border-radius: 50%; background: radial-gradient(circle, rgba(64,158,255,.16) 0%, rgba(64,158,255,0) 70%); }
 .warning-card::after { background: radial-gradient(circle, rgba(245,158,11,.18) 0%, rgba(245,158,11,0) 70%); }
 .success-card::after { background: radial-gradient(circle, rgba(16,185,129,.18) 0%, rgba(16,185,129,0) 70%); }
@@ -748,12 +749,12 @@ onMounted(() => {
 .release-stat-card.context-card { border-color: rgba(148, 163, 184, 0.18); background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%); }
 .release-stat-card.context-card::after { background: radial-gradient(circle, rgba(148, 163, 184, 0.16) 0%, rgba(148, 163, 184, 0) 72%); }
 .docker-stat-meta { margin-top: 6px; color: #94a3b8; font-size: 12px; }
-.docker-alert-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; padding: 10px 12px; border-radius: 12px; background: rgba(248,250,252,.88); border: 1px solid rgba(148,163,184,.18); }
+.docker-alert-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; padding: 10px 12px; border-radius: 12px; background: rgba(248,250,252,.88); border: 1px solid rgba(148,163,184,.18); }
 .docker-alert-strip__label { font-size: 12px; font-weight: 700; color: #475569; }
 .docker-alert-strip__tag { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
 .alert-popover { display: flex; flex-direction: column; gap: 8px; }
 .alert-popover__item { display: flex; gap: 8px; align-items: flex-start; color: #334155; line-height: 1.5; }
-.toolbar-shell { margin-bottom: 16px; }
+.toolbar-shell { margin-bottom: 8px; }
 .docker-toolbar {
   display: flex;
   justify-content: flex-end;
@@ -901,4 +902,8 @@ onMounted(() => {
     min-width: 0;
   }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+
+
+

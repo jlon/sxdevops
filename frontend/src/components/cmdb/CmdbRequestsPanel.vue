@@ -297,7 +297,7 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
 }
 .request-toolbar-left {

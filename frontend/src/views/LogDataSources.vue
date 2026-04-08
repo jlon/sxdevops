@@ -609,4 +609,6 @@ onMounted(async () => {
 @media (max-width: 640px) {
   .overview-grid { grid-template-columns: 1fr; }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+

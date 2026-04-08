@@ -17,7 +17,7 @@
           <el-icon><RefreshRight /></el-icon>
           刷新概览
         </el-button>
-        <el-button size="small" type="primary" @click="go('/events/wall')">进入事件流</el-button>
+        <el-button size="small" type="primary" @click="go('/events/wall')">查看事件流</el-button>
       </div>
     </section>
 
@@ -361,8 +361,9 @@ onMounted(async () => {
 .focus-chip--failed { background: #fef2f2; color: #b91c1c; border-color: #fca5a5; }
 .focus-chip--partial { background: #fffbeb; color: #b45309; border-color: #fcd34d; }
 .focus-empty { color: #94a3b8; font-size: 12px; padding: 10px 2px; }
-.runtime-strip { align-items: center; background: linear-gradient(90deg, rgba(234, 88, 12, .10), rgba(15, 118, 110, .08)); border: 1px solid rgba(234, 88, 12, .14); border-radius: 12px; color: #0f172a; display: flex; gap: 8px; padding: 8px 11px; font-size: 12px; }
-.runtime-strip--top { margin-top: -7px; }
+.runtime-strip { align-items: center; background: linear-gradient(90deg, rgba(59,130,246,.08) 0%, rgba(14,165,233,.04) 100%); border: 1px solid rgba(59,130,246,.14); border-radius: 10px; color: #64748b; display: flex; gap: 0; padding: 8px 11px; font-size: 12px; line-height: 1.45; }
+.runtime-strip :deep(.el-icon) { display: none; }
+.runtime-strip--top { margin-top: -10px; }
 .content-grid { display: grid; gap: 8px; grid-template-columns: 1fr; }
 .compact-list { display: flex; flex-direction: column; gap: 6px; }
 .compact-item {

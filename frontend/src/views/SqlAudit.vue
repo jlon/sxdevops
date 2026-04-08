@@ -104,7 +104,7 @@ const handleTabChange = (tab) => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .release-hero-title-row {
@@ -149,4 +149,6 @@ const handleTabChange = (tab) => {
 .inline-subtitle {
   max-width: none;
 }
+.hero.panel { border-radius: 20px; }
 </style>
+

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="observability-page">
     <section class="hero panel">
       <div class="hero-copy">
@@ -7,7 +7,7 @@
             <el-icon><Connection /></el-icon>
           </span>
           <h2>链路追踪</h2>
-          <p class="page-inline-desc">按服务、Trace 与时窗快速钻取调用链</p>
+          <p class="page-inline-desc">按服务、Trace 与时间窗口查看调用链</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -19,7 +19,7 @@
         <el-button size="small" v-if="canViewAlerts" @click="router.push('/alerts')">告警中心</el-button>
         <el-button size="small" v-if="canViewGrafana" @click="router.push('/observability/grafana')">监控看板</el-button>
         <el-button size="small" v-if="tracing.ui_url || tracing.oap_url" type="primary" @click="openTracingUi">
-          打开 SkyWalking
+          外部打开
         </el-button>
       </div>
     </section>
@@ -40,7 +40,7 @@
       <div class="section-head">
         <h3>Trace 查询</h3>
         <div class="section-head-tags">
-          <el-tag size="small" type="info">{{ tracing.status_text || '待加载' }}</el-tag>
+          <el-tag size="small" type="info">{{ tracing.status_text || '待接入' }}</el-tag>
           <el-tag size="small" :type="tracing.source === 'skywalking' ? 'success' : 'warning'">
             {{ tracing.source === 'skywalking' ? '实时数据' : '演示数据' }}
           </el-tag>
@@ -103,7 +103,7 @@
           <el-tag size="small" type="info">命中 {{ searchSummary.match_count || displayTraces.length }} 条</el-tag>
         </div>
 
-        <el-empty v-if="!displayTraces.length && !loading.search" description="当前条件下没有找到 Trace。" />
+        <el-empty v-if="!displayTraces.length && !loading.search" description="当前条件下未找到 Trace。" />
 
         <el-table v-else :data="displayTraces" stripe size="small" v-loading="loading.search" style="width: 100%">
           <el-table-column prop="trace_id" label="Trace ID" min-width="180" show-overflow-tooltip />
@@ -137,7 +137,7 @@
 
       <section class="panel detail-panel">
         <div class="section-head">
-          <h3>Trace 明细</h3>
+          <h3>Trace 详情</h3>
           <div class="section-head-tags">
             <el-tag v-if="selectedTraceId" size="small" type="warning">{{ selectedTraceId }}</el-tag>
             <el-button size="small" v-if="canQueryLogs && selectedTraceId" link type="primary" @click="openLogsForTrace({ trace_id: selectedTraceId, service_name: traceDetail?.service_name })">
@@ -184,7 +184,7 @@
             </article>
 
             <article v-if="slowSpanHighlights.length" class="spotlight-card warning-spotlight">
-              <span class="spotlight-title">慢调用 Span</span>
+              <span class="spotlight-title">慢调用Span</span>
               <button
                 v-for="span in slowSpanHighlights"
                 :key="`slow-${span.span_id}`"
@@ -264,7 +264,7 @@
     <section class="panel embed-panel">
       <div class="section-head">
         <h3>SkyWalking 入口</h3>
-        <el-button size="small" v-if="tracing.ui_url || tracing.oap_url" link type="primary" @click="openTracingUi">在新窗口打开</el-button>
+        <el-button size="small" v-if="tracing.ui_url || tracing.oap_url" link type="primary" @click="openTracingUi">外部打开</el-button>
       </div>
 
       <iframe v-if="tracing.embed_url" class="embed-frame" :src="tracing.embed_url" title="SkyWalking" />
@@ -329,14 +329,14 @@ const slowThreshold = 800
 
 const statCards = computed(() => [
   { label: '接入服务', value: services.value.length || overview.value.summary?.service_count || 0, tone: '' },
-  { label: '命中 Trace', value: searchSummary.value.match_count || traces.value.length || 0, tone: 'warning-card' },
+  { label: '命中链路', value: searchSummary.value.match_count || traces.value.length || 0, tone: 'warning-card' },
   { label: '错误链路', value: searchSummary.value.error_match_count || 0, tone: 'danger-card' },
   { label: '拓扑调用', value: topology.value.call_count || 0, tone: 'success-card' },
 ])
 
 const runtimeHint = computed(() => {
   if (tracing.value.warning) return tracing.value.warning
-  return overview.value.tips?.[0] || 'SkyWalking 未配置时会自动回退到演示链路数据。'
+  return overview.value.tips?.[0] || '未接入 SkyWalking 时自动回退到演示数据。'
 })
 
 const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
@@ -749,13 +749,20 @@ onUnmounted(() => {
 
 .runtime-strip {
   align-items: center;
-  background: linear-gradient(90deg, rgba(14, 165, 233, 0.12), rgba(16, 185, 129, 0.1));
-  border: 1px solid rgba(14, 165, 233, 0.16);
-  border-radius: 12px;
-  color: #0f172a;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.14);
+  border-radius: 10px;
+  color: #64748b;
   display: flex;
-  gap: 6px;
+  font-size: 12px;
+  gap: 0;
+  line-height: 1.45;
+  margin-top: -10px;
   padding: 8px 11px;
+}
+
+.runtime-strip :deep(.el-icon) {
+  display: none;
 }
 
 .section-head {
@@ -1027,4 +1034,8 @@ onUnmounted(() => {
     grid-template-columns: 1fr;
   }
 }
+.hero.panel { border-radius: 20px; }
 </style>
+
+
+

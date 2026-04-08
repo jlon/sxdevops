@@ -28,7 +28,7 @@ import { getHost } from '@/api/modules/ops'
 
 const route = useRoute()
 const hostId = route.params.hostId
-const token = localStorage.getItem('agdevops_token') || ''
+const token = localStorage.getItem('sxdevops_token') || ''
 const terminalRef = ref(null)
 const hostInfo = ref(null)
 const wsStatus = ref('connecting')
@@ -80,7 +80,7 @@ function initTerminal() {
   term.open(terminalRef.value)
   fitAddon.fit()
 
-  term.writeln('\x1b[1;36m⚡ AgDevOps WebShell\x1b[0m')
+  term.writeln('\x1b[1;36m⚡ SxDevOps WebShell\x1b[0m')
   term.writeln('\x1b[2m正在建立 SSH 连接...\x1b[0m')
   term.writeln('')
 

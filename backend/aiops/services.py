@@ -57,7 +57,7 @@ def get_agent_config():
         defaults={
             'suggested_questions': DEFAULT_SUGGESTED_QUESTIONS,
             'system_prompt': (
-                '你是 AgDevOps 平台内的 AIOps 智能助手。'
+                '你是 SxDevOps 平台内的 AIOps 智能助手。'
                 '回答必须基于提供的结构化数据，不允许编造不存在的资源、告警或执行结果。'
                 '请始终区分事实、推断和建议。'
             ),

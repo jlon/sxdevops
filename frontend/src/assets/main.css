@@ -1,5 +1,5 @@
 /* ============================================
-   AgDevOps 运维平台 — 全局样式
+   SxDevOps 运维平台 — 全局样式
    ============================================ */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -1523,21 +1523,23 @@ body {
   display: flex;
   gap: 8px;
   background: var(--card-bg);
-  padding: 6px;
+  padding: 4px;
   border-radius: 12px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
-  margin-bottom: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.04);
+  margin-bottom: 8px;
 }
 
 .neo-tab-btn {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 24px;
+  min-height: 38px;
+  padding: 0 20px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   border-radius: 8px;
   cursor: pointer;
@@ -1563,39 +1565,40 @@ body {
 .neo-tab-btn.active {
   color: #fff;
   font-weight: 600;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.08);
 }
 
 .theme-blue .neo-tab-btn.active {
   background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+  box-shadow: 0 10px 18px rgba(59, 130, 246, 0.18);
 }
 
 .theme-green .neo-tab-btn.active {
   background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 10px 18px rgba(16, 185, 129, 0.18);
 }
 
 .theme-purple .neo-tab-btn.active {
   background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
-  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+  box-shadow: 0 10px 18px rgba(139, 92, 246, 0.18);
 }
 
 .neo-sub-tabs {
   display: flex;
   gap: 8px;
-  margin-bottom: 20px;
+  margin-bottom: 8px;
   padding: 4px;
 }
 
 .neo-sub-tab-btn {
-  padding: 6px 16px;
+  min-height: 32px;
+  padding: 0 16px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   font-size: 13px;
   font-weight: 500;
-  border-radius: 20px;
+  border-radius: 999px;
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -1609,7 +1612,7 @@ body {
   background: var(--card-bg);
   color: var(--text-primary);
   font-weight: 600;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.06);
 }
 
 .theme-blue .neo-sub-tab-btn.active {
