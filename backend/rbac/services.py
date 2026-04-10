@@ -9,6 +9,8 @@ User = get_user_model()
 DEFAULT_ADMIN_USERNAME = 'admin'
 DEFAULT_ADMIN_PASSWORD = 'Admin@123456'
 DEFAULT_ADMIN_EMAIL = 'admin@example.com'
+DEMO_ACCOUNT_USERNAME = 'demo'
+DEMO_ACCOUNT_MUTATION_MESSAGE = '演示账号无实际操作权限。'
 
 
 @transaction.atomic
@@ -58,6 +60,13 @@ def ensure_default_superuser():
         role.users.add(user)
 
 
+def is_demo_account(user):
+    return bool(
+        getattr(user, 'is_authenticated', False)
+        and getattr(user, 'username', '') == DEMO_ACCOUNT_USERNAME
+    )
+
+
 def get_user_direct_roles(user):
     if not getattr(user, 'is_authenticated', False):
         return Role.objects.none()
@@ -73,7 +82,7 @@ def get_user_group_roles(user):
 def get_user_effective_permissions(user):
     if not getattr(user, 'is_authenticated', False):
         return set()
-    if getattr(user, 'is_superuser', False):
+    if getattr(user, 'is_superuser', False) or is_demo_account(user):
         return set(PermissionDefinition.objects.values_list('code', flat=True))
 
     permission_codes = set(
@@ -91,7 +100,7 @@ def user_has_permissions(user, codes):
         return True
     if not getattr(user, 'is_authenticated', False):
         return False
-    if getattr(user, 'is_superuser', False):
+    if getattr(user, 'is_superuser', False) or is_demo_account(user):
         return True
     granted = get_user_effective_permissions(user)
     return all(code in granted for code in codes)

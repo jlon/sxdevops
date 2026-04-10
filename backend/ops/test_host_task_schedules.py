@@ -53,6 +53,23 @@ class HostTaskScheduleApiTests(TestCase):
         self.assertEqual(payload['target_count'], 1)
         self.assertTrue(payload['next_runs'])
 
+    def test_preview_schedule_supports_get_params(self):
+        payload = self._payload()
+        response = self.client.get(
+            '/api/host-task-schedules/preview_next_runs/',
+            {
+                **{key: value for key, value in payload.items() if key not in {'payload', 'selection_filters', 'target_host_ids'}},
+                'payload': '{"command":"uptime && df -h"}',
+                'selection_filters': '{}',
+                'target_host_ids': f'[{self.host.id}]',
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data['target_count'], 1)
+        self.assertTrue(data['next_runs'])
+
     def test_create_schedule_sets_target_count_and_next_run(self):
         response = self.client.post('/api/host-task-schedules/', self._payload(), format='json')
 

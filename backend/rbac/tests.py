@@ -2,7 +2,7 @@
 from django.test import TestCase
 
 from .models import PermissionDefinition, Role, UserGroup
-from .services import ensure_builtin_rbac
+from .services import DEMO_ACCOUNT_MUTATION_MESSAGE, ensure_builtin_rbac, get_user_effective_permissions
 
 
 User = get_user_model()
@@ -50,3 +50,40 @@ class RbacPermissionTests(TestCase):
             },
         )
         self.assertEqual(create_response.status_code, 403)
+
+    def test_demo_account_has_full_permissions(self):
+        demo_user = User.objects.create_user(username='demo', password='Demo#123')
+        permissions = get_user_effective_permissions(demo_user)
+
+        self.assertIn('rbac.user.manage', permissions)
+        self.assertIn('ops.k8s.manage', permissions)
+        self.assertIn('marketplace.deployment.manage', permissions)
+
+    def test_demo_account_cannot_create_users(self):
+        demo_user = User.objects.create_user(username='demo', password='Demo#123')
+        self.client.force_login(demo_user)
+
+        response = self.client.post(
+            '/api/users/',
+            {
+                'username': 'blocked-demo-created-user',
+                'password': 'Admin@123456',
+                'email': 'blocked-demo-created-user@example.com',
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()['detail'], DEMO_ACCOUNT_MUTATION_MESSAGE)
+
+    def test_demo_account_cannot_call_custom_write_action(self):
+        demo_user = User.objects.create_user(username='demo', password='Demo#123')
+        target_user = User.objects.create_user(username='reset-target', password='Admin@123456')
+        self.client.force_login(demo_user)
+
+        response = self.client.post(
+            f'/api/users/{target_user.id}/reset_password/',
+            {'password': 'Admin@654321'},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()['detail'], DEMO_ACCOUNT_MUTATION_MESSAGE)

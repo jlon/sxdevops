@@ -27,7 +27,14 @@ export const createHostTaskSchedule = (data) => request.post('/host-task-schedul
 export const updateHostTaskSchedule = (id, data) => request.put(`/host-task-schedules/${id}/`, data)
 export const deleteHostTaskSchedule = (id) => request.delete(`/host-task-schedules/${id}/`)
 export const getHostTaskScheduleStats = () => request.get('/host-task-schedules/stats/')
-export const previewHostTaskSchedule = (data) => request.post('/host-task-schedules/preview_next_runs/', data)
+export const previewHostTaskSchedule = (data) => request.get('/host-task-schedules/preview_next_runs/', {
+  params: {
+    ...data,
+    payload: JSON.stringify(data?.payload || {}),
+    selection_filters: JSON.stringify(data?.selection_filters || {}),
+    target_host_ids: JSON.stringify(data?.target_host_ids || []),
+  },
+})
 export const toggleHostTaskSchedule = (id) => request.post(`/host-task-schedules/${id}/toggle_enabled/`)
 export const runHostTaskScheduleNow = (id) => request.post(`/host-task-schedules/${id}/run_now/`)
 export const getHostTaskScheduleExecutions = (params) => request.get('/host-task-schedule-executions/', { params })

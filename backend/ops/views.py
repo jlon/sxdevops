@@ -1,4 +1,5 @@
-﻿from datetime import timedelta
+import json
+from datetime import timedelta
 import paramiko
 from django.db.models import Avg, Count, Q
 from django.utils import timezone
@@ -59,6 +60,21 @@ def _resolve_approval_flow(environment):
     if flow:
         return flow
     return DeploymentApprovalFlow.objects.filter(is_active=True, environment='').prefetch_related('nodes').first()
+
+
+def _build_schedule_preview_input(request):
+    if request.method == 'GET':
+        payload = {}
+        for key, value in request.query_params.items():
+            if key in {'payload', 'selection_filters', 'target_host_ids'} and value:
+                try:
+                    payload[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    payload[key] = value
+            else:
+                payload[key] = value
+        return payload
+    return request.data
 
 
 def _initialize_approval_steps(deployment):
@@ -592,9 +608,9 @@ class HostTaskScheduleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, v
             'latest_requested_at': latest.requested_at if latest else None,
         })
 
-    @action(detail=False, methods=['post'])
+    @action(detail=False, methods=['get', 'post'])
     def preview_next_runs(self, request):
-        serializer = HostTaskSchedulePreviewSerializer(data=request.data)
+        serializer = HostTaskSchedulePreviewSerializer(data=_build_schedule_preview_input(request))
         serializer.is_valid(raise_exception=True)
         hosts = resolve_schedule_hosts(serializer.validated_data)
         return Response({

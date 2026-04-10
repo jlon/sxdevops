@@ -8,7 +8,7 @@ from eventwall.mixins import EventWallModelViewSetMixin
 from eventwall.models import EventRecord
 from eventwall.services import build_resource, record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
-from rbac.services import user_has_permissions
+from rbac.services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account, user_has_permissions
 
 from .models import CloudAsset, CloudCredential, CloudEnvironment, CloudSyncTask
 from .serializers import CloudAssetSerializer, CloudCredentialSerializer, CloudEnvironmentSerializer, CloudSyncTaskSerializer
@@ -328,6 +328,8 @@ def batch_sync_view(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def batch_action_view(request):
+    if is_demo_account(request.user):
+        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     scope = request.data.get('scope')
     action = request.data.get('action')
     ids = request.data.get('ids') or []

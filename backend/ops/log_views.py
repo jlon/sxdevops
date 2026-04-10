@@ -1350,7 +1350,7 @@ def log_providers(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('ops.log.query')])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.log.query', allow_demo_write=True)])
 def log_provider_catalog(request, provider):
     try:
         resolved_provider, config, _ = _resolve_provider_and_config({**request.data, 'provider': provider})
@@ -1367,7 +1367,7 @@ def log_provider_catalog(request, provider):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('ops.log.query')])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.log.query', allow_demo_write=True)])
 def log_query(request):
     try:
         provider, config, datasource = _resolve_provider_and_config(request.data)

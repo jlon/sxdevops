@@ -51,9 +51,9 @@ DEMO_USERS = [
         'first_name': 'Demo',
         'last_name': 'User',
         'password': 'Demo#123',
-        'roles': ['read-only'],
+        'roles': ['platform-admin'],
         'groups': ['visitors'],
-        'is_staff': False,
+        'is_staff': True,
     },
 ]
 

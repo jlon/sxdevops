@@ -17,6 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
+from rbac.services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account
 
 from .models import DockerHost
 from .serializers import DockerHostSerializer
@@ -430,6 +431,8 @@ def container_action(request, container_id):
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.manage')])
 def container_remove(request, container_id):
+    if is_demo_account(request.user):
+        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=403)
     host_id = request.query_params.get('host_id')
     docker_host = _get_docker_host(host_id)
     if not docker_host:
@@ -519,6 +522,8 @@ def container_inspect(request, container_id):
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.manage')])
 def remove_images(request):
+    if is_demo_account(request.user):
+        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=403)
     host_id = request.data.get('host_id') or request.query_params.get('host_id')
     image_ids = _ensure_image_ids(request.data.get('image_ids'))
     if not image_ids:
@@ -562,6 +567,8 @@ def remove_images(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.docker.manage')])
 def prune_dangling_images(request):
+    if is_demo_account(request.user):
+        return Response({'detail': DEMO_ACCOUNT_MUTATION_MESSAGE}, status=403)
     host_id = request.data.get('host_id')
     docker_host = _get_docker_host(host_id)
     if not docker_host:

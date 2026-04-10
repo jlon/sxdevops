@@ -3,7 +3,7 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
 from .models import PermissionDefinition, Role, UserGroup
-from .services import get_user_effective_permissions
+from .services import get_user_effective_permissions, is_demo_account
 
 
 User = get_user_model()
@@ -117,13 +117,14 @@ class UserSerializer(serializers.ModelSerializer):
     user_groups = GroupLiteSerializer(source='rbac_groups', many=True, read_only=True)
     effective_permissions = serializers.SerializerMethodField()
     display_name = serializers.SerializerMethodField()
+    is_demo_account = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name', 'is_active', 'is_staff', 'is_superuser',
             'date_joined', 'last_login', 'password', 'role_ids', 'group_ids', 'roles', 'user_groups',
-            'effective_permissions', 'display_name',
+            'effective_permissions', 'display_name', 'is_demo_account',
         ]
         read_only_fields = ['date_joined', 'last_login']
 
@@ -133,6 +134,9 @@ class UserSerializer(serializers.ModelSerializer):
     def get_display_name(self, obj):
         full_name = f'{obj.first_name} {obj.last_name}'.strip()
         return full_name or obj.username
+
+    def get_is_demo_account(self, obj):
+        return is_demo_account(obj)
 
     def validate_password(self, value):
         validate_password(value)

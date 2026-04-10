@@ -1,6 +1,6 @@
-﻿from rest_framework.permissions import BasePermission, IsAuthenticated
+﻿from rest_framework.permissions import SAFE_METHODS, BasePermission, IsAuthenticated
 
-from .services import user_has_permissions
+from .services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account, user_has_permissions
 
 
 class RBACPermission(BasePermission):
@@ -9,6 +9,18 @@ class RBACPermission(BasePermission):
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
+            return False
+
+        action = getattr(view, 'action', None)
+        allowed_actions = set(getattr(view, 'demo_account_allowed_actions', set()) or [])
+        allow_demo_write = bool(getattr(self, 'allow_demo_write', False) or getattr(view, 'demo_account_allow_write', False))
+        if (
+            is_demo_account(request.user)
+            and request.method.upper() not in SAFE_METHODS
+            and not allow_demo_write
+            and action not in allowed_actions
+        ):
+            self.message = DEMO_ACCOUNT_MUTATION_MESSAGE
             return False
 
         codes = getattr(self, 'required_permissions', ())
@@ -37,8 +49,10 @@ class RBACPermissionMixin:
         return list(codes or [])
 
 
-def build_rbac_permission(*codes):
+def build_rbac_permission(*codes, allow_demo_write=False):
     class ViewRBACPermission(RBACPermission):
         required_permissions = codes
+
+    ViewRBACPermission.allow_demo_write = allow_demo_write
 
     return ViewRBACPermission

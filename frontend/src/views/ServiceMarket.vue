@@ -4,7 +4,7 @@
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="market-header-icon"><el-icon><Shop /></el-icon></span>
-          <h2>服务市场</h2>
+          <h2>工具市场</h2>
           <p class="page-desc inline-subtitle">支持 Docker Compose 单机与 Kubernetes 集群两种部署模式，统一查看模板与部署实例。</p>
         </div>
       </div>
@@ -12,7 +12,7 @@
 
     <div class="market-tabs">
       <button class="tab-btn" :class="{ active: activeTab === 'market' }" @click="activeTab = 'market'">
-        <el-icon><Shop /></el-icon> 服务市场
+        <el-icon><Shop /></el-icon> 工具市场
       </button>
       <button
         v-if="canViewMarketplaceDeployments"

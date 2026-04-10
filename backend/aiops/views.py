@@ -101,6 +101,7 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsChatSessionSerializer
     http_method_names = ['get', 'post', 'head', 'options']
+    demo_account_allowed_actions = {'create', 'send_message'}
     rbac_permissions = {
         'list': ['aiops.chat.view'],
         'retrieve': ['aiops.chat.view'],
