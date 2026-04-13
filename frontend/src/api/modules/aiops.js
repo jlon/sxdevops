@@ -18,6 +18,7 @@ export const getAIOpsConfig = () => request.get('/aiops/admin/config/')
 export const updateAIOpsConfig = (data) => request.put('/aiops/admin/config/', data)
 export const getAIOpsAuditOverview = () => request.get('/aiops/admin/audit/overview/')
 export const getAIOpsAuditSessions = (params) => request.get('/aiops/admin/audit/sessions/', { params })
+export const deleteAIOpsAuditSession = (id) => request.delete(`/aiops/admin/audit/sessions/${id}/`)
 export const getAIOpsAuditToolInvocations = (params) => request.get('/aiops/admin/audit/tool-invocations/', { params })
 export const getAIOpsAuditActions = (params) => request.get('/aiops/admin/audit/actions/', { params })
 

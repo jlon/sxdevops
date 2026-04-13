@@ -216,6 +216,7 @@ def seed_cmdb_demo(stdout=None):
         '研发-张晨',
         'active',
         {
+            'ip_address': '10.10.1.100',
             'language': 'Java',
             'framework': 'Spring Boot',
             'repo': 'git@gitlab.example.com:shop/order-service.git',
@@ -229,6 +230,7 @@ def seed_cmdb_demo(stdout=None):
         '研发-赵羽',
         'active',
         {
+            'ip_address': '10.10.1.101',
             'language': 'Go',
             'framework': 'Gin',
             'repo': 'git@gitlab.example.com:risk/risk-engine.git',

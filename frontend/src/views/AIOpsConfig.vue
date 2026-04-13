@@ -1,10 +1,11 @@
 ﻿<template>
   <div class="aiops-config-page">
     <section class="hero panel">
-      <div class="hero-copy">
-        <div class="hero-title-row">
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
           <span class="hero-icon"><el-icon><ChatDotSquare /></el-icon></span>
           <h2>智能体配置</h2>
+          <p class="page-desc inline-subtitle">统一管理智能助手的策略、MCP、Skill、模型提供商与审计能力。</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -108,36 +109,6 @@
               </el-form-item>
             </el-form>
           </div>
-        </div>
-        <div class="audit-section">
-          <div class="section-title">最近会话</div>
-          <el-table :data="auditSessions.slice(0, 6)" stripe size="small">
-            <el-table-column prop="title" label="会话标题" min-width="180" />
-            <el-table-column prop="username" label="用户" width="120" />
-            <el-table-column prop="message_count" label="消息数" width="90" />
-            <el-table-column prop="status" label="状态" width="100" />
-            <el-table-column prop="last_message_at" label="最后消息" min-width="180" />
-          </el-table>
-        </div>
-        <div class="audit-section">
-          <div class="section-title">最近工具调用</div>
-          <el-table :data="auditTools.slice(0, 8)" stripe size="small">
-            <el-table-column prop="tool_name" label="工具" width="180" />
-            <el-table-column prop="username" label="用户" width="120" />
-            <el-table-column prop="status" label="状态" width="100" />
-            <el-table-column prop="latency_ms" label="耗时(ms)" width="110" />
-            <el-table-column prop="created_at" label="时间" min-width="180" />
-          </el-table>
-        </div>
-        <div class="audit-section">
-          <div class="section-title">最近动作</div>
-          <el-table :data="auditActions.slice(0, 8)" stripe size="small">
-            <el-table-column prop="title" label="动作标题" min-width="180" />
-            <el-table-column prop="risk_level_display" label="风险" width="100" />
-            <el-table-column prop="status_display" label="状态" width="120" />
-            <el-table-column prop="confirmed_by" label="确认人" width="120" />
-            <el-table-column prop="updated_at" label="更新时间" min-width="180" />
-          </el-table>
         </div>
       </template>
 
@@ -258,6 +229,53 @@
             <strong>{{ auditOverview.failed_actions_today || 0 }}</strong>
           </div>
         </div>
+        <div class="audit-section">
+          <div class="section-toolbar audit-toolbar">
+            <div class="section-title" style="margin-bottom:0;">最近会话</div>
+            <span class="audit-hint">展示全部历史，可翻页查看</span>
+          </div>
+          <el-table :data="auditSessions" stripe size="small">
+            <el-table-column prop="title" label="会话标题" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="username" label="用户" width="120" />
+            <el-table-column prop="message_count" label="消息数" width="90" />
+            <el-table-column prop="status" label="状态" width="100" />
+            <el-table-column prop="last_message_at" label="最后消息" min-width="180" />
+            <el-table-column v-if="canManageAudit" label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="danger" @click="handleDeleteAuditSession(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="pagination-row">
+            <el-pagination
+              v-model:current-page="auditSessionPagination.page"
+              :page-size="auditSessionPagination.pageSize"
+              :total="auditSessionPagination.total"
+              layout="total, prev, pager, next"
+              @current-change="loadAuditSessions"
+            />
+          </div>
+        </div>
+        <div class="audit-section">
+          <div class="section-title">最近工具调用</div>
+          <el-table :data="auditTools.slice(0, 8)" stripe size="small">
+            <el-table-column prop="tool_name" label="工具" width="180" />
+            <el-table-column prop="username" label="用户" width="120" />
+            <el-table-column prop="status" label="状态" width="100" />
+            <el-table-column prop="latency_ms" label="耗时(ms)" width="110" />
+            <el-table-column prop="created_at" label="时间" min-width="180" />
+          </el-table>
+        </div>
+        <div class="audit-section">
+          <div class="section-title">最近动作</div>
+          <el-table :data="auditActions.slice(0, 8)" stripe size="small">
+            <el-table-column prop="title" label="动作标题" min-width="180" />
+            <el-table-column prop="risk_level_display" label="风险" width="100" />
+            <el-table-column prop="status_display" label="状态" width="120" />
+            <el-table-column prop="confirmed_by" label="确认人" width="120" />
+            <el-table-column prop="updated_at" label="更新时间" min-width="180" />
+          </el-table>
+        </div>
       </template>
     </section>
 
@@ -343,10 +361,12 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ChatDotSquare, InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useAuthStore } from '@/stores/auth'
 import {
   createAIOpsMcpServer,
   createAIOpsProvider,
   createAIOpsSkill,
+  deleteAIOpsAuditSession,
   deleteAIOpsMcpServer,
   deleteAIOpsProvider,
   deleteAIOpsSkill,
@@ -368,6 +388,7 @@ import {
 } from '@/api/modules/aiops'
 
 const activeTab = ref('strategy')
+const authStore = useAuthStore()
 const loading = reactive({ page: false })
 const saving = reactive({ config: false, provider: false, mcp: false, skill: false })
 
@@ -378,6 +399,11 @@ const auditOverview = ref({})
 const auditSessions = ref([])
 const auditTools = ref([])
 const auditActions = ref([])
+const auditSessionPagination = reactive({
+  page: 1,
+  pageSize: 20,
+  total: 0,
+})
 
 const configForm = reactive({
   default_provider_id: null,
@@ -407,6 +433,7 @@ const currentMcpToolsTitle = ref('')
 
 const enabledMcpCount = computed(() => mcpServers.value.filter(item => item.is_enabled).length)
 const enabledSkillCount = computed(() => skills.value.filter(item => item.is_enabled).length)
+const canManageAudit = computed(() => authStore.hasPermission('aiops.audit.manage'))
 
 function formatMcpType(serverType) {
   if (serverType === 'platform_builtin') return '平台内置'
@@ -495,13 +522,12 @@ function applyConfig(payload = {}) {
 async function loadAll() {
   loading.page = true
   try {
-    const [config, providerData, mcpData, skillData, auditData, sessionData, toolData, actionData] = await Promise.all([
+    const [config, providerData, mcpData, skillData, auditData, toolData, actionData] = await Promise.all([
       getAIOpsConfig(),
       getAIOpsProviders(),
       getAIOpsMcpServers(),
       getAIOpsSkills(),
       getAIOpsAuditOverview(),
-      getAIOpsAuditSessions(),
       getAIOpsAuditToolInvocations(),
       getAIOpsAuditActions(),
     ])
@@ -510,11 +536,26 @@ async function loadAll() {
     mcpServers.value = mcpData || []
     skills.value = skillData || []
     auditOverview.value = auditData || {}
-    auditSessions.value = sessionData.results || sessionData || []
     auditTools.value = toolData.results || toolData || []
     auditActions.value = actionData.results || actionData || []
+    await loadAuditSessions(auditSessionPagination.page)
   } finally {
     loading.page = false
+  }
+}
+
+async function loadAuditSessions(page = 1) {
+  try {
+    const sessionData = await getAIOpsAuditSessions({ page })
+    auditSessionPagination.page = page
+    auditSessionPagination.total = sessionData.count || 0
+    auditSessions.value = sessionData.results || sessionData || []
+  } catch (error) {
+    const message = String(error?.response?.data?.detail || '')
+    if (page > 1 && message.includes('无效页面')) {
+      return loadAuditSessions(page - 1)
+    }
+    throw error
   }
 }
 
@@ -635,6 +676,19 @@ async function handleDeleteSkill(row) {
   await loadAll()
 }
 
+async function handleDeleteAuditSession(row) {
+  await ElMessageBox.confirm(`确认删除会话《${row.title}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
+  await deleteAIOpsAuditSession(row.id)
+  const shouldFallbackPage = auditSessions.value.length === 1 && auditSessionPagination.page > 1
+  ElMessage.success('会话已删除')
+  await Promise.all([
+    getAIOpsAuditOverview().then((data) => {
+      auditOverview.value = data || {}
+    }),
+    loadAuditSessions(shouldFallbackPage ? auditSessionPagination.page - 1 : auditSessionPagination.page),
+  ])
+}
+
 onMounted(async () => {
   resetProviderForm()
   resetMcpForm()
@@ -646,16 +700,23 @@ onMounted(async () => {
 <style scoped>
 .aiops-config-page{display:flex;flex-direction:column;gap:8px}
 .panel{background:linear-gradient(180deg,#fff 0%,#fffdf8 100%);border:1px solid rgba(148,163,184,.16);border-radius:20px;box-shadow:0 12px 28px rgba(15,23,42,.05);padding:14px 16px}
-.hero,.hero-copy,.hero-title-row,.hero-actions,.config-grid,.switch-list,.section-toolbar,.audit-grid{display:flex;gap:8px}
+.hero,.release-hero-copy,.release-hero-title-row,.hero-actions,.config-grid,.switch-list,.section-toolbar,.audit-grid{display:flex;gap:8px}
 .hero-actions{align-items:center;flex-wrap:wrap}
 .hero-actions :deep(.el-button){min-height:38px;padding:0 16px;border-radius:12px}
-.hero{align-items:center;justify-content:space-between;background:linear-gradient(135deg,#fff7ed 0%,#f0fdf4 100%)}
-.hero-title-row{align-items:center}.hero-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;color:#fff;background:linear-gradient(135deg,#0f766e,#0ea5e9)}.hero h2{margin:0;font-size:24px}
-.stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.release-stat-card{padding:14px 16px;border-radius:16px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.16);box-shadow:0 12px 26px rgba(15,23,42,.05)}.stat-value{font-size:28px;font-weight:700;color:#0f172a}.stat-label{margin-top:6px;color:#64748b;font-size:13px}.success-card{background:linear-gradient(145deg,#f0fdf4 0%,#ecfeff 100%)}.warning-card{background:linear-gradient(145deg,#fff7ed 0%,#fffbeb 100%)}
+.hero{align-items:center;justify-content:space-between;background:linear-gradient(135deg,#fff7ed 0%,#f8fbff 100%)}
+.release-hero-title-row{align-items:center}
+.release-hero-title-inline{flex-wrap:wrap}
+.hero-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;color:#fff;background:linear-gradient(135deg,#0f766e,#0ea5e9)}
+.hero h2{margin:0;font-size:24px;color:#0f172a}
+.page-desc.inline-subtitle{margin:0;color:#64748b;font-size:13px;line-height:1.6}
+.stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.release-stat-card{position:relative;min-height:76px;padding:14px 16px;border-radius:16px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.16);box-shadow:0 12px 26px rgba(15,23,42,.05);overflow:hidden}.release-stat-card::after{content:'';position:absolute;inset:auto -24px -30px auto;width:108px;height:108px;border-radius:50%;background:radial-gradient(circle,rgba(64,158,255,.16) 0%,rgba(64,158,255,0) 70%)}.stat-value{position:relative;font-size:28px;font-weight:700;color:#0f172a}.stat-label{position:relative;margin-top:6px;color:#64748b;font-size:13px}.success-card::after{background:radial-gradient(circle,rgba(16,185,129,.18) 0%,rgba(16,185,129,0) 70%)}.warning-card::after{background:radial-gradient(circle,rgba(245,158,11,.18) 0%,rgba(245,158,11,0) 70%)}
 .runtime-strip{display:flex;align-items:center;gap:0;padding:8px 11px;border-radius:10px;background:linear-gradient(90deg,rgba(59,130,246,.08) 0%,rgba(14,165,233,.04) 100%);color:#64748b;border:1px solid rgba(59,130,246,.14);font-size:12px;line-height:1.45;margin-top:-10px}.runtime-strip :deep(.el-icon){display:none}
 .config-grid{align-items:flex-start}.config-section{flex:1;padding:8px 0}.section-title{font-size:14px;font-weight:700;color:#0f172a;margin-bottom:8px}.switch-list{flex-direction:column}.switch-item{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}
 .section-toolbar{justify-content:flex-end;margin-bottom:8px}.dialog-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px}.audit-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.audit-card{padding:16px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;display:flex;flex-direction:column;gap:8px}.audit-card strong{font-size:28px;color:#0f172a}
 .audit-section{margin-top:8px}
+.audit-toolbar{justify-content:space-between;align-items:center}
+.audit-hint{color:#64748b;font-size:12px}
+.pagination-row{display:flex;justify-content:flex-end;margin-top:10px}
 .empty-panel{padding:18px 4px 8px}
 .empty-copy{min-height:120px;padding:16px 18px;border-radius:14px;background:linear-gradient(180deg,#fff 0%,#f8fafc 100%);border:1px dashed rgba(148,163,184,.35);color:#64748b;font-size:13px;line-height:1.8}
 .skill-detail-card{margin-bottom:16px;padding:12px 14px;border-radius:14px;background:linear-gradient(145deg,#fff7ed 0%,#f8fafc 100%);border:1px solid rgba(148,163,184,.2)}

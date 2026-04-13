@@ -165,6 +165,7 @@ def logout_view(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def current_user_view(request):
+    ensure_builtin_rbac()
     return Response(UserSerializer(request.user).data)
 
 

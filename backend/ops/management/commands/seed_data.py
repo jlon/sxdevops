@@ -473,6 +473,36 @@ def seed_app_release_demo(stdout, hosts, docker_hosts):
             'step_statuses': ['approved', 'approved'],
         },
         {
+            'app_name': 'order-center',
+            'business_line': BIZ_COMMERCE,
+            'version': 'v2.6.3',
+            'image': 'registry.demo.local/order-center:v2.6.3',
+            'environment': 'prod',
+            'deploy_mode': 'docker_compose',
+            'release_strategy': 'standard',
+            'status': 'failed',
+            'approval_status': 'approved',
+            'submitter': 'wangwu',
+            'deployer': 'ops-admin',
+            'approver': 'ops-admin',
+            'approval_comment': '回滚窗口已预留',
+            'change_summary': '订单中心生产发布后库存校验超时，已触发异常排查',
+            'description': '典型案例：生产环境异常发布记录',
+            'docker_host': gateway_docker_env,
+            'container_port': 8081,
+            'service_port': 8081,
+            'approval_flow': flow_prod,
+            'execution_count': 1,
+            'is_current': False,
+            'approved_at': timezone.now() - timedelta(hours=3, minutes=18),
+            'executed_at': timezone.now() - timedelta(hours=3, minutes=12),
+            'finished_at': timezone.now() - timedelta(hours=3, minutes=5),
+            'deploy_dir': '/opt/agdevops/apps/order-center-prod',
+            'deploy_log': '[INFO] 发布模式: Docker 环境\n[INFO] 发布策略: 标准发布\n[ERROR] 调用 inventory-service 超时，发布后健康检查失败',
+            'deployed_at': timezone.now() - timedelta(hours=3, minutes=5),
+            'step_statuses': ['approved', 'approved', 'approved'],
+        },
+        {
             'app_name': 'admin-portal',
             'business_line': BIZ_DATA,
             'version': 'v1.9.3',
@@ -1262,6 +1292,50 @@ class Command(BaseCommand):
                 is_acknowledged=random.choice([True, False, False]),
                 host=random.choice(hosts),
             )
+        prod_hosts = [host for host in hosts if host.environment == 'prod']
+        order_prod_host = next((host for host in prod_hosts if 'order' in host.hostname), None) or (prod_hosts[0] if prod_hosts else hosts[0])
+        Alert.objects.bulk_create([
+            Alert(
+                title='order-center 库存校验超时',
+                level='critical',
+                source='APM',
+                message='order-service inventory timeout in prod',
+                is_acknowledged=False,
+                host=order_prod_host,
+            ),
+            Alert(
+                title='order-center 下游依赖重试激增',
+                level='critical',
+                source='APM',
+                message='inventory-service retry rate exceeded threshold in prod',
+                is_acknowledged=False,
+                host=order_prod_host,
+            ),
+            Alert(
+                title='order-center 发布后健康检查失败',
+                level='warning',
+                source='APM',
+                message='post-release health check failed for order-center in prod',
+                is_acknowledged=False,
+                host=order_prod_host,
+            ),
+            Alert(
+                title='payment-worker Deployment 副本不可用',
+                level='critical',
+                source='Prometheus',
+                message='kube_deployment_status_replicas_unavailable > 0 for deployment payment-worker in namespace production',
+                is_acknowledged=False,
+                host=next((host for host in prod_hosts if host.hostname == 'k8s-node-01'), order_prod_host),
+            ),
+            Alert(
+                title='member-api Deployment 滚动发布卡住',
+                level='critical',
+                source='Prometheus',
+                message='kube_deployment_status_condition indicates progressing timeout for deployment member-api in namespace production',
+                is_acknowledged=False,
+                host=next((host for host in prod_hosts if host.hostname == 'k8s-node-01'), order_prod_host),
+            ),
+        ])
 
         self.stdout.write('正在生成日志数据...')
         services = ['user-service', 'order-service', 'gateway', 'nginx', 'mysql', 'redis']
@@ -1279,6 +1353,26 @@ class Command(BaseCommand):
                 message=random.choice(log_messages[level]),
                 host=random.choice(hosts),
             )
+        LogEntry.objects.bulk_create([
+            LogEntry(
+                level='error',
+                service='order-service',
+                message='Inventory service timeout while creating order ORD-20260410-1024',
+                host=order_prod_host,
+            ),
+            LogEntry(
+                level='warning',
+                service='order-service',
+                message='Order center downstream latency increased to 1.8s on /api/orders/create',
+                host=order_prod_host,
+            ),
+            LogEntry(
+                level='warning',
+                service='order-center',
+                message='Order center detected retry storm after inventory timeout in prod',
+                host=order_prod_host,
+            ),
+        ])
 
         seed_app_release_demo(self.stdout, hosts, docker_hosts)
         seed_host_task_demo(self.stdout, hosts)

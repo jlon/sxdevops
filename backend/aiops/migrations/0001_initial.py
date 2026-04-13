@@ -122,7 +122,7 @@ class Migration(migrations.Migration):
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('name', models.CharField(default='default', max_length=64, unique=True, verbose_name='配置名称')),
                 ('system_prompt', models.TextField(blank=True, default='', verbose_name='系统提示词')),
-                ('welcome_message', models.CharField(blank=True, default='你好，我可以帮你查询资源、告警和生成运维任务。', max_length=255, verbose_name='欢迎语')),
+                ('welcome_message', models.CharField(blank=True, default='你好，我可以帮你结合平台上下文查询资源、分析告警、成本分析、生成待执行任务等。', max_length=255, verbose_name='欢迎语')),
                 ('suggested_questions', models.JSONField(blank=True, default=list, verbose_name='建议问题')),
                 ('is_enabled', models.BooleanField(default=True, verbose_name='启用机器人')),
                 ('allow_action_execution', models.BooleanField(default=True, verbose_name='允许执行动作')),

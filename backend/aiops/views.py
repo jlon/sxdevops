@@ -7,7 +7,7 @@ from rest_framework.response import Response
 
 from eventwall.services import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
-from rbac.services import user_has_permissions
+from rbac.services import is_demo_account, user_has_permissions
 
 from .models import (
     AIOpsChatMessage,
@@ -39,10 +39,16 @@ from .services import (
     dispatch_chat,
     get_agent_config,
     list_mcp_server_tools,
+    recover_masked_suggested_question,
     start_async_chat_processing,
+    sync_admin_sessions_to_demo,
+    sync_session_to_demo_if_needed,
     test_model_provider_connection,
     test_mcp_server_connection,
 )
+
+
+DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
 
 
 class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
@@ -164,6 +170,8 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
+        if getattr(self.request.user, 'username', '') == 'demo':
+            sync_admin_sessions_to_demo()
         return AIOpsChatSession.objects.filter(user=self.request.user).prefetch_related('messages').order_by('-last_message_at', '-id')
 
     def create(self, request, *args, **kwargs):
@@ -173,6 +181,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             user=request.user,
             title=serializer.validated_data.get('title') or '新会话',
         )
+        sync_session_to_demo_if_needed(session)
         return Response(AIOpsChatSessionSerializer(session).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'])
@@ -184,12 +193,17 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def send_message(self, request, pk=None):
         session = self.get_object()
+        if is_demo_account(request.user):
+            return Response({'detail': DEMO_CHAT_DISABLED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+        if getattr(request.user, 'username', '') == 'demo' and session.mirror_source_id:
+            return Response({'detail': '演示账号同步会话为只读，请先新建会话后提问。'}, status=status.HTTP_400_BAD_REQUEST)
         serializer = AIOpsChatInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
-            content=serializer.validated_data['content'].strip(),
+            content=content,
         )
         assistant_message, pending_action = dispatch_chat(session, user_message, request.user, user_message.content)
         return Response({
@@ -201,9 +215,13 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def send_message_async(self, request, pk=None):
         session = self.get_object()
+        if is_demo_account(request.user):
+            return Response({'detail': DEMO_CHAT_DISABLED_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+        if getattr(request.user, 'username', '') == 'demo' and session.mirror_source_id:
+            return Response({'detail': '演示账号同步会话为只读，请先新建会话后提问。'}, status=status.HTTP_400_BAD_REQUEST)
         serializer = AIOpsChatInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        content = serializer.validated_data['content'].strip()
+        content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
@@ -230,6 +248,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if session.title == '新会话':
             session.title = content[:48] or '新会话'
         session.save(update_fields=['last_message_at', 'title', 'updated_at'])
+        sync_session_to_demo_if_needed(session)
         start_async_chat_processing(session, user_message, request.user, assistant_message)
         return Response({
             'user_message': AIOpsChatMessageSerializer(user_message).data,
@@ -238,15 +257,40 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
 
-class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
+class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsAuditSessionSerializer
+    http_method_names = ['get', 'delete', 'head', 'options']
     rbac_permissions = {
         'list': ['aiops.audit.view'],
         'retrieve': ['aiops.audit.view'],
+        'destroy': ['aiops.audit.manage'],
     }
 
     def get_queryset(self):
-        return AIOpsChatSession.objects.select_related('user').annotate(message_count=Count('messages')).order_by('-last_message_at', '-id')
+        return AIOpsChatSession.objects.filter(mirror_source__isnull=True).select_related('user').annotate(message_count=Count('messages')).order_by('-last_message_at', '-id')
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        session_id = instance.id
+        session_title = instance.title
+        session_user = getattr(instance.user, 'username', '')
+        response = super().destroy(request, *args, **kwargs)
+        if session_user == 'admin':
+            sync_admin_sessions_to_demo()
+        record_event(
+            request=request,
+            module='aiops',
+            category='audit',
+            action='delete_session',
+            title='删除 AIOps 审计会话',
+            summary=f'已删除会话《{session_title}》',
+            resource_type='aiops_session',
+            resource_id=session_id,
+            resource_name=session_title,
+            correlation_id=f'aiops-session:{session_id}',
+            metadata={'session_user': session_user},
+        )
+        return response
 
 
 class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
@@ -268,7 +312,7 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewS
     }
 
     def get_queryset(self):
-        return AIOpsPendingAction.objects.select_related('session', 'session__user', 'message').order_by('-created_at', '-id')
+        return AIOpsPendingAction.objects.filter(mirror_source__isnull=True, session__mirror_source__isnull=True).select_related('session', 'session__user', 'message').order_by('-created_at', '-id')
 
 
 @api_view(['GET'])
@@ -307,8 +351,8 @@ def agent_config_view(request):
 @permission_classes([IsAuthenticated, build_rbac_permission('aiops.audit.view')])
 def audit_overview(request):
     data = build_audit_overview()
-    data['session_status'] = list(AIOpsChatSession.objects.values('status').annotate(count=Count('id')).order_by('status'))
-    data['action_status'] = list(AIOpsPendingAction.objects.values('status').annotate(count=Count('id')).order_by('status'))
+    data['session_status'] = list(AIOpsChatSession.objects.filter(mirror_source__isnull=True).values('status').annotate(count=Count('id')).order_by('status'))
+    data['action_status'] = list(AIOpsPendingAction.objects.filter(mirror_source__isnull=True, session__mirror_source__isnull=True).values('status').annotate(count=Count('id')).order_by('status'))
     return Response(data)
 
 

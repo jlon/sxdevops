@@ -434,3 +434,146 @@ class CmdbResourceRequestTests(AuthenticatedTestCase):
         self.assertIn('resource_type', response.json())
 
 
+class CmdbSearchAndSyncTests(AuthenticatedTestCase):
+    def test_ci_type_list_hides_alias_rows(self):
+        CIType.objects.create(name='云主机(ECS)', color='#64748b')
+        CIType.objects.create(name='云主机', color='#64748b')
+        CIType.objects.create(name='K8s 集群', color='#0ea5e9')
+        CIType.objects.create(name='K8s集群', color='#0ea5e9')
+
+        response = self.client.get('/api/cmdb/ci-types/')
+        self.assertEqual(response.status_code, 200)
+
+        names = [item['name'] for item in response.json()]
+        self.assertEqual(names.count('云主机(ECS)'), 1)
+        self.assertEqual(names.count('K8s 集群'), 1)
+        self.assertNotIn('云主机', names)
+        self.assertNotIn('K8s集群', names)
+
+    def test_config_item_api_search_supports_ip_and_ci_type_name(self):
+        ci_type = CIType.objects.create(name='云主机(ECS)')
+        ConfigItem.objects.create(
+            name='order-api-ecs-01',
+            ci_type=ci_type,
+            business_line='core',
+            environment='prod',
+            admin_user='sre-core',
+            status='active',
+            attributes={
+                'ip_address': '10.10.1.10',
+                'description': '订单服务生产主机',
+                'instance_type': 'ecs.g7.large',
+            },
+        )
+
+        response = self.client.get('/api/cmdb/config-items/', {'search': '10.10.1.10'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+
+        response = self.client.get('/api/cmdb/config-items/', {'search': '云主机'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+
+    def test_config_item_api_fills_standard_ip_from_private_ip(self):
+        ci_type = CIType.objects.create(name='云数据库')
+        ConfigItem.objects.create(
+            name='shared-rds-01',
+            ci_type=ci_type,
+            business_line='core',
+            environment='prod',
+            status='active',
+            attributes={'private_ip': '10.20.2.20'},
+        )
+
+        response = self.client.get('/api/cmdb/config-items/', {'search': '10.20.2.20'})
+        self.assertEqual(response.status_code, 200)
+        row = response.json()['results'][0]
+        self.assertEqual(row['attributes']['ip_address'], '10.20.2.20')
+
+    def test_host_create_update_delete_syncs_to_cmdb(self):
+        host = Host.objects.create(
+            hostname='sync-host-01',
+            ip_address='10.0.0.21',
+            business_line='core',
+            environment='prod',
+            admin_user='ops-admin',
+            os_type='Linux',
+            description='由主机中心创建',
+            status='online',
+        )
+
+        ci = ConfigItem.objects.get(name='sync-host-01')
+        self.assertEqual(ci.attributes['ip_address'], '10.0.0.21')
+        self.assertEqual(ci.business_line, 'core')
+        self.assertEqual(ci.status, 'active')
+        self.assertIn('ECS', ci.ci_type.name)
+
+        host.ip_address = '10.0.0.22'
+        host.description = '由主机中心更新'
+        host.status = 'offline'
+        host.save()
+
+        ci.refresh_from_db()
+        self.assertEqual(ci.attributes['ip_address'], '10.0.0.22')
+        self.assertEqual(ci.attributes['description'], '由主机中心更新')
+        self.assertEqual(ci.status, 'offline')
+
+        host.delete()
+        self.assertFalse(ConfigItem.objects.filter(name='sync-host-01').exists())
+
+    def test_host_like_config_item_syncs_back_to_host(self):
+        ci_type = CIType.objects.create(name='云主机(ECS)')
+        ci = ConfigItem.objects.create(
+            name='cmdb-host-01',
+            ci_type=ci_type,
+            business_line='retail',
+            environment='test',
+            admin_user='cmdb-owner',
+            status='active',
+            attributes={
+                'ip_address': '10.0.1.15',
+                'os_type': 'Alibaba Cloud Linux 3',
+                'description': '由 CMDB 创建',
+            },
+        )
+
+        host = Host.objects.get(hostname='cmdb-host-01')
+        self.assertEqual(host.ip_address, '10.0.1.15')
+        self.assertEqual(host.business_line, 'retail')
+        self.assertEqual(host.environment, 'test')
+        self.assertEqual(host.status, 'online')
+
+        ci.status = 'offline'
+        ci.attributes['description'] = '由 CMDB 更新'
+        ci.save()
+
+        host.refresh_from_db()
+        self.assertEqual(host.status, 'offline')
+        self.assertEqual(host.description, '由 CMDB 更新')
+
+    def test_stats_merge_garbled_ci_type_names(self):
+        good_type = CIType.objects.create(name='应用服务', color='#3b82f6')
+        bad_type = CIType.objects.create(name='搴旂敤鏈嶅姟', color='#3b82f6')
+        cloud_type = CIType.objects.create(name='云主机(ECS)', color='#64748b')
+        cloud_alias_type = CIType.objects.create(name='云主机', color='#64748b')
+        k8s_type = CIType.objects.create(name='K8s 集群', color='#0ea5e9')
+        k8s_alias_type = CIType.objects.create(name='K8s集群', color='#0ea5e9')
+        ConfigItem.objects.create(name='app-a', ci_type=good_type, status='active')
+        ConfigItem.objects.create(name='app-b', ci_type=bad_type, status='active')
+        ConfigItem.objects.create(name='host-a', ci_type=cloud_type, status='active')
+        ConfigItem.objects.create(name='host-b', ci_type=cloud_alias_type, status='active')
+        ConfigItem.objects.create(name='cluster-a', ci_type=k8s_type, status='active')
+        ConfigItem.objects.create(name='cluster-b', ci_type=k8s_alias_type, status='active')
+
+        response = self.client.get('/api/cmdb/config-items/stats/')
+        self.assertEqual(response.status_code, 200)
+
+        by_type = response.json()['by_type']
+        app_entry = next(item for item in by_type if item['ci_type__name'] == '应用服务')
+        host_entry = next(item for item in by_type if item['ci_type__name'] == '云主机(ECS)')
+        k8s_entry = next(item for item in by_type if item['ci_type__name'] == 'K8s 集群')
+        self.assertEqual(app_entry['count'], 2)
+        self.assertEqual(host_entry['count'], 2)
+        self.assertEqual(k8s_entry['count'], 2)
+
+

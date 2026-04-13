@@ -18,6 +18,12 @@ from .serializers import (
 from ops.models import Host
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
+from .sync import (
+    is_placeholder_ci_type_name,
+    normalize_ci_attributes,
+    normalize_ci_type_name,
+    resolve_config_item_type_meta,
+)
 
 
 SEVERITY_ORDER = {'danger': 3, 'warning': 2, 'info': 1}
@@ -549,11 +555,58 @@ class CITypeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'destroy': ['cmdb.ci.manage'],
     }
 
+    def list(self, request, *args, **kwargs):
+        search = (request.query_params.get('search') or '').strip().lower()
+        grouped = {}
+        for ci_type in self.get_queryset():
+            canonical_name = normalize_ci_type_name(ci_type.name)
+            if is_placeholder_ci_type_name(canonical_name):
+                continue
+            row = grouped.get(canonical_name)
+            if row is None:
+                row = {
+                    'id': ci_type.id,
+                    'name': canonical_name,
+                    'icon': ci_type.icon,
+                    'color': ci_type.color,
+                    'description': ci_type.description,
+                    'created_at': ci_type.created_at,
+                    'ci_count': 0,
+                }
+                grouped[canonical_name] = row
+            if canonical_name == ci_type.name:
+                row['id'] = ci_type.id
+                row['icon'] = ci_type.icon or row['icon']
+                row['color'] = ci_type.color or row['color']
+                row['description'] = ci_type.description or row['description']
+                row['created_at'] = ci_type.created_at
+            row['ci_count'] += getattr(ci_type, 'ci_count', 0)
+
+        rows = list(grouped.values())
+        if search:
+            rows = [row for row in rows if search in (row['name'] or '').lower()]
+        rows.sort(key=lambda item: (-item['ci_count'], item['name']))
+        return Response(rows)
+
 class ConfigItemViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     """配置项管理"""
-    queryset = ConfigItem.objects.select_related('ci_type').all()
+    queryset = ConfigItem.objects.select_related('ci_type').all().order_by('-updated_at', '-id')
     serializer_class = ConfigItemSerializer
-    search_fields = ['name', 'admin_user', 'business_line']
+    search_fields = [
+        'name',
+        'admin_user',
+        'business_line',
+        'ci_type__name',
+        'attributes__ip_address',
+        'attributes__ip',
+        'attributes__private_ip',
+        'attributes__public_ip',
+        'attributes__host_ip',
+        'attributes__docker_environment_ip',
+        'attributes__description',
+        'attributes__specification',
+        'attributes__instance_type',
+    ]
     filterset_fields = ['ci_type', 'business_line', 'environment', 'status']
     rbac_permissions = {
         'list': ['cmdb.ci.view'],
@@ -568,9 +621,21 @@ class ConfigItemViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def stats(self, request):
         qs = self.filter_queryset(self.get_queryset())
-        by_type = list(qs.values('ci_type', 'ci_type__name', 'ci_type__color').annotate(count=Count('id')).order_by('-count'))
-        for item in by_type:
-            item['ci_type__color'] = item.get('ci_type__color') or '#9c27b0'
+        by_type_map = {}
+        for item in qs:
+            type_meta = resolve_config_item_type_meta(item)
+            normalized_name = normalize_ci_type_name(type_meta['name'])
+            bucket = by_type_map.setdefault(
+                normalized_name,
+                {
+                    'ci_type': item.ci_type_id,
+                    'ci_type__name': normalized_name,
+                    'ci_type__color': type_meta['color'] or '#9c27b0',
+                    'count': 0,
+                },
+            )
+            bucket['count'] += 1
+        by_type = sorted(by_type_map.values(), key=lambda entry: entry['count'], reverse=True)
         by_status = dict(qs.values_list('status').annotate(count=Count('id')))
         by_env = dict(qs.values_list('environment').annotate(count=Count('id')))
         return Response({
@@ -579,6 +644,13 @@ class ConfigItemViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             'by_status': by_status,
             'by_env': by_env,
         })
+
+    def perform_create(self, serializer):
+        serializer.save(attributes=normalize_ci_attributes(serializer.validated_data.get('attributes')))
+
+    def perform_update(self, serializer):
+        attributes = serializer.validated_data.get('attributes', serializer.instance.attributes if serializer.instance else {})
+        serializer.save(attributes=normalize_ci_attributes(attributes))
 
 class ResourceNodeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     """资源节点(业务线/环境)树管理"""

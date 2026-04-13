@@ -1,14 +1,14 @@
 ﻿<template>
   <div class="aiops-entry-page fade-in">
     <section class="hero panel aiops-entry-hero">
-      <div class="entry-copy">
-        <div class="entry-title-row">
-          <span class="entry-icon"><el-icon><ChatDotSquare /></el-icon></span>
+      <div class="release-hero-copy">
+        <div class="release-hero-title-row release-hero-title-inline">
+          <span class="hero-icon"><el-icon><ChatDotSquare /></el-icon></span>
           <h2>AIOps 智能助手</h2>
+          <p class="page-desc inline-subtitle">聚合平台内资源、告警、排障分析与任务草稿能力，统一通过智能助手对话入口使用。</p>
         </div>
-        <p>这里是 AIOps 智能助手入口。打开页面后，右下角智能助手面板会自动展开，可继续咨询平台资源、告警、排障分析和任务草稿。</p>
       </div>
-      <div class="entry-actions">
+      <div class="hero-actions">
         <el-button type="primary" @click="openWidget">打开智能助手</el-button>
         <el-button v-if="canViewConfig" @click="router.push('/aiops/config')">智能体配置</el-button>
       </div>
@@ -57,14 +57,16 @@ onMounted(() => {
 
 <style scoped>
 .aiops-entry-page{display:flex;flex-direction:column;gap:8px}
-.aiops-entry-hero{display:flex;align-items:center;justify-content:space-between;gap:20px;border:1px solid #dbe4f0;border-radius:24px;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);box-shadow:0 12px 28px rgba(15,23,42,.06)}
-.entry-copy{max-width:760px}
-.entry-title-row{display:flex;align-items:center;gap:12px}
-.entry-title-row h2{margin:0;color:#0f172a}
-.entry-icon{width:40px;height:40px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe}
-.entry-copy p{margin:8px 0 0;font-size:13px;line-height:1.8;color:#475569}
-.entry-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.entry-actions :deep(.el-button){min-height:38px;padding:0 16px;border-radius:12px}
+.panel{background:linear-gradient(180deg,#fff 0%,#fffdf8 100%);border:1px solid rgba(148,163,184,.16);border-radius:20px;box-shadow:0 12px 28px rgba(15,23,42,.05);padding:14px 16px}
+.aiops-entry-hero{display:flex;align-items:center;justify-content:space-between;gap:12px;background:linear-gradient(135deg,#fff7ed 0%,#f8fbff 100%)}
+.release-hero-copy{max-width:820px}
+.release-hero-title-row{display:flex;align-items:center;gap:12px}
+.release-hero-title-inline{flex-wrap:wrap}
+.release-hero-title-row h2{margin:0;color:#0f172a}
+.hero-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;color:#fff;background:linear-gradient(135deg,#0f766e,#0ea5e9)}
+.page-desc.inline-subtitle{margin:0;color:#64748b;font-size:13px;line-height:1.6}
+.hero-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hero-actions :deep(.el-button){min-height:38px;padding:0 16px;border-radius:12px}
 .entry-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
 .entry-card{padding:18px;border-radius:18px;border:1px solid #dbe4f0;background:#fff;box-shadow:0 10px 24px rgba(15,23,42,.05)}
 .entry-card h3{margin:0;font-size:16px;color:#0f172a}
@@ -73,5 +75,4 @@ onMounted(() => {
   .aiops-entry-hero{flex-direction:column;align-items:flex-start}
   .entry-grid{grid-template-columns:1fr}
 }
-.hero.panel.aiops-entry-hero{border-radius:20px}
 </style>

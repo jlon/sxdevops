@@ -86,7 +86,7 @@ def _cmdb_status_for_deployment(deployment, override=None):
 
 def _ensure_cmdb_app_ci_type():
     ci_type, _ = CIType.objects.get_or_create(
-        name='搴旂敤鏈嶅姟',
+        name='应用服务',
         defaults={
             'icon': 'Promotion',
             'color': '#3b82f6',
@@ -136,7 +136,7 @@ def _ensure_target_cmdb_item(deployment):
     environment = _cmdb_environment(deployment.environment)
     docker_target = _docker_target(deployment)
     if deployment.deploy_mode == 'docker_compose' and docker_target:
-        ci_type = _ensure_cmdb_ci_type('Docker鐜', 'Box', '#10b981', '鐢卞簲鐢ㄥ彂甯冩ā鍧楄嚜鍔ㄥ悓姝ョ殑 Docker 鍙戝竷鐩爣')
+        ci_type = _ensure_cmdb_ci_type('Docker环境', 'Box', '#10b981', '由应用发布模块自动同步的 Docker 发布目标')
         ci, _ = ConfigItem.objects.get_or_create(
             ci_type=ci_type,
             name=_docker_target_name(docker_target),
@@ -162,7 +162,7 @@ def _ensure_target_cmdb_item(deployment):
         return ci
 
     if deployment.deploy_mode == 'k8s' and deployment.cluster_id:
-        ci_type = _ensure_cmdb_ci_type('K8s闆嗙兢', 'Connection', '#0ea5e9', '鐢卞簲鐢ㄥ彂甯冩ā鍧楄嚜鍔ㄥ悓姝ョ殑闆嗙兢鐩爣')
+        ci_type = _ensure_cmdb_ci_type('K8s 集群', 'Connection', '#0ea5e9', '由应用发布模块自动同步的集群发布目标')
         ci, _ = ConfigItem.objects.get_or_create(
             ci_type=ci_type,
             name=deployment.cluster.name,
@@ -235,6 +235,11 @@ def sync_deployment_to_cmdb(deployment, override_status=None):
         'docker_environment_ip': deployment.docker_host.ip_address if deployment.docker_host_id else '',
         'host_name': deployment.host.hostname if deployment.host_id else '',
         'host_ip': deployment.host.ip_address if deployment.host_id else '',
+        'ip_address': (
+            deployment.host.ip_address if deployment.host_id else
+            deployment.docker_host.ip_address if deployment.docker_host_id else
+            (ci.attributes or {}).get('ip_address', '')
+        ),
     }
     ci.save()
     target_ci = _ensure_target_cmdb_item(deployment)

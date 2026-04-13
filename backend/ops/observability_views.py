@@ -65,6 +65,19 @@ DEMO_TRACES = [
         'summary': '灰度订单确认链路完成，数据库写入阶段耗时略高。',
     },
     {
+        'trace_id': 'trace-demo-20260410-005',
+        'segment_id': 'segment-demo-005',
+        'service_id': 'svc-order',
+        'service_name': 'order-service',
+        'instance_name': 'order-prod-02',
+        'endpoint_names': ['POST /api/orders/create', 'GET inventory-service /api/stock/check'],
+        'duration_ms': 1824,
+        'start': '2026-04-10T11:26:18+08:00',
+        'is_error': True,
+        'state': 'ERROR',
+        'summary': '生产订单服务调用库存校验超时，触发下单失败并出现错误链路。',
+    },
+    {
         'trace_id': 'trace-demo-20260329-004',
         'segment_id': 'segment-demo-004',
         'service_id': 'svc-member',
@@ -92,6 +105,10 @@ DEMO_TRACE_SPANS = {
     'trace-demo-20260329-003': [
         {'span_id': 0, 'parent_span_id': -1, 'service_code': 'order-service', 'service_instance_name': 'order-gray-01', 'endpoint_name': 'POST /api/orders/confirm', 'start_time': '2026-03-29T09:05:48.000+08:00', 'end_time': '2026-03-29T09:05:48.612+08:00', 'duration_ms': 612, 'type': 'Entry', 'peer': '', 'component': 'SpringMVC', 'is_error': False, 'layer': 'HTTP', 'tags': [{'key': 'release', 'value': 'gray'}], 'logs': []},
         {'span_id': 1, 'parent_span_id': 0, 'service_code': 'order-service', 'service_instance_name': 'order-gray-01', 'endpoint_name': 'OrderRepository.save', 'start_time': '2026-03-29T09:05:48.198+08:00', 'end_time': '2026-03-29T09:05:48.587+08:00', 'duration_ms': 389, 'type': 'Local', 'peer': '', 'component': 'MySQL', 'is_error': False, 'layer': 'DATABASE', 'tags': [{'key': 'db.type', 'value': 'mysql'}], 'logs': []},
+    ],
+    'trace-demo-20260410-005': [
+        {'span_id': 0, 'parent_span_id': -1, 'service_code': 'order-service', 'service_instance_name': 'order-prod-02', 'endpoint_name': 'POST /api/orders/create', 'start_time': '2026-04-10T11:26:18.000+08:00', 'end_time': '2026-04-10T11:26:19.824+08:00', 'duration_ms': 1824, 'type': 'Entry', 'peer': '', 'component': 'SpringMVC', 'is_error': True, 'layer': 'HTTP', 'tags': [{'key': 'http.method', 'value': 'POST'}, {'key': 'http.status_code', 'value': '500'}, {'key': 'environment', 'value': 'prod'}], 'logs': [{'time': '2026-04-10T11:26:19.801+08:00', 'data': [{'key': 'error.kind', 'value': 'TimeoutException'}, {'key': 'message', 'value': 'inventory-service request timed out'}]}]},
+        {'span_id': 1, 'parent_span_id': 0, 'service_code': 'inventory-service', 'service_instance_name': 'inventory-prod-01', 'endpoint_name': 'GET /api/stock/check', 'start_time': '2026-04-10T11:26:18.114+08:00', 'end_time': '2026-04-10T11:26:19.795+08:00', 'duration_ms': 1681, 'type': 'Exit', 'peer': 'inventory-service:8080', 'component': 'SpringMVC', 'is_error': True, 'layer': 'RPC_FRAMEWORK', 'tags': [{'key': 'environment', 'value': 'prod'}, {'key': 'timeout.ms', 'value': '1500'}], 'logs': [{'time': '2026-04-10T11:26:19.795+08:00', 'data': [{'key': 'cause', 'value': 'Read timed out'}]}]},
     ],
     'trace-demo-20260329-004': [
         {'span_id': 0, 'parent_span_id': -1, 'service_code': 'member-service', 'service_instance_name': 'member-prod-01', 'endpoint_name': 'GET /api/members/{id}/profile', 'start_time': '2026-03-29T08:57:03.000+08:00', 'end_time': '2026-03-29T08:57:03.318+08:00', 'duration_ms': 318, 'type': 'Entry', 'peer': '', 'component': 'SpringMVC', 'is_error': False, 'layer': 'HTTP', 'tags': [{'key': 'cache.hit', 'value': 'true'}], 'logs': []},

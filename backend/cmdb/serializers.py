@@ -1,24 +1,51 @@
 from rest_framework import serializers
 from .models import CIType, ConfigItem, CIRelation, CostRecord, ResourceRequest, ResourceNode
 from django.db.models import Sum
+from .sync import normalize_ci_attributes, normalize_ci_type_name, resolve_config_item_type_meta
 
 class CITypeSerializer(serializers.ModelSerializer):
+    ci_count = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = CIType
         fields = '__all__'
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['name'] = normalize_ci_type_name(data.get('name'))
+        return data
+
+    def validate_name(self, value):
+        return normalize_ci_type_name(value)
+
 class ConfigItemSerializer(serializers.ModelSerializer):
-    ci_type_name = serializers.CharField(source='ci_type.name', read_only=True)
-    ci_type_icon = serializers.CharField(source='ci_type.icon', read_only=True)
-    ci_type_color = serializers.CharField(source='ci_type.color', read_only=True)
+    ci_type_name = serializers.SerializerMethodField()
+    ci_type_icon = serializers.SerializerMethodField()
+    ci_type_color = serializers.SerializerMethodField()
     relation_count = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    environment_display = serializers.CharField(source='get_environment_display', read_only=True)
 
     class Meta:
         model = ConfigItem
         fields = '__all__'
 
+    def get_ci_type_name(self, obj):
+        return resolve_config_item_type_meta(obj)['name']
+
+    def get_ci_type_icon(self, obj):
+        return resolve_config_item_type_meta(obj)['icon']
+
+    def get_ci_type_color(self, obj):
+        return resolve_config_item_type_meta(obj)['color']
+
     def get_relation_count(self, obj):
         return obj.outgoing_relations.count() + obj.incoming_relations.count()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['attributes'] = normalize_ci_attributes(data.get('attributes'))
+        return data
 
 class CIRelationSerializer(serializers.ModelSerializer):
     source_name = serializers.CharField(source='source.name', read_only=True)

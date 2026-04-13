@@ -60,6 +60,18 @@ CMDB_TYPE_MAP = {
     'security_group': '安全组',
 }
 
+CMDB_TYPE_MAP = {
+    'ecs': '云主机(ECS)',
+    'rds': '云数据库',
+    'slb': '负载均衡',
+    'k8s': 'K8s 集群',
+    'redis': 'Redis',
+    'oss': '对象存储',
+    'nat': 'NAT 网关',
+    'eip': '弹性 IP',
+    'security_group': '安全组',
+}
+
 BASE_COST = {
     'ecs': Decimal('680'),
     'rds': Decimal('1280'),
@@ -231,7 +243,7 @@ def _inventory(environment):
             environment,
             region,
             zone,
-            private_ip=f'{ip_prefix}.1.10',
+            private_ip=f'{ip_prefix}.11.10',
             public_ip=f'{public_prefix}.10.10',
             spec='4C8G',
             cpu=4,
@@ -247,7 +259,7 @@ def _inventory(environment):
             environment,
             region,
             zone,
-            private_ip=f'{ip_prefix}.1.11',
+            private_ip=f'{ip_prefix}.11.11',
             spec='2C4G',
             cpu=2,
             memory_gb=Decimal('4.0'),
@@ -1042,6 +1054,7 @@ def sync_environment_to_cmdb(environment, operator=''):
                     'vpc_name': asset.vpc_name,
                     'public_ip': asset.public_ip,
                     'private_ip': asset.private_ip,
+                    'ip_address': asset.private_ip or asset.public_ip or '',
                     'monthly_cost': float(asset.monthly_cost or 0),
                     'cpu': asset.cpu,
                     'memory_gb': float(asset.memory_gb or 0),

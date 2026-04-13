@@ -86,7 +86,7 @@ class AIOpsAgentConfig(models.Model):
         verbose_name='默认模型提供商',
     )
     system_prompt = models.TextField('系统提示词', blank=True, default='')
-    welcome_message = models.CharField('欢迎语', max_length=255, blank=True, default='你好，我可以帮你查询资源、告警和生成运维任务。')
+    welcome_message = models.CharField('欢迎语', max_length=255, blank=True, default='你好，我可以帮你结合平台上下文查询资源、分析告警、成本分析、生成待执行任务等。')
     suggested_questions = models.JSONField('建议问题', default=list, blank=True)
     is_enabled = models.BooleanField('启用机器人', default=True)
     allow_action_execution = models.BooleanField('允许执行动作', default=True)
@@ -174,6 +174,14 @@ class AIOpsChatSession(models.Model):
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='aiops_sessions', verbose_name='用户')
+    mirror_source = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='mirrored_sessions',
+        verbose_name='?????',
+    )
     title = models.CharField('标题', max_length=128, default='新会话')
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
     last_message_at = models.DateTimeField('最后消息时间', default=timezone.now)
@@ -182,6 +190,9 @@ class AIOpsChatSession(models.Model):
 
     class Meta:
         ordering = ['-last_message_at', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'mirror_source'], name='aiops_session_user_mirror_source_uniq'),
+        ]
         verbose_name = 'AIOps 会话'
         verbose_name_plural = 'AIOps 会话'
 
@@ -211,6 +222,14 @@ class AIOpsChatMessage(models.Model):
     ]
 
     session = models.ForeignKey(AIOpsChatSession, on_delete=models.CASCADE, related_name='messages', verbose_name='会话')
+    mirror_source = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='mirrored_messages',
+        verbose_name='?????',
+    )
     role = models.CharField('角色', max_length=16, choices=ROLE_CHOICES)
     message_type = models.CharField('消息类型', max_length=16, choices=TYPE_CHOICES, default=TYPE_TEXT)
     content = models.TextField('内容')
@@ -221,6 +240,9 @@ class AIOpsChatMessage(models.Model):
 
     class Meta:
         ordering = ['created_at', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['session', 'mirror_source'], name='aiops_message_session_mirror_source_uniq'),
+        ]
         verbose_name = 'AIOps 消息'
         verbose_name_plural = 'AIOps 消息'
 
@@ -259,6 +281,14 @@ class AIOpsPendingAction(models.Model):
     ]
 
     session = models.ForeignKey(AIOpsChatSession, on_delete=models.CASCADE, related_name='pending_actions', verbose_name='会话')
+    mirror_source = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='mirrored_actions',
+        verbose_name='?????',
+    )
     message = models.ForeignKey(
         AIOpsChatMessage,
         on_delete=models.CASCADE,
@@ -280,6 +310,9 @@ class AIOpsPendingAction(models.Model):
 
     class Meta:
         ordering = ['-created_at', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['session', 'mirror_source'], name='aiops_action_session_mirror_source_uniq'),
+        ]
         verbose_name = 'AIOps 待确认动作'
         verbose_name_plural = 'AIOps 待确认动作'
 

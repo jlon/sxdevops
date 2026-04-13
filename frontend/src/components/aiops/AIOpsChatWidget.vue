@@ -16,7 +16,7 @@
                 </span>
               </div>
               <div class="aiops-subtitle">
-                {{ analysisOnly ? '当前仅分析，不会触发执行动作' : (bootstrap.welcome_message || '查询资源、告警、分析问题、生成任务草稿') }}
+                {{ analysisOnly ? '当前仅分析，不会触发执行动作' : (bootstrap.welcome_message || '你好，我可以帮你结合平台上下文查询资源、分析告警、成本分析、生成待执行任务等。') }}
               </div>
             </div>
             <div class="aiops-header-actions">
@@ -39,7 +39,20 @@
                 :class="{ active: currentSessionId === session.id }"
                 @click="selectSession(session.id)"
               >
-                <span class="session-title">{{ session.title || '新会话' }}</span>
+                <el-tooltip
+                  :disabled="!shouldShowSessionTooltip(session.title)"
+                  effect="light"
+                  placement="right"
+                  :show-after="180"
+                  popper-class="aiops-session-tooltip"
+                >
+                  <span class="session-title">{{ session.title || '新会话' }}</span>
+                  <template #content>
+                    <div class="aiops-session-tooltip-card">
+                      <div class="aiops-session-tooltip-title">{{ session.title || '新会话' }}</div>
+                    </div>
+                  </template>
+                </el-tooltip>
                 
               </button>
               <div v-if="!sessions.length" class="session-empty">暂无历史会话</div>
@@ -237,6 +250,9 @@
                           <span class="pending-risk" :class="message.pending_action.risk_level">{{ message.pending_action.risk_level_display }}</span>
                         </div>
                         <div class="pending-meta">状态：{{ message.pending_action.status_display }}</div>
+                        <div v-if="message.pending_action.status === 'pending'" class="pending-hint">
+                          确认后将在任务中心创建 1 条待执行任务
+                        </div>
                         <div v-if="message.pending_action.action_payload" class="pending-detail-grid">
                           <div class="pending-detail-item">
                             <span>目标主机</span>
@@ -262,7 +278,7 @@
                           {{ message.pending_action.action_payload.payload.command }}
                         </div>
                         <div v-if="message.pending_action.status === 'pending'" class="pending-actions">
-                          <el-button size="small" type="primary" @click="handleConfirmAction(message.pending_action)">确认执行</el-button>
+                          <el-button size="small" type="primary" @click="handleConfirmAction(message.pending_action)">确认创建</el-button>
                           <el-button size="small" @click="handleCancelAction(message.pending_action)">取消</el-button>
                         </div>
                         <div v-else-if="message.pending_action.result_payload?.task_id" class="pending-result">
@@ -326,7 +342,16 @@
                   :class="{ active: currentSessionId === session.id }"
                   @click="selectSession(session.id)"
                 >
-                  <span class="session-title">{{ session.title || '新会话' }}</span>
+                  <el-tooltip
+                    :disabled="!shouldShowSessionTooltip(session.title)"
+                    :content="session.title || '新会话'"
+                    effect="light"
+                    placement="top"
+                    :show-after="180"
+                    popper-class="aiops-session-tooltip"
+                  >
+                    <span class="session-title">{{ session.title || '新会话' }}</span>
+                  </el-tooltip>
                   
                 </button>
                 <div v-if="!sessions.length" class="session-empty">暂无历史会话</div>
@@ -409,8 +434,11 @@ let ignoreNextFabClick = false
 let pollingTimer = null
 let pollingSessionId = null
 let pollingMessageId = null
+let pollingFinalizeAttempts = 0
 const processExpandedState = ref({})
 const processStatusState = ref({})
+const FINAL_POLL_MAX_ATTEMPTS = 4
+const FINAL_POLL_STABLE_ROUNDS = 2
 
 const available = computed(() => bootstrap.value.enabled && authStore.hasPermission('aiops.chat.view'))
 const renderMessages = computed(() => pendingAssistantMessage.value ? [...messages.value, pendingAssistantMessage.value] : messages.value)
@@ -468,6 +496,8 @@ const ASSISTANT_ERROR_DISPLAY = {
     tag: '运行状态',
   },
 }
+
+const DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
 
 function normalizeText(value) {
   return String(value || '').replace(/\r\n/g, '\n')
@@ -536,6 +566,10 @@ function getAssistantErrorDisplay(message) {
 function formatDateTime(value) {
   if (!value) return '--'
   return new Date(value).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function shouldShowSessionTooltip(title) {
+  return String(title || '新会话').trim().length > 14
 }
 
 function formatProcessTime(value) {
@@ -868,6 +902,7 @@ function stopMessagePolling() {
   }
   pollingSessionId = null
   pollingMessageId = null
+  pollingFinalizeAttempts = 0
   loading.value.poll = false
 }
 
@@ -878,6 +913,28 @@ function findProcessingAssistant(list = messages.value) {
 async function refreshSessionListOnly() {
   const response = await getAIOpsSessions()
   sessions.value = response.results || response || []
+}
+
+async function applyLatestMessages(sessionId, latestMessages) {
+  if (currentSessionId.value !== sessionId) return
+  messages.value = latestMessages
+  await nextTick()
+  scrollToBottom(true)
+}
+
+function getMessageStableSignature(message) {
+  if (!message) return 'missing'
+  return JSON.stringify({
+    status: getProcessingStatus(message),
+    contentLength: normalizeText(message.content).length,
+    citations: (message.citations || []).map(item => item?.title || ''),
+    toolCalls: message.tool_calls || [],
+    pendingActionId: message.pending_action?.id || null,
+  })
+}
+
+function waitFor(ms) {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
 }
 
 function resumeMessagePolling(sessionId, list = messages.value) {
@@ -897,25 +954,59 @@ function startMessagePolling(sessionId, assistantMessageId) {
   stopMessagePolling()
   pollingSessionId = sessionId
   pollingMessageId = assistantMessageId
+  pollingFinalizeAttempts = 0
   loading.value.poll = true
+
+  const finalizePoll = async () => {
+    if (!pollingSessionId || pollingSessionId !== sessionId || pollingMessageId !== assistantMessageId) return
+    try {
+      let stableRounds = 0
+      let previousSignature = ''
+      for (let attempt = 0; attempt < FINAL_POLL_MAX_ATTEMPTS; attempt += 1) {
+        const latestMessages = await getAIOpsMessages(sessionId)
+        await applyLatestMessages(sessionId, latestMessages)
+        const target = latestMessages.find(item => item.id === assistantMessageId)
+        const status = getProcessingStatus(target)
+        const signature = getMessageStableSignature(target)
+        if ((!target || ['completed', 'failed'].includes(status)) && signature === previousSignature) {
+          stableRounds += 1
+        } else {
+          stableRounds = 0
+        }
+        previousSignature = signature
+        if ((!target || ['completed', 'failed'].includes(status)) && stableRounds >= FINAL_POLL_STABLE_ROUNDS - 1) {
+          break
+        }
+        await waitFor(attempt === 0 ? 240 : 360)
+      }
+    } finally {
+      stopMessagePolling()
+      await refreshSessionListOnly()
+    }
+  }
 
   const poll = async () => {
     try {
       const latestMessages = await getAIOpsMessages(sessionId)
-      if (currentSessionId.value === sessionId) {
-        messages.value = latestMessages
-        await nextTick()
-        scrollToBottom(true)
-      }
+      await applyLatestMessages(sessionId, latestMessages)
       const target = latestMessages.find(item => item.id === assistantMessageId)
       const status = getProcessingStatus(target)
       if (!target || ['completed', 'failed'].includes(status)) {
-        stopMessagePolling()
-        await refreshSessionListOnly()
+        if (pollingFinalizeAttempts < 1) {
+          pollingFinalizeAttempts += 1
+          pollingTimer = window.setTimeout(finalizePoll, 240)
+          return
+        }
+        await finalizePoll()
         return
       }
       pollingTimer = window.setTimeout(poll, 1000)
     } catch (error) {
+      if (pollingFinalizeAttempts < 1) {
+        pollingFinalizeAttempts += 1
+        pollingTimer = window.setTimeout(finalizePoll, 320)
+        return
+      }
       stopMessagePolling()
     }
   }
@@ -991,6 +1082,10 @@ async function ensureSession() {
 
 async function handleSend() {
   if (!composer.value.trim() || loading.value.send || loading.value.poll) return
+  if (authStore.currentUser?.is_demo_account) {
+    ElMessage.warning(DEMO_CHAT_DISABLED_MESSAGE)
+    return
+  }
 
   const rawContent = composer.value
   const sessionId = await ensureSession()
@@ -1318,7 +1413,8 @@ onBeforeUnmount(() => {
 .pending-title{font-weight:700;color:#9a3412}
 .pending-risk{padding:4px 8px;border-radius:999px;background:#ffedd5;color:#9a3412;font-size:12px}
 .pending-risk.high,.pending-risk.critical{background:#fee2e2;color:#b91c1c}
-.pending-meta,.pending-result{margin-top:6px;font-size:11px;color:#7c2d12}
+.pending-meta,.pending-result,.pending-hint{margin-top:6px;font-size:11px;color:#7c2d12}
+.pending-hint{padding:6px 8px;border-radius:10px;background:rgba(255,255,255,.7);border:1px dashed rgba(194,65,12,.18)}
 .pending-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
 .pending-detail-item{padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.7);display:flex;flex-direction:column;gap:4px}
 .pending-detail-item span{font-size:12px;color:#9a3412}
@@ -1372,6 +1468,54 @@ onBeforeUnmount(() => {
 .composer-tip{font-size:11px;color:#64748b}
 .composer-action-group{display:flex;align-items:center;gap:8px}
 .mobile-session-sheet{display:none}
+:global(.aiops-session-tooltip){
+  max-width:320px;
+  padding:0;
+  border:none;
+  border-radius:18px;
+  background:transparent;
+  box-shadow:none;
+  overflow:visible;
+}
+:global(.aiops-session-tooltip .el-popper__content){
+  padding:0;
+  background:transparent;
+  border-radius:18px;
+}
+:global(.aiops-session-tooltip .el-popper__arrow::before){
+  background:#f7fbff;
+  border-color:rgba(148,163,184,.18);
+}
+.aiops-session-tooltip-card{
+  position:relative;
+  padding:12px 14px 13px;
+  border-radius:18px;
+  border:1px solid rgba(191,219,254,.72);
+  background:
+    radial-gradient(circle at top right, rgba(59,130,246,.10), transparent 36%),
+    linear-gradient(135deg, rgba(255,247,237,.98) 0%, rgba(240,249,255,.98) 100%);
+  box-shadow:
+    0 18px 40px rgba(15,23,42,.14),
+    0 2px 8px rgba(59,130,246,.08);
+  backdrop-filter:blur(10px);
+  overflow:hidden;
+}
+.aiops-session-tooltip-card::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  border-radius:inherit;
+  background:linear-gradient(135deg, rgba(255,255,255,.6), transparent 52%);
+  pointer-events:none;
+}
+.aiops-session-tooltip-title{
+  position:relative;
+  color:#0f172a;
+  font-size:12px;
+  line-height:1.7;
+  white-space:normal;
+  word-break:break-word;
+}
 .aiops-panel-enter-active,.aiops-panel-leave-active{transition:all .18s ease}
 .aiops-panel-enter-from,.aiops-panel-leave-to{opacity:0;transform:translateY(10px)}
 .aiops-sheet-enter-active,.aiops-sheet-leave-active{transition:all .18s ease}

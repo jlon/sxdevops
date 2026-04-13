@@ -254,7 +254,15 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="passwordDialogVisible" title="重置密码" width="420px" destroy-on-close>
+    <el-dialog
+      v-model="passwordDialogVisible"
+      title="重置密码"
+      width="420px"
+      destroy-on-close
+      append-to-body
+      align-center
+      class="password-reset-dialog"
+    >
       <el-form :model="passwordForm" label-width="90px">
         <el-form-item label="新密码">
           <el-input v-model="passwordForm.password" type="password" show-password />
@@ -711,6 +719,10 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 12px;
+}
+
+:deep(.password-reset-dialog) {
+  margin: 0 !important;
 }
 
 @media (max-width: 900px) {

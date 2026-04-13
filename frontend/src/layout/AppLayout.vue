@@ -5,7 +5,10 @@
         <div class="logo-icon">
           <img src="@/assets/brand-mark.svg" alt="SxDevOps" class="brand-mark" />
         </div>
-        <span class="logo-text">SxDevOps</span>
+        <div class="logo-copy">
+          <span class="logo-text">SxDevOps</span>
+          <span class="logo-subtext">AI Agent</span>
+        </div>
       </div>
 
       <el-menu
@@ -53,6 +56,12 @@
           <span class="breadcrumb">{{ currentTitle }}</span>
         </div>
         <div class="header-right">
+          <el-tooltip v-if="canOpenAIOpsAssistant" content="打开智能助手" placement="bottom">
+            <button class="assistant-trigger" type="button" @click="openAIOpsAssistant">
+              <el-icon :size="18"><Service /></el-icon>
+            </button>
+          </el-tooltip>
+
           <el-popover placement="bottom-end" :width="360" trigger="click" popper-class="header-notice-popover">
             <template #reference>
               <button class="notice-trigger" type="button" @click="handleNoticeOpen">
@@ -421,6 +430,8 @@ const userInitials = computed(() => {
   return source.slice(0, 1).toUpperCase()
 })
 
+const canOpenAIOpsAssistant = computed(() => authStore.hasPermission('aiops.chat.view'))
+
 const notificationSections = computed(() => {
   const sectionOrder = ['approval', 'alert', 'event']
   const sectionTitleMap = {
@@ -655,6 +666,10 @@ function handleNoticeOpen() {
   }
 }
 
+function openAIOpsAssistant() {
+  window.dispatchEvent(new Event('sxdevops-aiops-open'))
+}
+
 function canHandleDeploymentApproval(item) {
   const step = item?.current_approval_step
   if (!step?.approver_type || !step?.approver_value) return authStore.hasPermission('ops.deployment.approve')
@@ -712,6 +727,7 @@ onBeforeUnmount(() => {
   display: block;
 }
 
+.assistant-trigger,
 .notice-trigger {
   width: 36px;
   height: 36px;
@@ -724,6 +740,32 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s ease;
+}
+
+.assistant-trigger {
+  position: relative;
+  overflow: hidden;
+  color: #3b82f6;
+  border-color: rgba(96, 165, 250, 0.22);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.92) 0%, rgba(255, 247, 237, 0.72) 100%);
+  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.08);
+}
+
+.assistant-trigger::after {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border-radius: 9px;
+  border: 1px solid rgba(59, 130, 246, 0.12);
+  pointer-events: none;
+}
+
+.assistant-trigger:hover {
+  color: #2563eb;
+  border-color: rgba(96, 165, 250, 0.34);
+  background: linear-gradient(135deg, rgba(219, 234, 254, 0.96) 0%, rgba(255, 237, 213, 0.82) 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(59, 130, 246, 0.12);
 }
 
 .notice-trigger:hover {

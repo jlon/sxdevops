@@ -10,13 +10,13 @@
       </div>
     </section>
 
-    <div class="market-tabs">
-      <button class="tab-btn" :class="{ active: activeTab === 'market' }" @click="activeTab = 'market'">
+    <div class="neo-tabs theme-blue market-tabs">
+      <button class="neo-tab-btn" :class="{ active: activeTab === 'market' }" @click="activeTab = 'market'">
         <el-icon><Shop /></el-icon> 工具市场
       </button>
       <button
         v-if="canViewMarketplaceDeployments"
-        class="tab-btn"
+        class="neo-tab-btn"
         :class="{ active: activeTab === 'deploy' }"
         @click="activeTab = 'deploy'; fetchDeployments()"
       >
@@ -26,11 +26,11 @@
     </div>
 
     <div v-show="activeTab === 'market'" class="market-content">
-      <div class="category-bar">
+      <div class="neo-sub-tabs theme-blue category-bar">
         <button
           v-for="cat in categories"
           :key="cat.value"
-          class="cat-btn"
+          class="neo-sub-tab-btn"
           :class="{ active: activeCategory === cat.value }"
           @click="activeCategory = cat.value"
         >{{ cat.label }}</button>
@@ -619,22 +619,22 @@ function viewDeployLog(deployment) {
 }
 
 .market-tabs {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
-  padding: 4px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,250,252,.9));
-  border: 1px solid rgba(148,163,184,.16);
-  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.04);
 }
 
-.market-tabs .tab-btn {
+.market-tabs .neo-tab-btn {
   min-height: 38px;
   padding: 0 20px;
-  border-radius: 8px;
+}
+
+.category-bar {
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.category-bar .neo-sub-tab-btn {
+  min-height: 32px;
+  padding: 0 16px;
 }
 
 .table-card {
