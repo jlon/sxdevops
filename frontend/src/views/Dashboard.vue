@@ -23,21 +23,21 @@
       <section class="panel pulse-panel">
         <div class="section-head">
           <div>
-            <h3>平台脉搏</h3>
-            <p>用主机在线情况和告警密度快速判断当前是否需要介入。</p>
+            <h3>风险焦点</h3>
+            <p>把当前最该优先处理的风险集中展示。</p>
           </div>
-          <el-button text @click="router.push('/hosts/assets')">主机中心</el-button>
+          <el-button text @click="router.push('/alerts')">告警中心</el-button>
         </div>
         <div class="pulse-grid">
           <div ref="hostChartRef" class="chart-canvas pulse-chart"></div>
           <div class="pulse-side">
             <div class="score-card">
-              <span class="score-card__label">总体判断</span>
-              <strong>{{ overviewTone.label }}</strong>
-              <p>{{ stabilityCopy }}</p>
+              <span class="score-card__label">当前优先入口</span>
+              <strong>{{ primaryRiskAction.name }}</strong>
+              <p>{{ primaryRiskAction.reason }}</p>
             </div>
             <div class="pulse-legend">
-              <div v-for="item in hostStatusCards" :key="item.label" class="pulse-legend-item" :class="item.tone">
+              <div v-for="item in riskFocusLegend" :key="item.label" class="pulse-legend-item" :class="item.tone">
                 <span>{{ item.label }}</span>
                 <strong>{{ item.value }}</strong>
                 <small>{{ item.meta }}</small>
@@ -50,12 +50,12 @@
       <section class="panel risk-panel">
         <div class="section-head compact">
           <div>
-            <h3>风险焦点</h3>
-            <p>首页只保留最值得优先处理的几类风险对象。</p>
+            <h3>值守建议</h3>
+            <p>按值班顺序给出首页动作建议。</p>
           </div>
         </div>
         <div class="risk-stack">
-          <article v-for="item in riskCards" :key="item.label" class="risk-card" :class="item.tone">
+          <article v-for="item in dutyCards" :key="item.label" class="risk-card" :class="item.tone">
             <div class="risk-card__top">
               <span>{{ item.label }}</span>
               <strong>{{ item.value }}</strong>
@@ -69,7 +69,7 @@
         <div class="section-head compact">
           <div>
             <h3>资源态势</h3>
-            <p>查看平台平均 CPU、内存和磁盘利用率，判断容量是否偏紧。</p>
+            <p>快速判断 CPU、内存和磁盘是否偏紧。</p>
           </div>
         </div>
         <div class="resource-layout">
@@ -90,7 +90,7 @@
         <div class="section-head compact">
           <div>
             <h3>交付驾驶舱</h3>
-            <p>把发布成功率、运行中任务和失败积压集中展示。</p>
+            <p>集中查看发布成功率、在途任务和失败积压。</p>
           </div>
           <el-button text @click="router.push('/deployments')">发布中心</el-button>
         </div>
@@ -121,7 +121,7 @@
         <div class="section-head compact">
           <div>
             <h3>最近发布</h3>
-            <p>最近 10 条环境变更，用来确认交付节奏和异常发布。</p>
+            <p>用最近变更确认交付节奏和异常发布。</p>
           </div>
         </div>
         <el-table :data="stats.recent_deploys || []" stripe size="small" style="width: 100%">
@@ -144,7 +144,7 @@
         <div class="section-head compact">
           <div>
             <h3>未确认告警</h3>
-            <p>高风险未确认告警保持常驻首页，方便值班时快速定位。</p>
+            <p>保留未确认告警，方便值班快速定位。</p>
           </div>
         </div>
         <el-table :data="stats.recent_alerts || []" stripe size="small" style="width: 100%">
@@ -192,6 +192,10 @@ const deploymentSuccessRate = computed(() => {
   const success = stats.value.deployments?.success || 0
   return total ? Math.round((success / total) * 100) : 0
 })
+
+const averagePressure = computed(() => Math.round(
+  ((stats.value.hosts?.avg_cpu || 0) + (stats.value.hosts?.avg_memory || 0) + (stats.value.hosts?.avg_disk || 0)) / 3,
+))
 
 const stabilityScore = computed(() => {
   const criticalPenalty = (stats.value.alerts?.critical || 0) * 16
@@ -268,6 +272,37 @@ const hostStatusCards = computed(() => [
   },
 ])
 
+const primaryRiskAction = computed(() => {
+  if ((stats.value.alerts?.critical || 0) > 0 || (stats.value.alerts?.unacknowledged || 0) > 0) {
+    return { name: '告警中心', reason: '先看严重和未确认告警。' }
+  }
+  if ((stats.value.hosts?.offline || 0) > 0 || (stats.value.hosts?.warning || 0) > 0) {
+    return { name: '主机中心', reason: '先查主机连通性和健康状态。' }
+  }
+  return { name: '发布中心', reason: '优先核对最近发布状态。' }
+})
+
+const riskFocusLegend = computed(() => [
+  {
+    label: '严重告警',
+    value: `${stats.value.alerts?.critical || 0} 条`,
+    meta: `未确认 ${stats.value.alerts?.unacknowledged || 0} 条`,
+    tone: (stats.value.alerts?.critical || 0) > 0 ? 'danger' : (stats.value.alerts?.unacknowledged || 0) > 0 ? 'warning' : 'good',
+  },
+  {
+    label: '离线主机',
+    value: `${stats.value.hosts?.offline || 0} 台`,
+    meta: `告警主机 ${stats.value.hosts?.warning || 0} 台`,
+    tone: (stats.value.hosts?.offline || 0) > 0 ? 'danger' : (stats.value.hosts?.warning || 0) > 0 ? 'warning' : 'good',
+  },
+  {
+    label: '失败发布',
+    value: `${stats.value.deployments?.failed || 0} 次`,
+    meta: `运行中 ${stats.value.deployments?.running || 0} 个`,
+    tone: (stats.value.deployments?.failed || 0) > 0 ? 'warning' : 'good',
+  },
+])
+
 const resourceMeters = computed(() => [
   { label: 'CPU', value: formatPercent(stats.value.hosts?.avg_cpu), percentage: Number(stats.value.hosts?.avg_cpu || 0), color: '#4f46e5' },
   { label: '内存', value: formatPercent(stats.value.hosts?.avg_memory), percentage: Number(stats.value.hosts?.avg_memory || 0), color: '#0ea5a5' },
@@ -283,30 +318,30 @@ const alertStripItems = computed(() => {
   return items.slice(0, 3)
 })
 
-const riskCards = computed(() => [
+const dutyCards = computed(() => [
   {
-    label: '严重告警',
-    value: `${stats.value.alerts?.critical || 0} 条`,
-    description: (stats.value.alerts?.critical || 0) > 0 ? '存在需要即时响应的高风险告警。' : '当前没有严重级别告警。',
-    tone: 'danger',
+    label: '先看哪里',
+    value: primaryRiskAction.value.name,
+    description: `本班建议先进入${primaryRiskAction.value.name}，${primaryRiskAction.value.reason}`,
+    tone: (stats.value.alerts?.critical || 0) > 0 ? 'danger' : (stats.value.hosts?.offline || 0) > 0 ? 'warning' : 'info',
   },
   {
-    label: '离线主机',
-    value: `${stats.value.hosts?.offline || 0} 台`,
-    description: (stats.value.hosts?.offline || 0) > 0 ? '建议先核查采集链路、SSH 连通性或实例状态。' : '主机在线性表现稳定。',
-    tone: 'warning',
+    label: '值班待办',
+    value: `${(stats.value.alerts?.unacknowledged || 0) + (stats.value.hosts?.offline || 0) + (stats.value.deployments?.failed || 0)} 项`,
+    description: `先清未确认告警 ${stats.value.alerts?.unacknowledged || 0} 项，再看离线主机 ${stats.value.hosts?.offline || 0} 台，最后复核失败发布 ${stats.value.deployments?.failed || 0} 次。`,
+    tone: ((stats.value.alerts?.unacknowledged || 0) + (stats.value.hosts?.offline || 0) + (stats.value.deployments?.failed || 0)) > 0 ? 'warning' : 'info',
   },
   {
-    label: '失败发布',
-    value: `${stats.value.deployments?.failed || 0} 次`,
-    description: (stats.value.deployments?.failed || 0) > 0 ? '近期变更存在失败记录，需关注回滚和审批链路。' : '近期没有明显交付失败积压。',
-    tone: 'neutral',
+    label: '容量巡检',
+    value: `${averagePressure.value}%`,
+    description: averagePressure.value >= 70 ? '平均资源已偏高，建议核对 CPU、内存、磁盘峰值，并继续下钻热点主机。' : '当前平均资源水位平稳，按例行巡检节奏关注即可。',
+    tone: averagePressure.value >= 80 ? 'danger' : averagePressure.value >= 70 ? 'warning' : 'info',
   },
   {
-    label: '平均资源压力',
-    value: `${Math.round(((stats.value.hosts?.avg_cpu || 0) + (stats.value.hosts?.avg_memory || 0) + (stats.value.hosts?.avg_disk || 0)) / 3)}%`,
-    description: '用三项平均利用率估算平台当前资源紧张程度。',
-    tone: 'info',
+    label: '变更窗口',
+    value: `${stats.value.deployments?.running || 0} 个`,
+    description: (stats.value.deployments?.failed || 0) > 0 ? `近期有 ${stats.value.deployments?.failed || 0} 次失败发布，建议把失败时间点和当前告警、主机异常一起对照复盘。` : '近期没有明显失败积压，值班时重点盯住运行中发布进度和变更窗口。',
+    tone: (stats.value.deployments?.failed || 0) > 0 ? 'danger' : (stats.value.deployments?.running || 0) > 0 ? 'warning' : 'neutral',
   },
 ])
 
@@ -348,8 +383,8 @@ function renderHostChart() {
   hostChart = echarts.init(hostChartRef.value)
   hostChart.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    color: ['#22c55e', '#f59e0b', '#ef4444'],
+    tooltip: { trigger: 'item', formatter: '{b}: {c}' },
+    color: ['#ef4444', '#f59e0b', '#8b5cf6', '#0ea5a5'],
     legend: { bottom: 0, icon: 'circle', itemWidth: 10, itemHeight: 10, textStyle: { color: '#64748b' } },
     series: [{
       type: 'pie',
@@ -358,9 +393,10 @@ function renderHostChart() {
       itemStyle: { borderRadius: 10, borderColor: '#ffffff', borderWidth: 4 },
       label: { formatter: '{b}\n{c}', fontSize: 12, color: '#334155' },
       data: [
-        { value: stats.value.hosts?.online || 0, name: '在线' },
-        { value: stats.value.hosts?.warning || 0, name: '告警' },
-        { value: stats.value.hosts?.offline || 0, name: '离线' },
+        { value: Math.max(1, (stats.value.alerts?.critical || 0) * 4 + (stats.value.alerts?.unacknowledged || 0)), name: '告警风险' },
+        { value: Math.max(1, (stats.value.hosts?.offline || 0) * 3 + (stats.value.hosts?.warning || 0)), name: '主机风险' },
+        { value: Math.max(1, (stats.value.deployments?.failed || 0) * 3 + (stats.value.deployments?.running || 0)), name: '发布风险' },
+        { value: Math.max(1, Math.round(averagePressure.value / 10)), name: '资源压力' },
       ],
     }],
     graphic: [{
@@ -368,8 +404,8 @@ function renderHostChart() {
       left: 'center',
       top: '34%',
       children: [
-        { type: 'text', style: { text: `${hostAvailability.value}%`, fontSize: 30, fontWeight: 700, fill: '#0f172a', textAlign: 'center' }, left: -30 },
-        { type: 'text', style: { text: '主机可用率', fontSize: 12, fill: '#64748b', textAlign: 'center' }, top: 38, left: -25 },
+        { type: 'text', style: { text: overviewTone.value.label, fontSize: 24, fontWeight: 700, fill: '#0f172a', textAlign: 'center' }, left: -44 },
+        { type: 'text', style: { text: `稳定度 ${stabilityScore.value}`, fontSize: 12, fill: '#64748b', textAlign: 'center' }, top: 36, left: -33 },
       ],
     }],
   })
@@ -750,7 +786,7 @@ onUnmounted(() => {
 }
 
 .score-card {
-  padding: 16px;
+  padding: 12px 14px;
   border-radius: 16px;
   background: #f8fbff;
   border: 1px solid #dbeafe;
@@ -764,16 +800,19 @@ onUnmounted(() => {
 
 .score-card strong {
   display: block;
-  margin-top: 8px;
-  font-size: 24px;
+  margin-top: 6px;
+  font-size: 22px;
   color: var(--overview-text);
 }
 
 .score-card p {
-  margin: 8px 0 0;
+  margin: 5px 0 0;
   font-size: 12px;
-  line-height: 1.7;
+  line-height: 1.5;
   color: var(--overview-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pulse-legend-item {
