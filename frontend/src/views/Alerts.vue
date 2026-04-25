@@ -37,11 +37,6 @@
       </div>
     </div>
 
-    <div class="runtime-strip">
-      <el-icon><InfoFilled /></el-icon>
-      <span>建议优先处理未确认的严重告警，再结合日志与链路继续定位。</span>
-    </div>
-
     <section class="panel">
       <div class="filter-bar">
         <el-input
@@ -117,7 +112,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, InfoFilled, Search } from '@element-plus/icons-vue'
+import { Bell, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { deleteAlert, getAlerts, updateAlert } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
@@ -364,24 +359,6 @@ onMounted(async () => {
   color: #475569;
   font-size: 12px;
   margin-top: 4px;
-}
-
-.runtime-strip {
-  align-items: center;
-  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
-  border: 1px solid rgba(59, 130, 246, 0.14);
-  border-radius: 10px;
-  color: #64748b;
-  display: flex;
-  font-size: 12px;
-  gap: 0;
-  line-height: 1.45;
-  margin-top: -10px;
-  padding: 8px 11px;
-}
-
-.runtime-strip :deep(.el-icon) {
-  display: none;
 }
 
 .filter-bar {

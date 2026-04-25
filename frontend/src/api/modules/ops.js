@@ -91,6 +91,12 @@ export const deleteLogDataSource = (id) => request.delete(`/log/datasources/${id
 export const testLogDataSource = (id) => request.post(`/log/datasources/${id}/test_connection/`)
 
 export const getObservabilityOverview = (params) => request.get('/observability/overview/', { params })
+export const getTracingProviders = () => request.get('/observability/tracing/providers/')
+export const getTracingDataSources = (params) => request.get('/observability/tracing/datasources/', { params })
+export const createTracingDataSource = (data) => request.post('/observability/tracing/datasources/', data)
+export const updateTracingDataSource = (id, data) => request.put(`/observability/tracing/datasources/${id}/`, data)
+export const deleteTracingDataSource = (id) => request.delete(`/observability/tracing/datasources/${id}/`)
+export const testTracingDataSource = (id) => request.post(`/observability/tracing/datasources/${id}/test_connection/`)
 export const getTracingCatalog = (params) => request.get('/observability/tracing/catalog/', { params })
 export const searchTracing = (data) => request.post('/observability/tracing/search/', data)
 export const getTraceDetail = (traceId, params) => request.get(`/observability/tracing/traces/${traceId}/`, { params })

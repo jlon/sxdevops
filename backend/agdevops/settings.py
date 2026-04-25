@@ -238,6 +238,9 @@ LOG_PROVIDER_CONFIGS = {
 }
 
 OBSERVABILITY_CONFIG = {
+    'tracing': {
+        'default_provider': os.getenv('TRACING_DEFAULT_PROVIDER', 'skywalking'),
+    },
     'skywalking': {
         'provider': 'skywalking',
         'enabled': os.getenv('SKYWALKING_ENABLED', '1') != '0',
@@ -246,6 +249,27 @@ OBSERVABILITY_CONFIG = {
         'graphql_path': os.getenv('SKYWALKING_GRAPHQL_PATH', '/graphql'),
         'default_layer': os.getenv('SKYWALKING_DEFAULT_LAYER', ''),
         'demo_mode': os.getenv('SKYWALKING_DEMO_MODE', '1') == '1',
+    },
+    'tempo': {
+        'provider': 'tempo',
+        'enabled': os.getenv('TEMPO_ENABLED', '0') == '1',
+        'ui_url': os.getenv('TEMPO_UI_URL', ''),
+        'query_url': os.getenv('TEMPO_QUERY_URL', ''),
+        'demo_mode': os.getenv('TEMPO_DEMO_MODE', '1') == '1',
+    },
+    'jaeger': {
+        'provider': 'jaeger',
+        'enabled': os.getenv('JAEGER_ENABLED', '0') == '1',
+        'ui_url': os.getenv('JAEGER_UI_URL', ''),
+        'query_url': os.getenv('JAEGER_QUERY_URL', ''),
+        'demo_mode': os.getenv('JAEGER_DEMO_MODE', '1') == '1',
+    },
+    'zipkin': {
+        'provider': 'zipkin',
+        'enabled': os.getenv('ZIPKIN_ENABLED', '0') == '1',
+        'ui_url': os.getenv('ZIPKIN_UI_URL', ''),
+        'query_url': os.getenv('ZIPKIN_QUERY_URL', ''),
+        'demo_mode': os.getenv('ZIPKIN_DEMO_MODE', '1') == '1',
     },
     'grafana': {
         'enabled': os.getenv('GRAFANA_ENABLED', '1') != '0',

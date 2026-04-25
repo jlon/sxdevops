@@ -23,6 +23,7 @@ from .models import (
     NginxDomain,
     NginxEnvironment,
     NginxRoute,
+    TracingDataSource,
     TransactionTicket,
 )
 
@@ -33,6 +34,8 @@ LOG_SENSITIVE_KEYS = {
     'bearer_token',
     'access_key_id',
     'access_key_secret',
+    'authorization',
+    'client_secret',
 }
 
 
@@ -963,6 +966,68 @@ class LogDataSourceSerializer(serializers.ModelSerializer):
     def _sync_default(self, instance):
         if instance.is_default:
             LogDataSource.objects.filter(provider=instance.provider, is_default=True).exclude(pk=instance.pk).update(
+                is_default=False
+            )
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        self._sync_default(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        self._sync_default(instance)
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        masked = {}
+        is_demo = bool((instance.config or {}).get('demo_mode'))
+        for key, value in (instance.config or {}).items():
+            if key in LOG_SENSITIVE_KEYS and not is_demo:
+                masked[key] = 'configured' if value else ''
+            else:
+                masked[key] = value
+        data['config'] = masked
+        return data
+
+
+class TracingDataSourceSerializer(serializers.ModelSerializer):
+    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+
+    class Meta:
+        model = TracingDataSource
+        fields = '__all__'
+
+    def validate_config(self, value):
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('config 必须是对象')
+        return value
+
+    def validate(self, attrs):
+        provider = attrs.get('provider') or getattr(self.instance, 'provider', None)
+        config = dict(getattr(self.instance, 'config', {}) or {})
+        incoming = attrs.get('config', {})
+
+        for key, value in incoming.items():
+            if key in LOG_SENSITIVE_KEYS and value in ('', None, 'configured'):
+                if self.instance and key in config:
+                    continue
+                config.pop(key, None)
+                continue
+            config[key] = value
+
+        if provider == 'skywalking':
+            config.setdefault('graphql_path', '/graphql')
+
+        attrs['config'] = config
+        return attrs
+
+    def _sync_default(self, instance):
+        if instance.is_default:
+            TracingDataSource.objects.filter(provider=instance.provider, is_default=True).exclude(pk=instance.pk).update(
                 is_default=False
             )
 

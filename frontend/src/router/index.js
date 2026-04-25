@@ -271,7 +271,7 @@ const routes = [
         path: 'observability',
         redirect: () => {
           const authStore = useAuthStore(pinia)
-          if (authStore.hasAnyPermission(['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.grafana.view'])) {
+          if (authStore.hasAnyPermission(['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.grafana.view'])) {
             return '/observability/overview'
           }
           return '/403'
@@ -285,7 +285,7 @@ const routes = [
         meta: {
           title: '平台总览',
           icon: 'DataLine',
-          anyPermissions: ['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.grafana.view'],
+          anyPermissions: ['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.grafana.view'],
         },
       },
       {
@@ -298,7 +298,12 @@ const routes = [
         path: 'observability/tracing',
         name: 'TraceObservability',
         component: () => import('@/views/TraceObservability.vue'),
-        meta: { title: '链路追踪', icon: 'Connection', permission: 'ops.trace.view' },
+        meta: { title: '链路追踪', icon: 'Connection', anyPermissions: ['ops.trace.view', 'ops.trace.datasource.view'] },
+      },
+      {
+        path: 'observability/tracing/datasources',
+        redirect: { path: '/observability/tracing', query: { tab: 'datasources' } },
+        meta: { hidden: true, permission: 'ops.trace.datasource.view' },
       },
       {
         path: 'events',

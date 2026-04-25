@@ -10,20 +10,24 @@ from .models import (
     AIOpsSkill,
     AIOpsToolInvocation,
 )
+from .services import get_model_provider_setup_hint
 
 
 class AIOpsModelProviderSerializer(serializers.ModelSerializer):
     api_key = serializers.CharField(write_only=True, required=False, allow_blank=True)
     has_api_key = serializers.BooleanField(read_only=True)
+    runtime_ready = serializers.SerializerMethodField()
+    setup_hint = serializers.SerializerMethodField()
 
     class Meta:
         model = AIOpsModelProvider
         fields = [
             'id', 'name', 'provider_type', 'base_url', 'api_key', 'has_api_key', 'default_model', 'backup_model',
-            'temperature', 'max_tokens', 'timeout_seconds', 'is_enabled', 'last_test_status', 'last_test_message',
+            'temperature', 'max_tokens', 'timeout_seconds', 'is_enabled', 'runtime_ready', 'setup_hint',
+            'last_test_status', 'last_test_message',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['last_test_status', 'last_test_message', 'created_at', 'updated_at', 'has_api_key']
+        read_only_fields = ['runtime_ready', 'setup_hint', 'last_test_status', 'last_test_message', 'created_at', 'updated_at', 'has_api_key']
 
     def create(self, validated_data):
         api_key = validated_data.pop('api_key', '')
@@ -41,11 +45,26 @@ class AIOpsModelProviderSerializer(serializers.ModelSerializer):
             instance.save(update_fields=['api_key_encrypted'])
         return instance
 
+    def get_runtime_ready(self, obj):
+        return bool(obj.is_enabled and not get_model_provider_setup_hint(obj))
+
+    def get_setup_hint(self, obj):
+        return get_model_provider_setup_hint(obj)
+
 
 class AIOpsModelProviderLiteSerializer(serializers.ModelSerializer):
+    runtime_ready = serializers.SerializerMethodField()
+    setup_hint = serializers.SerializerMethodField()
+
     class Meta:
         model = AIOpsModelProvider
-        fields = ['id', 'name', 'provider_type', 'default_model', 'is_enabled']
+        fields = ['id', 'name', 'provider_type', 'default_model', 'is_enabled', 'runtime_ready', 'setup_hint']
+
+    def get_runtime_ready(self, obj):
+        return bool(obj.is_enabled and not get_model_provider_setup_hint(obj))
+
+    def get_setup_hint(self, obj):
+        return get_model_provider_setup_hint(obj)
 
 
 class AIOpsAgentConfigSerializer(serializers.ModelSerializer):

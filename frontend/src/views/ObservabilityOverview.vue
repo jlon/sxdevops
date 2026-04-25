@@ -25,11 +25,6 @@
       </div>
     </div>
 
-    <div class="runtime-strip">
-      <el-icon><InfoFilled /></el-icon>
-      <span>{{ overview.tips?.[0] || '按当前权限展示可用模块。' }}</span>
-    </div>
-
     <section class="panel">
       <div class="section-head">
         <h3>模块入口</h3>
@@ -40,6 +35,25 @@
           <strong>{{ item.title }}</strong>
           <p>{{ item.description }}</p>
           <el-button size="small" type="primary" plain @click="go(item.path)">打开</el-button>
+        </article>
+      </div>
+    </section>
+
+    <section v-if="overview.providers?.length" class="panel">
+      <div class="section-head">
+        <h3>链路 Provider</h3>
+        <el-tag size="small" type="info">OpenTelemetry 兼容</el-tag>
+      </div>
+      <div class="provider-grid">
+        <article v-for="item in overview.providers" :key="item.provider" class="provider-card" :class="{ 'is-active': item.active }">
+          <div class="provider-card__head">
+            <strong>{{ item.provider_name }}</strong>
+            <el-tag size="small" :type="item.source === 'demo' ? 'warning' : 'success'">
+              {{ item.source === 'demo' ? '演示' : '实时' }}
+            </el-tag>
+          </div>
+          <span>{{ item.configured ? '查询地址已配置' : '未配置查询地址，自动回退演示数据' }}</span>
+          <el-button size="small" link type="primary" @click="openTracingProvider(item)">进入追踪</el-button>
         </article>
       </div>
     </section>
@@ -96,8 +110,8 @@
                 <el-icon><Connection /></el-icon>
                 <strong>链路追踪</strong>
               </div>
-              <el-tag size="small" :type="overview.modules.tracing.source === 'skywalking' ? 'success' : 'warning'">
-                {{ overview.modules.tracing.source === 'skywalking' ? 'SkyWalking' : '演示模式' }}
+              <el-tag size="small" :type="overview.modules.tracing.source === 'demo' ? 'warning' : 'success'">
+                {{ overview.modules.tracing.provider_name || (overview.modules.tracing.source === 'demo' ? '演示模式' : '实时数据') }}
               </el-tag>
             </div>
             <div class="module-meta">
@@ -106,7 +120,8 @@
               <span>错误 {{ overview.summary?.error_count || 0 }}</span>
             </div>
             <div class="module-actions">
-              <el-button size="small" link type="primary" @click="go('/observability/tracing')">查看链路</el-button>
+              <el-button size="small" link type="primary" @click="openTracingProvider(overview.modules.tracing)">查看链路</el-button>
+              <el-button size="small" v-if="canViewTraceDatasources" link @click="go('/observability/tracing/datasources')">链路数据源</el-button>
               <el-button size="small" v-if="overview.modules.tracing.ui_url" link @click="openExternal(overview.modules.tracing.ui_url)">外部打开</el-button>
             </div>
           </article>
@@ -172,11 +187,14 @@
       <section v-if="overview.recent_traces?.length" class="panel">
         <div class="section-head">
           <h3>最近 Trace</h3>
-          <el-button size="small" link type="primary" @click="go('/observability/tracing')">查看全部</el-button>
+          <el-button size="small" link type="primary" @click="openTracingProvider(overview.modules?.tracing)">查看全部</el-button>
         </div>
         <el-table :data="overview.recent_traces" stripe size="small" style="width: 100%">
           <el-table-column prop="trace_id" label="Trace ID" min-width="170" show-overflow-tooltip />
           <el-table-column prop="service_name" label="服务" min-width="140" />
+          <el-table-column label="来源" width="110">
+            <template #default="{ row }">{{ row.source_provider || overview.modules?.tracing?.provider_name || '--' }}</template>
+          </el-table-column>
           <el-table-column label="耗时" width="100">
             <template #default="{ row }">{{ row.duration_ms }} ms</template>
           </el-table-column>
@@ -200,7 +218,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Bell, Connection, DataLine, Histogram, InfoFilled, RefreshRight, Search } from '@element-plus/icons-vue'
+import { Bell, Connection, DataLine, Histogram, RefreshRight, Search } from '@element-plus/icons-vue'
 import { getObservabilityOverview } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 
@@ -210,6 +228,7 @@ const loading = ref(false)
 const overview = ref({ modules: {}, summary: {}, navigation: [], tips: [], recent_alerts: [], recent_traces: [] })
 const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
 const canViewLogDatasources = computed(() => authStore.hasPermission('ops.log.datasource.view'))
+const canViewTraceDatasources = computed(() => authStore.hasPermission('ops.trace.datasource.view'))
 
 const statCards = computed(() => [
   { label: '日志数据源', value: overview.value.summary?.datasource_count || 0, tone: '' },
@@ -235,6 +254,16 @@ function go(path) {
   if (path) router.push(path)
 }
 
+function openTracingProvider(provider) {
+  router.push({
+    path: '/observability/tracing',
+    query: {
+      ...(provider?.provider ? { provider: provider.provider } : {}),
+      ...(provider?.datasource_id ? { datasourceId: String(provider.datasource_id) } : {}),
+    },
+  })
+}
+
 function openAlert(row) {
   if (!row) return
   router.push({
@@ -254,6 +283,8 @@ function openTrace(row) {
     query: {
       traceId: row.trace_id,
       service: row.service_name || row.service_id || '',
+      provider: row.source_provider || overview.value.modules?.tracing?.provider || '',
+      datasourceId: overview.value.modules?.tracing?.datasource_id ? String(overview.value.modules.tracing.datasource_id) : '',
     },
   })
 }
@@ -265,6 +296,8 @@ function openTraceLogs(row) {
     query: {
       traceId: row.trace_id,
       service: row.service_name || row.service_id || '',
+      provider: row.source_provider || overview.value.modules?.tracing?.provider || '',
+      datasourceId: overview.value.modules?.tracing?.datasource_id ? String(overview.value.modules.tracing.datasource_id) : '',
       autoRun: '1',
     },
   })
@@ -300,7 +333,8 @@ onMounted(loadOverview)
 .module-head,
 .module-title,
 .module-actions,
-.module-meta {
+.module-meta,
+.provider-card__head {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
@@ -379,24 +413,6 @@ onMounted(loadOverview)
   margin-top: 4px;
 }
 
-.runtime-strip {
-  align-items: center;
-  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
-  border: 1px solid rgba(59, 130, 246, 0.14);
-  border-radius: 10px;
-  color: #64748b;
-  display: flex;
-  font-size: 12px;
-  gap: 0;
-  line-height: 1.45;
-  margin-top: -10px;
-  padding: 8px 11px;
-}
-
-.runtime-strip :deep(.el-icon) {
-  display: none;
-}
-
 .section-head {
   align-items: center;
   justify-content: space-between;
@@ -410,7 +426,8 @@ onMounted(loadOverview)
 }
 
 .nav-grid,
-.module-grid {
+.module-grid,
+.provider-grid {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -424,6 +441,7 @@ onMounted(loadOverview)
 
 .nav-card,
 .module-card,
+.provider-card,
 .tip-card {
   border: 1px solid #e2e8f0;
   border-radius: 10px;
@@ -437,7 +455,8 @@ onMounted(loadOverview)
 
 .nav-card p,
 .tip-card span,
-.module-meta span {
+.module-meta span,
+.provider-card span {
   color: var(--text-secondary);
   line-height: 1.45;
   margin: 0;
@@ -465,6 +484,24 @@ onMounted(loadOverview)
 
 .module-card {
   background: linear-gradient(180deg, #fff, #f8fafc);
+}
+
+.provider-card {
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.provider-card.is-active {
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.96) 0%, #fff 100%);
+  border-color: rgba(37, 99, 235, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.16);
+}
+
+.provider-card__head {
+  align-items: center;
+  justify-content: space-between;
 }
 
 .module-head {
@@ -503,7 +540,8 @@ onMounted(loadOverview)
 @media (max-width: 1200px) {
   .release-stats,
   .nav-grid,
-  .module-grid {
+  .module-grid,
+  .provider-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -521,7 +559,8 @@ onMounted(loadOverview)
 
   .release-stats,
   .nav-grid,
-  .module-grid {
+  .module-grid,
+  .provider-grid {
     grid-template-columns: 1fr;
   }
 }

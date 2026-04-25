@@ -38,6 +38,7 @@ from .services import (
     confirm_action,
     dispatch_chat,
     get_agent_config,
+    list_model_provider_models,
     list_mcp_server_tools,
     recover_masked_suggested_question,
     start_async_chat_processing,
@@ -64,6 +65,7 @@ class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'partial_update': ['aiops.config.manage'],
         'destroy': ['aiops.config.manage'],
         'test_connection': ['aiops.config.manage'],
+        'list_models': ['aiops.config.manage'],
     }
 
     @action(detail=True, methods=['post'])
@@ -86,6 +88,15 @@ class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             status_code = status.HTTP_400_BAD_REQUEST
         provider.save(update_fields=['last_test_status', 'last_test_message', 'updated_at'])
         return Response(payload, status=status_code)
+
+    @action(detail=True, methods=['get'], url_path='models')
+    def list_models(self, request, pk=None):
+        provider = self.get_object()
+        probe = str(request.query_params.get('probe', 'true')).lower() not in {'0', 'false', 'no'}
+        try:
+            return Response(list_model_provider_models(provider, probe=probe))
+        except Exception as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AIOpsMCPServerViewSet(RBACPermissionMixin, viewsets.ModelViewSet):

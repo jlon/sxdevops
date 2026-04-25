@@ -1,4 +1,5 @@
 ﻿from urllib.parse import quote
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -454,9 +455,11 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload['modules']['tracing']['source'], 'demo')
+        self.assertEqual(payload['modules']['tracing']['provider'], 'skywalking')
         self.assertEqual(payload['modules']['grafana']['source'], 'demo')
         self.assertEqual(payload['summary']['dashboard_count'], 4)
         self.assertGreaterEqual(payload['summary']['service_count'], 1)
+        self.assertTrue(any(item['provider'] == 'demo' for item in payload['providers']))
 
     @patch('ops.observability_views.user_has_permissions')
     def test_observability_overview_allows_log_only_user_without_trace_visibility(self, mock_permissions):
@@ -521,7 +524,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['modules']['grafana']['dashboards'][0]['key'], 'custom-trace')
         self.assertEqual(payload['modules']['grafana']['dashboards'][0]['url'], 'http://grafana.example.com/d/custom-trace')
 
-    @patch('ops.observability_views.http_requests.post')
+    @patch('ops.tracing_providers.http_requests.post')
     def test_tracing_catalog_uses_skywalking_graphql_when_configured(self, mock_post):
         mock_post.side_effect = [
             MockHttpResponse({
@@ -566,9 +569,421 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['summary']['service_count'], 2)
         self.assertEqual(payload['summary']['topology_calls'], 1)
         self.assertEqual(payload['recent_traces'][0]['trace_id'], 'trace-1')
+        self.assertEqual(payload['recent_traces'][0]['summary'], '')
+        self.assertTrue(any(item['provider'] == 'demo' for item in payload['providers']))
         self.assertEqual(mock_post.call_count, 3)
 
-    @patch('ops.observability_views.http_requests.post')
+    def test_tracing_catalog_can_force_demo_provider(self):
+        response = self.client.get('/api/observability/tracing/catalog/?provider=demo')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['tracing']['provider'], 'demo')
+        self.assertEqual(payload['tracing']['source'], 'demo')
+        self.assertGreaterEqual(len(payload['recent_traces']), 1)
+        self.assertGreaterEqual(len(payload['instances']), 1)
+
+    def test_tracing_search_can_filter_demo_instance(self):
+        response = self.client.post(
+            '/api/observability/tracing/search/',
+            {
+                'provider': 'demo',
+                'service_id': 'svc-order',
+                'instance_name': 'order-prod-02',
+                'limit': 20,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['query']['instance_name'], 'order-prod-02')
+        self.assertEqual(len(payload['traces']), 1)
+        self.assertEqual(payload['traces'][0]['instance_name'], 'order-prod-02')
+        self.assertTrue(any(item['name'] == 'order-prod-02' for item in payload['instances']))
+
+    def test_can_create_tracing_datasource(self):
+        response = self.client.post(
+            '/api/observability/tracing/datasources/',
+            {
+                'name': 'Production Tempo',
+                'provider': 'tempo',
+                'description': 'OTel Tempo 查询入口',
+                'is_enabled': True,
+                'is_default': True,
+                'config': {
+                    'query_url': 'http://tempo.example.com',
+                    'ui_url': 'http://grafana.example.com/explore',
+                    'authorization': 'Bearer secret-token',
+                    'demo_mode': False,
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload['provider'], 'tempo')
+        self.assertEqual(payload['config']['authorization'], 'configured')
+
+        list_response = self.client.get('/api/observability/tracing/datasources/')
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.json()[0]['name'], 'Production Tempo')
+
+    @patch('ops.observability_views.test_tracing_connection')
+    def test_can_test_tracing_datasource_connection(self, mock_test_connection):
+        create_response = self.client.post(
+            '/api/observability/tracing/datasources/',
+            {
+                'name': 'Production Jaeger',
+                'provider': 'jaeger',
+                'description': 'Jaeger 查询入口',
+                'is_enabled': True,
+                'is_default': True,
+                'config': {
+                    'query_url': 'http://jaeger.example.com',
+                    'ui_url': 'http://jaeger-ui.example.com',
+                    'demo_mode': False,
+                },
+            },
+            format='json',
+        )
+        datasource_id = create_response.json()['id']
+        mock_test_connection.return_value = {'kind': 'services', 'count': 3, 'items': [{'id': 'svc-a'}]}
+
+        response = self.client.post(f'/api/observability/tracing/datasources/{datasource_id}/test_connection/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['preview_count'], 3)
+        mock_test_connection.assert_called_once()
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_tracing_catalog_uses_jaeger_query_when_configured(self, mock_get):
+        mock_get.side_effect = [
+            MockHttpResponse({'data': ['gateway-service', 'order-service']}),
+            MockHttpResponse({
+                'data': [
+                    {
+                        'traceID': 'jaeger-trace-1',
+                        'processes': {'p1': {'serviceName': 'gateway-service'}, 'p2': {'serviceName': 'order-service'}},
+                        'spans': [
+                            {
+                                'spanID': 'span-root',
+                                'processID': 'p1',
+                                'operationName': 'GET /api/orders',
+                                'startTime': 1711674900000000,
+                                'duration': 250000,
+                                'tags': [{'key': 'http.status_code', 'value': '200'}],
+                                'references': [],
+                            },
+                            {
+                                'spanID': 'span-child',
+                                'processID': 'p2',
+                                'operationName': 'queryOrder',
+                                'startTime': 1711674900040000,
+                                'duration': 120000,
+                                'tags': [],
+                                'references': [{'refType': 'CHILD_OF', 'spanID': 'span-root'}],
+                            },
+                        ],
+                    }
+                ]
+            }),
+            MockHttpResponse({
+                'data': [
+                    {
+                        'traceID': 'jaeger-trace-1',
+                        'processes': {'p1': {'serviceName': 'gateway-service'}, 'p2': {'serviceName': 'order-service'}},
+                        'spans': [
+                            {
+                                'spanID': 'span-root',
+                                'processID': 'p1',
+                                'operationName': 'GET /api/orders',
+                                'startTime': 1711674900000000,
+                                'duration': 250000,
+                                'tags': [{'key': 'http.status_code', 'value': '200'}],
+                                'references': [],
+                            },
+                            {
+                                'spanID': 'span-child',
+                                'processID': 'p2',
+                                'operationName': 'queryOrder',
+                                'startTime': 1711674900040000,
+                                'duration': 120000,
+                                'tags': [],
+                                'references': [{'refType': 'CHILD_OF', 'spanID': 'span-root'}],
+                            },
+                        ],
+                    }
+                ]
+            }),
+        ]
+
+        with override_settings(
+            OBSERVABILITY_CONFIG={
+                **TEST_OBSERVABILITY_CONFIG,
+                'tracing': {'default_provider': 'jaeger'},
+                'skywalking': {**TEST_OBSERVABILITY_CONFIG['skywalking'], 'enabled': False},
+                'jaeger': {
+                    'provider': 'jaeger',
+                    'enabled': True,
+                    'query_url': 'http://jaeger.example.com',
+                    'ui_url': 'http://jaeger-ui.example.com',
+                    'demo_mode': False,
+                },
+            }
+        ):
+            response = self.client.get('/api/observability/tracing/catalog/?provider=jaeger')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['tracing']['source'], 'jaeger')
+        self.assertEqual(payload['providers'][0]['provider'], 'jaeger')
+        self.assertEqual(payload['summary']['service_count'], 2)
+        self.assertEqual(payload['recent_traces'][0]['trace_id'], 'jaeger-trace-1')
+        self.assertEqual(payload['topology']['call_count'], 1)
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_tracing_search_uses_requested_datasource_config(self, mock_get):
+        create_default = self.client.post(
+            '/api/observability/tracing/datasources/',
+            {
+                'name': 'Default Jaeger',
+                'provider': 'jaeger',
+                'is_enabled': True,
+                'is_default': True,
+                'config': {
+                    'query_url': 'http://jaeger-default.example.com',
+                    'ui_url': 'http://jaeger-default-ui.example.com',
+                    'demo_mode': False,
+                },
+            },
+            format='json',
+        )
+        create_alternate = self.client.post(
+            '/api/observability/tracing/datasources/',
+            {
+                'name': 'Alternate Jaeger',
+                'provider': 'jaeger',
+                'is_enabled': True,
+                'is_default': False,
+                'config': {
+                    'query_url': 'http://jaeger-alt.example.com',
+                    'ui_url': 'http://jaeger-alt-ui.example.com',
+                    'demo_mode': False,
+                },
+            },
+            format='json',
+        )
+        datasource_id = create_alternate.json()['id']
+        trace_payload = {
+            'traceID': 'jaeger-trace-alt',
+            'processes': {'p1': {'serviceName': 'gateway-service'}},
+            'spans': [
+                {
+                    'spanID': 'span-root',
+                    'processID': 'p1',
+                    'operationName': 'GET /api/orders',
+                    'startTime': 1711674900000000,
+                    'duration': 250000,
+                    'tags': [{'key': 'http.status_code', 'value': '200'}],
+                    'references': [],
+                }
+            ],
+        }
+        mock_get.side_effect = [
+            MockHttpResponse({'data': ['gateway-service']}),
+            MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
+        ]
+
+        response = self.client.post(
+            '/api/observability/tracing/search/',
+            {
+                'provider': 'jaeger',
+                'datasource_id': datasource_id,
+                'service_id': 'gateway-service',
+                'limit': 10,
+            },
+            format='json',
+        )
+
+        self.assertEqual(create_default.status_code, 201)
+        self.assertEqual(create_alternate.status_code, 201)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(str(payload['tracing']['datasource_id']), str(datasource_id))
+        self.assertEqual(payload['traces'][0]['trace_id'], 'jaeger-trace-alt')
+        self.assertEqual(mock_get.call_args_list[-1].args[0], 'http://jaeger-alt.example.com/api/traces')
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_tracing_search_supports_absolute_time_range(self, mock_get):
+        self.client.post(
+            '/api/observability/tracing/datasources/',
+            {
+                'name': 'Absolute Range Jaeger',
+                'provider': 'jaeger',
+                'is_enabled': True,
+                'is_default': True,
+                'config': {
+                    'query_url': 'http://jaeger-absolute.example.com',
+                    'ui_url': 'http://jaeger-absolute-ui.example.com',
+                    'demo_mode': False,
+                },
+            },
+            format='json',
+        )
+        trace_payload = {
+            'traceID': 'jaeger-trace-range',
+            'processes': {'p1': {'serviceName': 'gateway-service'}},
+            'spans': [
+                {
+                    'spanID': 'span-root',
+                    'processID': 'p1',
+                    'operationName': 'GET /api/orders',
+                    'startTime': 1711674900000000,
+                    'duration': 250000,
+                    'tags': [{'key': 'http.status_code', 'value': '200'}],
+                    'references': [],
+                }
+            ],
+        }
+        mock_get.side_effect = [
+            MockHttpResponse({'data': ['gateway-service']}),
+            MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
+        ]
+
+        start_time = '2026-04-10T11:00:00+08:00'
+        end_time = '2026-04-10T11:45:00+08:00'
+        response = self.client.post(
+            '/api/observability/tracing/search/',
+            {
+                'provider': 'jaeger',
+                'service_id': 'gateway-service',
+                'start_time': start_time,
+                'end_time': end_time,
+                'duration_minutes': 5,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['query']['start_time'], start_time)
+        self.assertEqual(payload['query']['end_time'], end_time)
+        params = mock_get.call_args_list[-1].kwargs['params']
+        self.assertEqual(params['start'], int(datetime.fromisoformat(start_time).timestamp() * 1000000))
+        self.assertEqual(params['end'], int(datetime.fromisoformat(end_time).timestamp() * 1000000))
+
+    @patch('ops.tracing_providers.http_requests.get')
+    def test_trace_detail_uses_requested_datasource_config(self, mock_get):
+        self.client.post(
+            '/api/observability/tracing/datasources/',
+            {
+                'name': 'Primary Jaeger',
+                'provider': 'jaeger',
+                'is_enabled': True,
+                'is_default': True,
+                'config': {
+                    'query_url': 'http://jaeger-primary.example.com',
+                    'ui_url': 'http://jaeger-primary-ui.example.com',
+                    'demo_mode': False,
+                },
+            },
+            format='json',
+        )
+        create_alternate = self.client.post(
+            '/api/observability/tracing/datasources/',
+            {
+                'name': 'Focused Jaeger',
+                'provider': 'jaeger',
+                'is_enabled': True,
+                'is_default': False,
+                'config': {
+                    'query_url': 'http://jaeger-focused.example.com',
+                    'ui_url': 'http://jaeger-focused-ui.example.com',
+                    'demo_mode': False,
+                },
+            },
+            format='json',
+        )
+        datasource_id = create_alternate.json()['id']
+        trace_payload = {
+            'traceID': 'jaeger-trace-detail',
+            'processes': {'p1': {'serviceName': 'gateway-service'}},
+            'spans': [
+                {
+                    'spanID': 'span-root',
+                    'processID': 'p1',
+                    'operationName': 'GET /api/orders',
+                    'startTime': 1711674900000000,
+                    'duration': 250000,
+                    'tags': [{'key': 'http.status_code', 'value': '200'}],
+                    'references': [],
+                }
+            ],
+        }
+        mock_get.side_effect = [
+            MockHttpResponse({'data': ['gateway-service']}),
+            MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
+        ]
+
+        response = self.client.get(
+            f'/api/observability/tracing/traces/jaeger-trace-detail/?provider=jaeger&datasource_id={datasource_id}'
+        )
+
+        self.assertEqual(create_alternate.status_code, 201)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['trace']['trace_id'], 'jaeger-trace-detail')
+        self.assertEqual(payload['trace']['summary'], '')
+        self.assertEqual(str(payload['tracing']['datasource_id']), str(datasource_id))
+        self.assertEqual(
+            mock_get.call_args_list[-1].args[0],
+            'http://jaeger-focused.example.com/api/traces/jaeger-trace-detail',
+        )
+
+    def test_tracing_catalog_rejects_provider_datasource_mismatch(self):
+        create_response = self.client.post(
+            '/api/observability/tracing/datasources/',
+            {
+                'name': 'Mismatch Jaeger',
+                'provider': 'jaeger',
+                'is_enabled': True,
+                'is_default': True,
+                'config': {
+                    'query_url': 'http://jaeger-mismatch.example.com',
+                    'ui_url': 'http://jaeger-mismatch-ui.example.com',
+                    'demo_mode': False,
+                },
+            },
+            format='json',
+        )
+        datasource_id = create_response.json()['id']
+
+        catalog_response = self.client.get(
+            f'/api/observability/tracing/catalog/?provider=tempo&datasource_id={datasource_id}'
+        )
+        search_response = self.client.post(
+            '/api/observability/tracing/search/',
+            {'provider': 'tempo', 'datasource_id': datasource_id},
+            format='json',
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        self.assertEqual(catalog_response.status_code, 400)
+        self.assertEqual(search_response.status_code, 400)
+        self.assertIn('provider 与链路数据源类型不一致', catalog_response.json()['detail'])
+        self.assertIn('provider 与链路数据源类型不一致', search_response.json()['detail'])
+
+    @patch('ops.tracing_providers.http_requests.post')
     def test_trace_detail_returns_span_summary_from_skywalking(self, mock_post):
         mock_post.side_effect = [
             MockHttpResponse({
@@ -637,6 +1052,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['trace']['trace_id'], 'trace-1')
         self.assertEqual(payload['trace']['span_count'], 1)
         self.assertEqual(payload['trace']['duration_ms'], 212)
+        self.assertEqual(payload['trace'].get('summary', ''), '')
         self.assertIn('gateway-service', payload['trace']['services'])
 
     @patch('ops.log_views.http_requests.request')

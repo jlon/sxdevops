@@ -461,7 +461,7 @@ const canViewConfig = computed(() => authStore.hasPermission('aiops.config.view'
 const ASSISTANT_ERROR_DISPLAY = {
   provider_unavailable: {
     title: '未配置可用模型',
-    description: '当前智能助手没有可用模型，暂时无法继续问答。请到智能体配置中启用并测试默认模型。',
+    description: '当前智能助手没有可用模型，暂时无法继续问答。“智能助手体验版”只是预置模板，需要填写真实 Base URL 和 API Key。',
     actionLabel: '前往模型配置',
     tag: '模型配置',
   },

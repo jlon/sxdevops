@@ -480,7 +480,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Promotion, RefreshRight } from '@element-plus/icons-vue'
@@ -581,6 +581,37 @@ const deploymentPlatformTips = computed(() => {
   if (summary.value.failed) tips.push(`当前有 ${summary.value.failed} 张发布单执行失败，建议优先复盘`)
   if (summary.value.running) tips.push(`当前有 ${summary.value.running} 个版本处于稳定运行中`)
   return tips.slice(0, 3)
+})
+
+function routeQueryText(key) {
+  const value = route.query[key]
+  return Array.isArray(value) ? String(value[0] || '').trim() : String(value || '').trim()
+}
+
+function applyRouteFilters() {
+  if (isFlowMode.value) return
+  const keyword = routeQueryText('keyword')
+  const service = routeQueryText('service')
+  const status = routeQueryText('status')
+  const environment = routeQueryText('environment')
+
+  if (keyword || service) {
+    search.value = keyword || service
+    activeSummaryKey.value = 'all'
+  }
+  if (status && statusOptions.some(item => item.value === status)) {
+    statusFilter.value = status
+    approvalFilter.value = ''
+    onlyCurrent.value = false
+    activeSummaryKey.value = status === 'failed' ? 'failed' : 'all'
+  }
+  if (environment) {
+    envFilter.value = environment
+  }
+}
+
+watch(() => route.query, () => {
+  applyRouteFilters()
 })
 
 const filteredDeployments = computed(() => deployments.value.filter((item) => {
@@ -908,6 +939,7 @@ onMounted(async () => {
   resetReleaseForm()
   resetFlowForm()
   applySummaryFilter('all')
+  applyRouteFilters()
   await Promise.all([fetchDeployments(), fetchFlows(), fetchLookups()])
 })
 </script>

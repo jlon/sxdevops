@@ -27,6 +27,7 @@ export const createAIOpsProvider = (data) => request.post('/aiops/admin/provider
 export const updateAIOpsProvider = (id, data) => request.patch(`/aiops/admin/providers/${id}/`, data)
 export const deleteAIOpsProvider = (id) => request.delete(`/aiops/admin/providers/${id}/`)
 export const testAIOpsProvider = (id) => request.post(`/aiops/admin/providers/${id}/test_connection/`, null, { timeout: AIOPS_MODEL_TEST_TIMEOUT })
+export const listAIOpsProviderModels = (id, params) => request.get(`/aiops/admin/providers/${id}/models/`, { params, timeout: AIOPS_MODEL_TEST_TIMEOUT })
 
 export const getAIOpsMcpServers = () => request.get('/aiops/admin/mcp-servers/')
 export const createAIOpsMcpServer = (data) => request.post('/aiops/admin/mcp-servers/', data)

@@ -55,7 +55,13 @@
             <el-form :model="configForm" label-width="118px">
               <el-form-item label="默认提供商">
                 <el-select v-model="configForm.default_provider_id" clearable style="width:100%">
-                  <el-option v-for="provider in providers" :key="provider.id" :label="provider.name" :value="provider.id" />
+                  <el-option
+                    v-for="provider in providers"
+                    :key="provider.id"
+                    :label="providerOptionLabel(provider)"
+                    :value="provider.id"
+                    :disabled="!provider.runtime_ready"
+                  />
                 </el-select>
               </el-form-item>
               <el-form-item label="欢迎语">
@@ -131,6 +137,13 @@
           <el-table-column label="Key" width="90">
             <template #default="{ row }">
               <el-tag size="small" :type="row.has_api_key ? 'success' : 'info'">{{ row.has_api_key ? '已配置' : '未配置' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="可用性" width="118">
+            <template #default="{ row }">
+              <el-tooltip :content="providerRuntimeHint(row)" placement="top" :disabled="row.runtime_ready">
+                <el-tag size="small" :type="providerRuntimeTagType(row)">{{ providerRuntimeLabel(row) }}</el-tag>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="120">
@@ -285,9 +298,31 @@
         <el-form-item label="类型"><el-select v-model="providerForm.provider_type" style="width:100%"><el-option label="OpenAI Compatible" value="openai_compatible" /></el-select></el-form-item>
         <el-form-item label="Base URL"><el-input v-model="providerForm.base_url" /></el-form-item>
         <el-form-item label="API Key"><el-input v-model="providerForm.api_key" type="password" show-password placeholder="留空则保留原值" /></el-form-item>
+        <div class="model-discovery-strip">
+          <el-button size="small" :loading="saving.models" :disabled="!providerForm.id" @click="handleListProviderModels">
+            拉取模型列表
+          </el-button>
+          <span v-if="!providerForm.id" class="model-discovery-hint">新增提供商请先保存后再拉取模型。</span>
+          <span v-else-if="providerModelRecommendation" class="model-discovery-hint">
+            推荐 {{ providerModelRecommendation.model }}
+            <el-tag size="small" :type="providerModelRecommendation.supports_tool_calling ? 'success' : 'warning'">
+              {{ providerModelRecommendation.supports_tool_calling ? 'Tool Calling 可用' : '已验证文本' }}
+            </el-tag>
+            <el-button link type="primary" @click="applyRecommendedModel">一键填入</el-button>
+          </span>
+          <span v-else-if="providerModels.length" class="model-discovery-hint">已拉取 {{ providerModels.length }} 个模型，可在下方选择。</span>
+        </div>
         <div class="dialog-grid">
-          <el-form-item label="默认模型"><el-input v-model="providerForm.default_model" /></el-form-item>
-          <el-form-item label="备用模型"><el-input v-model="providerForm.backup_model" /></el-form-item>
+          <el-form-item label="默认模型">
+            <el-select v-model="providerForm.default_model" filterable allow-create default-first-option style="width:100%">
+              <el-option v-for="item in providerModels" :key="item.id" :label="formatProviderModelLabel(item)" :value="item.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="备用模型">
+            <el-select v-model="providerForm.backup_model" filterable allow-create default-first-option clearable style="width:100%">
+              <el-option v-for="item in providerModels" :key="item.id" :label="formatProviderModelLabel(item)" :value="item.id" />
+            </el-select>
+          </el-form-item>
           <el-form-item label="温度"><el-input-number v-model="providerForm.temperature" :min="0" :max="2" :step="0.1" /></el-form-item>
           <el-form-item label="最大 Tokens"><el-input-number v-model="providerForm.max_tokens" :min="100" :max="16000" :step="100" /></el-form-item>
           <el-form-item label="超时"><el-input-number v-model="providerForm.timeout_seconds" :min="5" :max="120" /></el-form-item>
@@ -378,6 +413,7 @@ import {
   getAIOpsMcpServers,
   getAIOpsProviders,
   getAIOpsSkills,
+  listAIOpsProviderModels,
   listAIOpsMcpTools,
   testAIOpsProvider,
   testAIOpsMcpServer,
@@ -390,7 +426,7 @@ import {
 const activeTab = ref('strategy')
 const authStore = useAuthStore()
 const loading = reactive({ page: false })
-const saving = reactive({ config: false, provider: false, mcp: false, skill: false })
+const saving = reactive({ config: false, provider: false, models: false, mcp: false, skill: false })
 
 const providers = ref([])
 const mcpServers = ref([])
@@ -426,6 +462,8 @@ const skillDialogVisible = ref(false)
 const mcpToolsDialogVisible = ref(false)
 
 const providerForm = reactive({})
+const providerModels = ref([])
+const providerModelRecommendation = ref(null)
 const mcpForm = reactive({})
 const skillForm = reactive({})
 const mcpToolsList = ref([])
@@ -457,6 +495,31 @@ function getSkillTypeClass(row = {}) {
 function formatEnabledTools(tools) {
   if (!Array.isArray(tools) || !tools.length) return '--'
   return tools.join('、')
+}
+
+function formatProviderModelLabel(item = {}) {
+  const owner = item.owned_by ? ` · ${item.owned_by}` : ''
+  return `${item.id}${owner}`
+}
+
+function providerOptionLabel(provider = {}) {
+  if (provider.runtime_ready) return provider.name
+  return `${provider.name}（${provider.is_enabled ? '待配置' : '停用'}）`
+}
+
+function providerRuntimeTagType(row = {}) {
+  if (row.runtime_ready) return 'success'
+  return row.is_enabled ? 'warning' : 'info'
+}
+
+function providerRuntimeLabel(row = {}) {
+  if (row.runtime_ready) return '可用'
+  return row.is_enabled ? '待配置' : '停用'
+}
+
+function providerRuntimeHint(row = {}) {
+  if (row.runtime_ready) return '可作为智能助手运行模型'
+  return row.setup_hint || (row.is_enabled ? '请补全模型配置后使用' : '当前已停用，启用后可作为运行模型')
 }
 
 function resetProviderForm() {
@@ -572,6 +635,8 @@ async function saveConfig() {
 
 function openProviderDialog(row) {
   resetProviderForm()
+  providerModels.value = []
+  providerModelRecommendation.value = null
   if (row) Object.assign(providerForm, row, { api_key: '' })
   providerDialogVisible.value = true
 }
@@ -592,9 +657,51 @@ async function saveProvider() {
 }
 
 async function handleTestProvider(row) {
-  const result = await testAIOpsProvider(row.id)
-  ElMessage.success(result.message)
-  await loadAll()
+  try {
+    const result = await testAIOpsProvider(row.id)
+    ElMessage.success(result.message)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || row.setup_hint || '模型测试失败')
+  } finally {
+    await loadAll()
+  }
+}
+
+async function handleListProviderModels() {
+  if (!providerForm.id) {
+    ElMessage.warning('请先保存提供商后再拉取模型列表')
+    return
+  }
+  if (providerForm.api_key) {
+    ElMessage.warning('检测到 API Key 尚未保存，请先保存后再拉取模型列表')
+    return
+  }
+  saving.models = true
+  try {
+    const result = await listAIOpsProviderModels(providerForm.id, { probe: true })
+    providerModels.value = result.models || []
+    providerModelRecommendation.value = result.recommendation || null
+    if (providerModelRecommendation.value?.model) {
+      providerForm.default_model = providerModelRecommendation.value.model
+      ElMessage.success(providerModelRecommendation.value.message || `已推荐 ${providerModelRecommendation.value.model}`)
+    } else if (providerModels.value.length) {
+      ElMessage.success(`已拉取 ${providerModels.value.length} 个模型`)
+    } else {
+      ElMessage.warning('未从供应商返回模型列表')
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '拉取模型列表失败')
+  } finally {
+    saving.models = false
+  }
+}
+
+function applyRecommendedModel() {
+  if (!providerModelRecommendation.value?.model) return
+  providerForm.default_model = providerModelRecommendation.value.model
+  const fallback = providerModels.value.find(item => item.id !== providerModelRecommendation.value.model)?.id || providerForm.backup_model
+  providerForm.backup_model = fallback || ''
+  ElMessage.success('已填入推荐模型，保存后生效')
 }
 
 async function handleDeleteProvider(row) {
@@ -713,6 +820,8 @@ onMounted(async () => {
 .runtime-strip{display:flex;align-items:center;gap:0;padding:8px 11px;border-radius:10px;background:linear-gradient(90deg,rgba(59,130,246,.08) 0%,rgba(14,165,233,.04) 100%);color:#64748b;border:1px solid rgba(59,130,246,.14);font-size:12px;line-height:1.45;margin-top:-10px}.runtime-strip :deep(.el-icon){display:none}
 .config-grid{align-items:flex-start}.config-section{flex:1;padding:8px 0}.section-title{font-size:14px;font-weight:700;color:#0f172a;margin-bottom:8px}.switch-list{flex-direction:column}.switch-item{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}
 .section-toolbar{justify-content:flex-end;margin-bottom:8px}.dialog-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px}.audit-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.audit-card{padding:16px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;display:flex;flex-direction:column;gap:8px}.audit-card strong{font-size:28px;color:#0f172a}
+.model-discovery-strip{display:flex;align-items:center;gap:8px;margin:-2px 0 12px 102px;padding:8px 10px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}
+.model-discovery-hint{display:inline-flex;align-items:center;gap:6px;color:#64748b;font-size:12px;line-height:1.4}
 .audit-section{margin-top:8px}
 .audit-toolbar{justify-content:space-between;align-items:center}
 .audit-hint{color:#64748b;font-size:12px}

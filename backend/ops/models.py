@@ -659,6 +659,32 @@ class LogDataSource(models.Model):
         return f'{self.get_provider_display()} - {self.name}'
 
 
+class TracingDataSource(models.Model):
+    PROVIDER_CHOICES = [
+        ('skywalking', 'SkyWalking'),
+        ('tempo', 'Tempo / OpenTelemetry'),
+        ('jaeger', 'Jaeger / OpenTelemetry'),
+        ('zipkin', 'Zipkin / OpenTelemetry'),
+    ]
+
+    name = models.CharField('Tracing data source name', max_length=128, unique=True)
+    provider = models.CharField('Tracing provider', max_length=16, choices=PROVIDER_CHOICES)
+    description = models.CharField('Description', max_length=255, blank=True, default='')
+    config = models.JSONField('Connection config', default=dict, blank=True)
+    is_enabled = models.BooleanField('Enabled', default=True)
+    is_default = models.BooleanField('Default data source', default=False)
+    created_at = models.DateTimeField('Created at', auto_now_add=True)
+    updated_at = models.DateTimeField('Updated at', auto_now=True)
+
+    class Meta:
+        verbose_name = 'Tracing data source'
+        verbose_name_plural = 'Tracing data sources'
+        ordering = ['provider', 'name']
+
+    def __str__(self):
+        return f'{self.get_provider_display()} - {self.name}'
+
+
 class K8sCluster(models.Model):
     STATUS_CHOICES = [
         ('connected', '已连接'),

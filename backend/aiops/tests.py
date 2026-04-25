@@ -6,7 +6,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from cmdb.models import CIType, ConfigItem
-from ops.models import Alert, Deployment, Host, HostTask, K8sCluster, TransactionTicket
+from ops.models import Alert, Deployment, Host, HostTask, K8sCluster, TracingDataSource, TransactionTicket
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -23,7 +23,9 @@ from .services import (
     build_task_draft,
     confirm_action,
     create_pending_task_action_from_draft,
+    get_active_provider,
     get_agent_config,
+    list_model_provider_models,
     build_markdown_answer,
     query_alerts,
     query_cost_report,
@@ -31,6 +33,7 @@ from .services import (
     query_hosts,
     query_k8s_cluster_summary,
     query_recent_changes,
+    query_traces,
     query_workorders,
 )
 
@@ -83,8 +86,37 @@ class AIOpsApiTests(TestCase):
         provider = AIOpsModelProvider.objects.get(name='智能助手体验版')
         self.assertEqual(provider.provider_type, AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE)
         self.assertEqual(provider.default_model, 'gpt-4o-mini')
-        self.assertTrue(provider.has_api_key)
+        self.assertFalse(provider.has_api_key)
+        self.assertEqual(provider.last_test_message, '预置体验配置，需替换为真实 API Key 后使用')
         self.assertEqual(config.default_provider_id, provider.id)
+
+    def test_active_provider_skips_unconfigured_experience_provider(self):
+        config = get_agent_config()
+        real_provider = AIOpsModelProvider.objects.create(
+            name='real-runtime-provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://real.example.com/v1',
+            default_model='real-model',
+            is_enabled=True,
+        )
+        real_provider.set_api_key('real-key')
+        real_provider.save(update_fields=['api_key_encrypted'])
+
+        self.assertEqual(config.default_provider.name, '智能助手体验版')
+        self.assertEqual(get_active_provider(config).id, real_provider.id)
+
+    def test_get_agent_config_clears_placeholder_experience_api_key(self):
+        get_agent_config()
+        provider = AIOpsModelProvider.objects.get(name='智能助手体验版')
+        provider.set_api_key('demo-openai-compatible-key')
+        provider.last_test_status = AIOpsModelProvider.STATUS_SUCCESS
+        provider.save(update_fields=['api_key_encrypted', 'last_test_status'])
+
+        get_agent_config()
+        provider.refresh_from_db()
+
+        self.assertFalse(provider.has_api_key)
+        self.assertEqual(provider.last_test_status, AIOpsModelProvider.STATUS_UNKNOWN)
 
     def test_get_agent_config_keeps_existing_default_provider(self):
         custom_provider = AIOpsModelProvider.objects.create(
@@ -184,6 +216,228 @@ class AIOpsApiTests(TestCase):
         })
         self.assertEqual(result['choices'][0]['message']['content'], '连接成功')
         self.assertEqual(result['_meta']['resolved_model'], 'gpt-5.2-low')
+
+    @mock.patch('aiops.services.requests.post')
+    def test_request_model_completion_falls_back_to_cc_alias(self, mocked_post):
+        provider = AIOpsModelProvider.objects.create(
+            name='mock-provider-cc-fallback',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='gpt-5.2-low',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+
+        empty_response = mock.Mock()
+        empty_response.status_code = 200
+        empty_response.json.return_value = {
+            'choices': [{'message': {'role': 'assistant', 'content': None}}],
+        }
+        cc_response = mock.Mock()
+        cc_response.status_code = 200
+        cc_response.json.return_value = {
+            'model': 'gpt-5.2',
+            'choices': [{'message': {'role': 'assistant', 'content': '连接成功'}}],
+        }
+        mocked_post.side_effect = [empty_response, cc_response]
+
+        result = _request_model_completion(provider, {
+            'model': 'gpt-5.2-low',
+            'messages': [{'role': 'user', 'content': 'ping'}],
+            'max_tokens': 16,
+        })
+
+        self.assertEqual(result['choices'][0]['message']['content'], '连接成功')
+        self.assertEqual(result['_meta']['resolved_model'], 'cc-gpt-5.2')
+
+    @mock.patch('aiops.services.requests.post')
+    def test_request_model_completion_uses_developer_role_for_cc_models(self, mocked_post):
+        provider = AIOpsModelProvider.objects.create(
+            name='mock-provider-developer-role',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='cc-gpt-5.3-codex',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            'choices': [{'message': {'role': 'assistant', 'content': '连接成功'}}],
+        }
+        mocked_post.return_value = response
+
+        result = _request_model_completion(provider, {
+            'model': 'cc-gpt-5.3-codex',
+            'messages': [
+                {'role': 'system', 'content': 'system prompt'},
+                {'role': 'user', 'content': 'ping'},
+            ],
+            'max_tokens': 16,
+        })
+
+        sent_messages = mocked_post.call_args.kwargs['json']['messages']
+        self.assertEqual(sent_messages[0]['role'], 'developer')
+        self.assertEqual(result['choices'][0]['message']['content'], '连接成功')
+
+    @mock.patch('aiops.services.requests.post')
+    def test_request_model_completion_retries_system_role_as_developer(self, mocked_post):
+        provider = AIOpsModelProvider.objects.create(
+            name='mock-provider-system-retry',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='mock-model',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+
+        failed_response = mock.Mock()
+        failed_response.status_code = 400
+        failed_response.json.return_value = {
+            'error': {'message': 'openai_error', 'type': 'bad_response_status_code', 'code': 'bad_response_status_code'},
+        }
+        success_response = mock.Mock()
+        success_response.status_code = 200
+        success_response.json.return_value = {
+            'choices': [{'message': {'role': 'assistant', 'content': '连接成功'}}],
+        }
+        mocked_post.side_effect = [failed_response, success_response]
+
+        result = _request_model_completion(provider, {
+            'model': 'mock-model',
+            'messages': [
+                {'role': 'system', 'content': 'system prompt'},
+                {'role': 'user', 'content': 'ping'},
+            ],
+            'max_tokens': 16,
+        })
+
+        self.assertEqual(mocked_post.call_count, 2)
+        self.assertEqual(mocked_post.call_args.kwargs['json']['messages'][0]['role'], 'developer')
+        self.assertEqual(result['choices'][0]['message']['content'], '连接成功')
+
+    @mock.patch('aiops.services.requests.post')
+    def test_request_model_completion_converts_tool_role_for_cc_models(self, mocked_post):
+        provider = AIOpsModelProvider.objects.create(
+            name='mock-provider-tool-role',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='cc-gpt-5.3-codex',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            'choices': [{'message': {'role': 'assistant', 'content': '已根据工具结果回答'}}],
+        }
+        mocked_post.return_value = response
+
+        result = _request_model_completion(provider, {
+            'model': 'cc-gpt-5.3-codex',
+            'messages': [
+                {'role': 'system', 'content': 'system prompt'},
+                {'role': 'user', 'content': 'ping'},
+                {
+                    'role': 'assistant',
+                    'content': '',
+                    'tool_calls': [{
+                        'id': 'call_ping',
+                        'type': 'function',
+                        'function': {'name': 'ping_tool', 'arguments': '{}'},
+                    }],
+                },
+                {'role': 'tool', 'tool_call_id': 'call_ping', 'content': '{"ok": true}'},
+            ],
+            'max_tokens': 16,
+        })
+
+        sent_messages = mocked_post.call_args.kwargs['json']['messages']
+        self.assertEqual(sent_messages[0]['role'], 'developer')
+        self.assertNotIn('tool', {item.get('role') for item in sent_messages})
+        self.assertTrue(any('工具调用结果' in item.get('content', '') for item in sent_messages))
+        self.assertFalse(any(item.get('tool_calls') for item in sent_messages))
+        self.assertEqual(result['choices'][0]['message']['content'], '已根据工具结果回答')
+
+    @mock.patch('aiops.services.requests.post')
+    @mock.patch('aiops.services.requests.get')
+    def test_list_model_provider_models_recommends_tool_calling_model(self, mocked_get, mocked_post):
+        provider = AIOpsModelProvider.objects.create(
+            name='mock-provider-models',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='gpt-5.2-low',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+
+        models_response = mock.Mock()
+        models_response.status_code = 200
+        models_response.json.return_value = {
+            'data': [
+                {'id': 'gpt-5.2-low', 'owned_by': 'custom'},
+                {'id': 'cc-gpt-5.2', 'owned_by': 'custom'},
+            ],
+        }
+        mocked_get.return_value = models_response
+
+        text_response = mock.Mock()
+        text_response.status_code = 200
+        text_response.json.return_value = {
+            'choices': [{'message': {'role': 'assistant', 'content': 'ping'}}],
+        }
+        tool_response = mock.Mock()
+        tool_response.status_code = 200
+        tool_response.json.return_value = {
+            'choices': [{
+                'message': {
+                    'role': 'assistant',
+                    'content': '',
+                    'tool_calls': [{
+                        'id': 'call_ping',
+                        'type': 'function',
+                        'function': {'name': 'ping_tool', 'arguments': '{}'},
+                    }],
+                },
+            }],
+        }
+        mocked_post.side_effect = [text_response, tool_response]
+
+        result = list_model_provider_models(provider)
+
+        self.assertEqual(result['count'], 2)
+        self.assertEqual(result['recommendation']['model'], 'gpt-5.2-low')
+        self.assertTrue(result['recommendation']['supports_tool_calling'])
+
+    @mock.patch('aiops.views.list_model_provider_models')
+    def test_provider_models_endpoint_lists_available_models(self, mocked_list_models):
+        provider = AIOpsModelProvider.objects.create(
+            name='mock-provider-models-endpoint',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='mock-model',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+        mocked_list_models.return_value = {
+            'models': [{'id': 'mock-model'}],
+            'count': 1,
+            'recommendation': {'model': 'mock-model', 'verified': True},
+        }
+
+        response = self.client.get(f'/api/aiops/admin/providers/{provider.id}/models/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['recommendation']['model'], 'mock-model')
 
     def test_query_recent_changes_does_not_use_missing_updated_at_field(self):
         session = AIOpsChatSession.objects.create(user=self.user, title='changes-check')
@@ -438,6 +692,63 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(result['summary']['cluster_name'], cluster.name)
         self.assertGreaterEqual(result['summary']['pods_abnormal'], 1)
         self.assertTrue(any('异常 Pod：' in item for item in result['sections'][0]['items']))
+
+    @mock.patch('aiops.services._provider_handlers')
+    @mock.patch('aiops.services._resolve_provider')
+    def test_query_traces_uses_live_tracing_provider(self, mocked_resolve_provider, mocked_provider_handlers):
+        TracingDataSource.objects.create(
+            name='Tracing SkyWalking',
+            provider='skywalking',
+            is_enabled=True,
+            is_default=True,
+            config={'oap_url': '', 'ui_url': 'http://skywalking.example.com'},
+        )
+        mocked_resolve_provider.return_value = ('skywalking', {})
+        mocked_provider_handlers.return_value = {
+            'skywalking': {
+                'services': lambda config, layer='': [{
+                    'id': 'svc-bcp',
+                    'name': 'bcp-server@梧桐港-SaaS-PRO',
+                    'short_name': 'bcp-server@梧桐港-SaaS-PRO',
+                }],
+                'search': lambda config, payload, services: [{
+                    'trace_id': 'trace-live-1',
+                    'segment_id': 'segment-live-1',
+                    'service_id': 'svc-bcp',
+                    'service_name': 'bcp-server@梧桐港-SaaS-PRO',
+                    'instance_name': '',
+                    'endpoint_names': ['xxl-job/MethodJob/citic.cph.bcp.scheduler.BcmClearScheduler.queryBcmClearInfo'],
+                    'duration_ms': 8,
+                    'start': '2026-04-23T12:00:00+08:00',
+                    'is_error': True,
+                    'state': 'ERROR',
+                    'summary': '',
+                    'source_provider': 'skywalking',
+                }],
+            }
+        }
+
+        session = AIOpsChatSession.objects.create(user=self.user, title='trace-live')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role='user',
+            content='帮我看看链路追踪里面的服务"bcp-server@梧桐港-SaaS-PRO" 最近有没有异常',
+        )
+
+        result = query_traces(
+            session,
+            user_message,
+            self.user,
+            query='bcp-server@梧桐港-SaaS-PRO',
+            errors_only=True,
+            limit=5,
+            duration_minutes=60,
+        )
+
+        self.assertEqual(len(result['traces']), 1)
+        self.assertEqual(result['traces'][0]['trace_id'], 'trace-live-1')
+        self.assertEqual(result['tracing']['provider'], 'skywalking')
+        self.assertTrue(any('bcp-server@梧桐港-SaaS-PRO' in item for item in result['sections'][0]['items']))
 
     def test_send_message_creates_session_messages(self):
         session_response = self.client.post('/api/aiops/sessions/', {'title': '测试会话'}, format='json')

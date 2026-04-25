@@ -3,12 +3,14 @@ import os
 import queue
 import re
 import shlex
+import socket
 import subprocess
 import threading
 import time
 import uuid
 from collections import Counter
 from decimal import Decimal
+from urllib.parse import urlparse
 
 import requests
 from django.contrib.auth import get_user_model
@@ -32,9 +34,16 @@ from ops.models import (
     LogDataSource,
     LogEntry,
     NginxEnvironment,
+    TracingDataSource,
     TransactionTicket,
 )
-from ops.observability_views import DEMO_TRACES
+from ops.tracing_providers import (
+    DEMO_TRACES,
+    ObservabilityError,
+    _provider_handlers,
+    _resolve_provider,
+    load_tracing_catalog,
+)
 from ops.middleware_views import _build_payload as build_middleware_payload
 from ops.middleware_views import _get_demo_state as get_middleware_demo_state
 from rbac.services import is_demo_account, user_has_permissions
@@ -321,6 +330,42 @@ BUILTIN_MODEL_PROVIDER = {
 }
 
 
+def _is_builtin_experience_provider(provider):
+    return bool(provider and provider.name == BUILTIN_MODEL_PROVIDER['name'])
+
+
+def _builtin_experience_provider_needs_setup(provider):
+    if not _is_builtin_experience_provider(provider):
+        return False
+    base_url = (provider.base_url or '').strip()
+    api_key = provider.get_api_key().strip()
+    default_model = (provider.default_model or '').strip()
+    return (
+        not base_url
+        or base_url == BUILTIN_MODEL_PROVIDER['base_url']
+        or not api_key
+        or api_key == BUILTIN_MODEL_PROVIDER['api_key']
+        or not default_model
+    )
+
+
+def get_model_provider_setup_hint(provider):
+    if _builtin_experience_provider_needs_setup(provider):
+        return '“智能助手体验版”只是预置模板，请先填写真实 Base URL 和 API Key。'
+    if not provider:
+        return '请先启用并配置一个可用的模型提供商。'
+    missing_items = []
+    if not (provider.base_url or '').strip():
+        missing_items.append('Base URL')
+    if not (provider.default_model or '').strip():
+        missing_items.append('默认模型')
+    if not provider.get_api_key().strip():
+        missing_items.append('API Key')
+    if missing_items:
+        return f"请先补全：{'、'.join(missing_items)}"
+    return ''
+
+
 def _normalize_json_id_list(values):
     normalized = []
     for value in values or []:
@@ -459,9 +504,16 @@ def _ensure_builtin_model_provider(config):
     if not provider.last_test_message:
         provider.last_test_message = definition['last_test_message']
         changed_fields.append('last_test_message')
-    if created or not provider.has_api_key:
-        provider.set_api_key(definition['api_key'])
+    if provider.get_api_key().strip() == definition['api_key']:
+        provider.set_api_key('')
         changed_fields.append('api_key_encrypted')
+    if _builtin_experience_provider_needs_setup(provider):
+        if provider.last_test_status != AIOpsModelProvider.STATUS_UNKNOWN:
+            provider.last_test_status = AIOpsModelProvider.STATUS_UNKNOWN
+            changed_fields.append('last_test_status')
+        if provider.last_test_message != definition['last_test_message']:
+            provider.last_test_message = definition['last_test_message']
+            changed_fields.append('last_test_message')
     if changed_fields:
         provider.save(update_fields=list(dict.fromkeys(changed_fields)))
 
@@ -509,9 +561,12 @@ def get_agent_config():
 def get_active_provider(config=None):
     config = config or get_agent_config()
     provider = config.default_provider
-    if provider and provider.is_enabled:
+    if provider and provider.is_enabled and _provider_is_ready(provider):
         return provider
-    return AIOpsModelProvider.objects.filter(is_enabled=True).order_by('id').first()
+    for item in AIOpsModelProvider.objects.filter(is_enabled=True).order_by('id'):
+        if _provider_is_ready(item):
+            return item
+    return provider if provider and provider.is_enabled else AIOpsModelProvider.objects.filter(is_enabled=True).order_by('id').first()
 
 
 def _get_selected_mcp_servers(config):
@@ -1419,18 +1474,207 @@ def query_logs(session, user_message, user, query='', limit=6):
     return {'sections': sections, 'citations': [{'title': '日志中心', 'path': '/logs/query'}], 'logs': logs}
 
 
-def query_traces(session, user_message, user, query='', errors_only=False, limit=6):
+def _extract_quoted_trace_query(query):
+    text = str(query or '').strip()
+    for pattern in [r'"([^"]{2,})"', r'“([^”]{2,})”', r"'([^']{2,})'", r'服务\s*([^\s，。？！,?]+)']:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return text
+
+
+def _match_trace_service(services, query):
+    target = _extract_quoted_trace_query(query)
+    normalized_target = target.lower().strip()
+    if not normalized_target:
+        return None
+    for service in services or []:
+        values = [
+            str(service.get('id') or ''),
+            str(service.get('name') or ''),
+            str(service.get('short_name') or service.get('shortName') or ''),
+        ]
+        for value in values:
+            normalized_value = value.lower().strip()
+            if normalized_target == normalized_value:
+                return service
+    for service in services or []:
+        values = [
+            str(service.get('id') or ''),
+            str(service.get('name') or ''),
+            str(service.get('short_name') or service.get('shortName') or ''),
+        ]
+        if any(normalized_target in value.lower() or value.lower() in normalized_target for value in values if value):
+            return service
+    tokens = [token.lower() for token in _clean_tokens(target)]
+    if tokens:
+        for service in services or []:
+            haystack = ' '.join([
+                str(service.get('id') or ''),
+                str(service.get('name') or ''),
+                str(service.get('short_name') or service.get('shortName') or ''),
+            ]).lower()
+            if all(token in haystack for token in tokens):
+                return service
+    return None
+
+
+def _format_trace_item(item):
+    endpoints = '、'.join((item.get('endpoint_names') or [])[:2]) or '未知 Endpoint'
+    trace_id = item.get('trace_id') or ''
+    short_trace_id = trace_id[:24] + '...' if len(trace_id) > 28 else trace_id
+    return f"{item.get('service_name') or item.get('service_id') or '-'} / {item.get('state') or '-'} / {item.get('duration_ms') or 0}ms / {item.get('start') or '-'} / {endpoints} / {short_trace_id}"
+
+
+def _query_live_traces(query='', errors_only=False, limit=6, duration_minutes=60):
+    datasource = (
+        TracingDataSource.objects.filter(is_enabled=True, is_default=True).order_by('id').first()
+        or TracingDataSource.objects.filter(is_enabled=True).order_by('id').first()
+    )
+    provider = datasource.provider if datasource else ''
+    datasource_id = str(datasource.id) if datasource else ''
+    provider_id, config = _resolve_provider(provider, datasource_id=datasource_id)
+    handlers = _provider_handlers()
+    endpoint = ''
+    if provider_id == 'skywalking':
+        endpoint = (config.get('oap_url') or config.get('query_url') or '').strip()
+    else:
+        endpoint = (config.get('query_url') or '').strip()
+    if endpoint:
+        parsed = urlparse(endpoint)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+        if host:
+            try:
+                with socket.create_connection((host, port), timeout=3):
+                    pass
+            except OSError as exc:
+                raise ObservabilityError(f'链路数据源不可达：{host}:{port}（{exc}）')
+    if provider_id == 'demo':
+        catalog = load_tracing_catalog(provider='demo')
+        tracing_meta = catalog.get('tracing') or {}
+        services = catalog.get('services') or []
+    else:
+        services = handlers[provider_id]['services'](config, layer='') if provider_id == 'skywalking' else handlers[provider_id]['services'](config)
+        tracing_meta = {
+            'provider': provider_id,
+            'provider_name': datasource.get_provider_display() if datasource else provider_id,
+            'source': provider_id,
+            'datasource_id': datasource_id,
+            'datasource_name': datasource.name if datasource else '',
+        }
+    service = _match_trace_service(services, query)
+    trace_query = _extract_quoted_trace_query(query)
+    payload = {
+        'provider': tracing_meta.get('provider') or provider_id,
+        'datasource_id': tracing_meta.get('datasource_id') or datasource_id,
+        'service_id': service.get('id') if service else '',
+        'keyword': '' if service else trace_query,
+        'trace_state': 'ERROR' if errors_only else 'ALL',
+        'duration_minutes': duration_minutes,
+        'limit': limit,
+    }
+    if provider_id == 'demo':
+        catalog = load_tracing_catalog(provider='demo')
+        result = {
+            'tracing': catalog.get('tracing') or tracing_meta,
+            'summary': catalog.get('summary') or {},
+            'traces': [item for item in (catalog.get('recent_traces') or []) if (not errors_only or item.get('is_error'))][:limit],
+        }
+    else:
+        traces = handlers[provider_id]['search'](config, payload, services)
+        result = {
+            'tracing': tracing_meta,
+            'summary': {
+                'match_count': len(traces),
+                'error_match_count': len([item for item in traces if item.get('is_error')]),
+            },
+            'traces': traces,
+    }
+    return result, service, trace_query
+
+
+def _is_trace_focused_question(question):
+    lowered = str(question or '').lower()
+    return any(keyword in lowered for keyword in ['链路追踪', '调用链', 'trace', 'tracing'])
+
+
+def query_traces(session, user_message, user, query='', errors_only=False, limit=6, duration_minutes=60):
     started_at = time.time()
     tokens = _clean_tokens(query)
     invocation = _create_tool_invocation(
         session,
         user_message,
         'query_traces',
-        {'query': query, 'tokens': tokens, 'errors_only': errors_only, 'limit': limit},
+        {'query': query, 'tokens': tokens, 'errors_only': errors_only, 'limit': limit, 'duration_minutes': duration_minutes},
     )
     if not user_has_permissions(user, ['ops.trace.view']):
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'sections': [], 'citations': []}
+
+    try:
+        live_result, matched_service, trace_query = _query_live_traces(
+            query=query,
+            errors_only=errors_only,
+            limit=limit,
+            duration_minutes=duration_minutes,
+        )
+        traces = (live_result.get('traces') or [])[:limit]
+        tracing_meta = live_result.get('tracing') or {}
+        summary = live_result.get('summary') or {}
+        service_name = (matched_service or {}).get('name') or trace_query or '全部服务'
+        if traces:
+            title = '链路追踪异常' if errors_only else '链路追踪'
+            sections = [{
+                'title': title,
+                'items': [
+                    f"服务：{service_name}；最近 {duration_minutes} 分钟匹配 {summary.get('match_count', len(traces))} 条，异常 {summary.get('error_match_count', len([item for item in traces if item.get('is_error')]))} 条。",
+                    *[_format_trace_item(item) for item in traces],
+                ],
+            }]
+        elif matched_service:
+            sections = [{
+                'title': '链路追踪异常' if errors_only else '链路追踪',
+                'items': [f"服务：{service_name}；最近 {duration_minutes} 分钟未查询到{'异常 ' if errors_only else ''}Trace。"],
+            }]
+        else:
+            sections = [{
+                'title': '链路追踪服务未匹配',
+                'items': [f"未在当前链路数据源中匹配到服务：{trace_query or query or '-'}。"],
+            }]
+        _finish_tool_invocation(
+            invocation,
+            {
+                'count': len(traces),
+                'match_count': summary.get('match_count', len(traces)),
+                'error_match_count': summary.get('error_match_count', len([item for item in traces if item.get('is_error')])),
+                'provider': tracing_meta.get('provider'),
+                'datasource_id': tracing_meta.get('datasource_id'),
+                'service': service_name,
+            },
+            started_at,
+            success=True,
+        )
+        return {
+            'sections': sections,
+            'citations': [{'title': f"链路追踪 / {tracing_meta.get('provider_name') or tracing_meta.get('provider') or 'Tracing'}", 'path': '/observability/tracing'}],
+            'traces': traces,
+            'summary': summary,
+            'service': matched_service,
+            'tracing': tracing_meta,
+        }
+    except Exception as exc:
+        if not isinstance(exc, ObservabilityError):
+            error_message = str(exc)
+        else:
+            error_message = str(exc)
+        _finish_tool_invocation(invocation, {'detail': error_message[:300]}, started_at, success=False)
+        return {
+            'sections': [{'title': '链路追踪查询失败', 'items': [error_message[:300]]}],
+            'citations': [{'title': '链路追踪', 'path': '/observability/tracing'}],
+            'traces': [],
+            'error': error_message,
+        }
 
     traces = []
     for item in DEMO_TRACES:
@@ -3123,7 +3367,13 @@ def cancel_action(action, user):
 
 
 def _provider_is_ready(provider):
-    return bool(provider and provider.base_url and provider.get_api_key() and provider.default_model)
+    return bool(
+        provider
+        and provider.base_url
+        and provider.get_api_key()
+        and provider.default_model
+        and not _builtin_experience_provider_needs_setup(provider)
+    )
 
 
 def _build_dispatch_error_result(detail='', code='error', message='问答失败，请稍后重试。'):
@@ -3148,7 +3398,266 @@ def _candidate_model_names(model_name):
     candidates = [model_name]
     if re.fullmatch(r'gpt-5(?:\.\d+)?', model_name):
         candidates.extend([f'{model_name}-low', f'{model_name}-medium'])
+        candidates.append(f'cc-{model_name}')
+    else:
+        family_match = re.fullmatch(r'(gpt-5(?:\.\d+)?(?:-codex)?)(?:-(low|medium|high|xhigh))', model_name)
+        if family_match:
+            candidates.append(f"cc-{family_match.group(1)}")
     return list(dict.fromkeys(candidates))
+
+
+def _model_prefers_developer_role(model_name):
+    return bool(re.match(r'^(cc-)?gpt-5', str(model_name or '').strip()))
+
+
+def _convert_system_messages_to_developer(messages):
+    converted = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            converted.append(message)
+            continue
+        if message.get('role') == 'system':
+            converted.append({**message, 'role': 'developer'})
+        else:
+            converted.append(message)
+    return converted
+
+
+def _message_has_tool_role(messages):
+    return any(isinstance(message, dict) and message.get('role') == 'tool' for message in messages or [])
+
+
+def _convert_tool_messages_to_user_summaries(messages):
+    converted = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            converted.append(message)
+            continue
+        if message.get('role') == 'tool':
+            tool_call_id = message.get('tool_call_id') or ''
+            content = str(message.get('content') or '')
+            converted.append({
+                'role': 'user',
+                'content': f'工具调用结果（tool_call_id={tool_call_id}）：\n{content}',
+            })
+            continue
+        if message.get('role') == 'assistant' and message.get('tool_calls'):
+            function_names = [
+                ((tool_call.get('function') or {}).get('name') or '')
+                for tool_call in message.get('tool_calls') or []
+            ]
+            function_names = [item for item in function_names if item]
+            assistant_content = str(message.get('content') or '').strip()
+            converted.append({
+                'role': 'assistant',
+                'content': assistant_content or f"已请求工具调用：{'、'.join(function_names) or '未知工具'}",
+            })
+            continue
+        converted.append(message)
+    return converted
+
+
+def _provider_error_code(error_payload):
+    if not isinstance(error_payload, dict):
+        return ''
+    error = error_payload.get('error') if isinstance(error_payload.get('error'), dict) else {}
+    return str(error.get('code') or error.get('type') or '').strip()
+
+
+def _should_retry_with_developer_role(error_payload, request_payload):
+    if _provider_error_code(error_payload) != 'bad_response_status_code':
+        return False
+    return any(isinstance(message, dict) and message.get('role') == 'system' for message in request_payload.get('messages') or [])
+
+
+def _should_retry_without_tool_role(error_payload, request_payload):
+    if _provider_error_code(error_payload) != 'invalid_value':
+        return False
+    error_message = ''
+    if isinstance(error_payload, dict) and isinstance(error_payload.get('error'), dict):
+        error_message = str(error_payload['error'].get('message') or '')
+    return "'tool'" in error_message and _message_has_tool_role(request_payload.get('messages') or [])
+
+
+def _model_request_payload_variants(payload, model_name):
+    request_payload = {**payload, 'model': model_name}
+    messages = request_payload.get('messages') or []
+    has_system_role = any(isinstance(message, dict) and message.get('role') == 'system' for message in messages)
+    has_tool_role = _message_has_tool_role(messages)
+    if has_system_role:
+        developer_messages = _convert_system_messages_to_developer(messages)
+    else:
+        developer_messages = messages
+    developer_payload = {**request_payload, 'messages': developer_messages}
+    tool_compatible_payload = {**developer_payload, 'messages': _convert_tool_messages_to_user_summaries(developer_messages)}
+    if has_tool_role and _model_prefers_developer_role(model_name):
+        return [tool_compatible_payload, developer_payload, request_payload]
+    if has_tool_role:
+        return [request_payload, tool_compatible_payload]
+    if not has_system_role:
+        return [request_payload]
+    if _model_prefers_developer_role(model_name):
+        return [developer_payload, request_payload]
+    return [request_payload, developer_payload]
+
+
+def _model_provider_api_base(provider):
+    endpoint = (provider.base_url or '').strip().rstrip('/')
+    if endpoint.endswith('/chat/completions'):
+        endpoint = endpoint[:-len('/chat/completions')]
+    return endpoint
+
+
+def _normalize_model_catalog_items(payload):
+    raw_items = payload
+    if isinstance(payload, dict):
+        raw_items = payload.get('data') or payload.get('models') or []
+    if not isinstance(raw_items, list):
+        return []
+    models = []
+    for item in raw_items:
+        if isinstance(item, str):
+            model_id = item.strip()
+            if model_id:
+                models.append({'id': model_id})
+            continue
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get('id') or item.get('name') or '').strip()
+        if not model_id:
+            continue
+        models.append({
+            'id': model_id,
+            'owned_by': item.get('owned_by') or item.get('owner') or '',
+            'supported_endpoint_types': item.get('supported_endpoint_types') or [],
+        })
+    return models
+
+
+def _build_model_probe_candidates(provider, model_ids):
+    model_id_set = set(model_ids)
+    candidates = []
+
+    def add(value):
+        value = str(value or '').strip()
+        if value and value not in candidates and (not model_id_set or value in model_id_set):
+            candidates.append(value)
+
+    for value in [provider.default_model, provider.backup_model]:
+        add(value)
+        for candidate in _candidate_model_names(value):
+            add(candidate)
+
+    preferred_patterns = [
+        r'^cc-gpt-5\.3-codex$',
+        r'^cc-gpt-5\.4$',
+        r'^cc-gpt-5\.2$',
+        r'^cc-gpt-5',
+        r'^gpt-5\.4-mini$',
+        r'^gpt-5\.2-low$',
+        r'^gpt-5\.2',
+        r'^gpt-5',
+    ]
+    for pattern in preferred_patterns:
+        for model_id in model_ids:
+            if re.search(pattern, model_id):
+                add(model_id)
+    for model_id in model_ids[:20]:
+        add(model_id)
+    return candidates
+
+
+def _probe_model_text_completion(provider, model_name):
+    result = _request_model_completion(provider, {
+        'model': model_name,
+        'temperature': 0,
+        'max_tokens': 32,
+        'messages': [{'role': 'user', 'content': 'reply with ping only'}],
+    })
+    return ((result or {}).get('_meta') or {}).get('resolved_model') or model_name
+
+
+def _probe_model_tool_calling(provider, model_name):
+    result = _request_model_completion(provider, {
+        'model': model_name,
+        'temperature': 0,
+        'max_tokens': 96,
+        'messages': [{'role': 'user', 'content': 'please call the ping_tool'}],
+        'tools': [{
+            'type': 'function',
+            'function': {
+                'name': 'ping_tool',
+                'description': 'return pong',
+                'parameters': {'type': 'object', 'properties': {}},
+            },
+        }],
+        'tool_choice': 'auto',
+    })
+    choice = ((result or {}).get('choices') or [{}])[0]
+    message = choice.get('message') or {}
+    resolved_model = ((result or {}).get('_meta') or {}).get('resolved_model') or model_name
+    return resolved_model, bool(message.get('tool_calls') or [])
+
+
+def list_model_provider_models(provider, probe=True, max_probe=8):
+    if not provider or not (provider.base_url or '').strip() or not provider.get_api_key().strip():
+        raise ValueError('请先保存 Base URL 和 API Key 后再拉取模型列表')
+
+    endpoint = f"{_model_provider_api_base(provider)}/models"
+    response = requests.get(
+        endpoint,
+        headers={'Authorization': f'Bearer {provider.get_api_key()}'},
+        timeout=max(provider.timeout_seconds, 5),
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {'status_code': response.status_code, 'text': response.text[:800]}
+    if response.status_code >= 400:
+        raise ValueError(payload)
+
+    models = _normalize_model_catalog_items(payload)
+    model_ids = [item['id'] for item in models]
+    candidates = _build_model_probe_candidates(provider, model_ids)
+    recommendation = None
+    last_probe_error = ''
+    text_verified_model = None
+
+    if probe:
+        for candidate in candidates[:max_probe]:
+            try:
+                resolved_model = _probe_model_text_completion(provider, candidate)
+                if not text_verified_model:
+                    text_verified_model = resolved_model
+                tool_model, supports_tool_calling = _probe_model_tool_calling(provider, resolved_model)
+                recommendation = {
+                    'model': tool_model,
+                    'requested_model': candidate,
+                    'verified': True,
+                    'supports_tool_calling': supports_tool_calling,
+                    'message': '已验证可返回文本并支持 Tool Calling' if supports_tool_calling else '已验证可返回文本，Tool Calling 需在问答中进一步确认',
+                }
+                if supports_tool_calling:
+                    break
+            except Exception as exc:
+                last_probe_error = str(exc)[:300]
+                continue
+    if not recommendation and text_verified_model:
+        recommendation = {
+            'model': text_verified_model,
+            'requested_model': text_verified_model,
+            'verified': True,
+            'supports_tool_calling': False,
+            'message': '已验证可返回文本，Tool Calling 需在问答中进一步确认',
+        }
+
+    return {
+        'models': models,
+        'count': len(models),
+        'recommendation': recommendation,
+        'probe_candidates': candidates[:max_probe],
+        'probe_error': '' if recommendation else last_probe_error,
+    }
 
 
 def _extract_message_content(message):
@@ -3183,39 +3692,45 @@ def _request_model_completion(provider, payload):
     last_error = '模型调用失败'
 
     for model_name in _candidate_model_names(payload.get('model')):
-        request_payload = {**payload, 'model': model_name}
-        response = requests.post(
-            endpoint,
-            headers=headers,
-            json=request_payload,
-            timeout=max(provider.timeout_seconds, 5),
-        )
-        try:
-            data = response.json()
-        except ValueError:
-            data = {'status_code': response.status_code, 'text': response.text[:800]}
-        if response.status_code >= 400:
-            last_error = data
-            continue
-        choice = ((data or {}).get('choices') or [{}])[0]
-        message = choice.get('message') or {}
-        content = _sanitize_assistant_content(_extract_message_content(message))
-        if content or (message.get('tool_calls') or []):
-            if content != _extract_message_content(message):
-                message['content'] = content
-                choice['message'] = message
-                data['choices'][0] = choice
-            if model_name != payload.get('model'):
-                data.setdefault('_meta', {})['resolved_model'] = model_name
-            return data
-        last_error = {'error': {'message': f'model {model_name} returned empty content', 'type': 'empty_content'}}
+        for request_payload in _model_request_payload_variants(payload, model_name):
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=request_payload,
+                timeout=max(provider.timeout_seconds, 5),
+            )
+            try:
+                data = response.json()
+            except ValueError:
+                data = {'status_code': response.status_code, 'text': response.text[:800]}
+            if response.status_code >= 400:
+                last_error = data
+                if not (
+                    _should_retry_with_developer_role(data, request_payload)
+                    or _should_retry_without_tool_role(data, request_payload)
+                ):
+                    break
+                continue
+            choice = ((data or {}).get('choices') or [{}])[0]
+            message = choice.get('message') or {}
+            content = _sanitize_assistant_content(_extract_message_content(message))
+            if content or (message.get('tool_calls') or []):
+                if content != _extract_message_content(message):
+                    message['content'] = content
+                    choice['message'] = message
+                    data['choices'][0] = choice
+                if model_name != payload.get('model'):
+                    data.setdefault('_meta', {})['resolved_model'] = model_name
+                return data
+            last_error = {'error': {'message': f'model {model_name} returned empty content', 'type': 'empty_content'}}
+            break
 
     raise ValueError(last_error)
 
 
 def test_model_provider_connection(provider):
     if not _provider_is_ready(provider):
-        return {'status': 'failed', 'message': '请完善 Base URL、模型和 API Key'}
+        return {'status': 'failed', 'message': get_model_provider_setup_hint(provider) or '请完善 Base URL、模型和 API Key'}
     result = _request_model_completion(provider, {
         'model': provider.default_model,
         'temperature': 0,
@@ -3581,6 +4096,7 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user):
         '工具选择示例：',
         '- “当前未确认的严重告警有哪些” => 优先调用 query_alerts，并设置 level=critical、only_unacknowledged=true。',
         '- “分析生产 order-center 最近异常” => 优先调用 query_alerts；需要补充上下文时再追加 query_recent_changes、query_logs 或 query_traces。',
+        '- “链路追踪里的服务 xxx 最近有没有异常 / trace 中服务 xxx 是否有错误” => 必须优先调用 query_traces，query 只传服务名，errors_only=true。',
         '- “最近电商线生产有哪些工单” => 调用 query_workorders，并把业务线、环境信息体现在参数中。',
         '- “生产环境有哪些离线主机” => 调用 query_hosts，并设置 environment=prod、status=offline。',
         '- “数据平台生产环境月成本多少” => 调用 query_cost_report，并设置 business_line=数据平台、environment=prod。',
@@ -3709,7 +4225,7 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'environment': {'type': 'string', 'enum': ['prod', 'test', 'dev']}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_alerts': {
-            'description': '查询告警中心中的告警。',
+            'description': '查询告警中心中的告警。注意：如果用户明确提到“链路追踪、Trace、调用链、tracing 里的服务”，不要使用本工具，必须改用 query_traces。',
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'level': {'type': 'string', 'enum': ['critical', 'warning', 'info']}, 'only_unacknowledged': {'type': 'boolean'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_events': {
@@ -3721,8 +4237,8 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_traces': {
-            'description': '查询链路追踪数据。',
-            'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'errors_only': {'type': 'boolean'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
+            'description': '查询链路追踪/Trace/调用链数据，支持 SkyWalking、Jaeger、Zipkin、Tempo 真实数据源。用户问“链路追踪里的服务 xxx 最近有没有异常/错误/慢调用”时必须使用本工具；query 只保留服务名或 traceId，例如 bcp-server@梧桐港-SaaS-PRO；有“异常/错误/失败”时 errors_only=true。',
+            'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'errors_only': {'type': 'boolean'}, 'duration_minutes': {'type': 'integer', 'minimum': 5, 'maximum': 1440}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_recent_changes': {
             'description': '查询最近发布与 IaC 变更。',
@@ -3783,6 +4299,18 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
                 'query': {'type': 'string'},
                 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10},
             },
+        },
+    }
+
+    catalog['query_alerts']['description'] += ' 如果用户明确提到“链路追踪、Trace、调用链、tracing 里的服务”，不要使用本工具，必须改用 query_traces。'
+    catalog['query_traces']['description'] = '查询链路追踪/Trace/调用链数据，支持 SkyWalking、Jaeger、Zipkin、Tempo 真实数据源。用户问“链路追踪里的服务 xxx 最近有没有异常/错误/慢调用”时必须使用本工具；query 只保留服务名或 traceId，例如 bcp-server@梧桐港-SaaS-PRO；有“异常/错误/失败”时 errors_only=true。'
+    catalog['query_traces']['parameters'] = {
+        'type': 'object',
+        'properties': {
+            'query': {'type': 'string', 'description': '服务名或 traceId，例如 bcp-server@梧桐港-SaaS-PRO。不要把“链路追踪、最近、有无异常”等描述词放进 query。'},
+            'errors_only': {'type': 'boolean'},
+            'duration_minutes': {'type': 'integer', 'minimum': 5, 'maximum': 1440},
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10},
         },
     }
 
@@ -3948,7 +4476,15 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
         result = query_logs(session, user_message, user, query=arguments.get('query', ''), limit=arguments.get('limit') or 6)
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_traces':
-        result = query_traces(session, user_message, user, query=arguments.get('query', ''), errors_only=bool(arguments.get('errors_only')), limit=arguments.get('limit') or 6)
+        result = query_traces(
+            session,
+            user_message,
+            user,
+            query=arguments.get('query', ''),
+            errors_only=bool(arguments.get('errors_only')),
+            limit=arguments.get('limit') or 6,
+            duration_minutes=arguments.get('duration_minutes') or 60,
+        )
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_recent_changes':
         result = query_recent_changes(session, user_message, user, limit=arguments.get('limit') or 5)
@@ -3991,22 +4527,61 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     config = get_agent_config()
     provider = get_active_provider(config)
     if not _provider_is_ready(provider):
+        setup_hint = get_model_provider_setup_hint(provider)
         emit(
             step={
                 'title': '未配置可用模型',
-                'detail': '请先在智能体配置中启用并测试默认模型提供商。',
+                'detail': setup_hint or '请先在智能体配置中启用并测试默认模型提供商。',
                 'status': PROCESSING_STATUS_FAILED,
             },
             text='当前没有可用模型',
         )
         return _build_dispatch_error_result(
-            '未配置可用模型，请先在“智能体配置 / 模型提供商”中启用并测试默认模型。',
+            setup_hint or '未配置可用模型，请先在“智能体配置 / 模型提供商”中启用并测试默认模型。',
             code='provider_unavailable',
             message='当前没有可用模型，无法发起问答。',
         )
 
     active_mcp_servers = _get_selected_mcp_servers(config)
     active_skills = _get_selected_skills(config, user=user)
+    if _is_trace_focused_question(question):
+        trace_arguments = {
+            'query': _extract_quoted_trace_query(question),
+            'errors_only': any(keyword in question for keyword in ['异常', '错误', '失败']),
+            'duration_minutes': 60 if '最近' in question else 30,
+            'limit': 10,
+        }
+        emit(
+            step={
+                'title': '链路追踪直连查询',
+                'detail': f"针对服务 {trace_arguments['query'] or '-'} 直接查询 Trace。",
+                'status': PROCESSING_STATUS_COMPLETED,
+            },
+            text='正在直连链路追踪查询',
+        )
+        tool_result = _run_tool_call(session, user_message, user, 'query_traces', trace_arguments)
+        citations = _dedupe_citations(tool_result.get('citations', []))
+        final_content = _ensure_followup_line(
+            _normalize_formatter_output(_build_fallback_answer(
+                tool_result.get('sections', []),
+                citations,
+                question=question,
+                collected_tool_outputs=[{'tool_name': 'query_traces', 'tool_output': tool_result.get('tool_output') or {}}],
+            )),
+            citations,
+        )
+        return {
+            'content': final_content,
+            'citations': citations,
+            'tool_calls': ['query_traces'],
+            'message_type': tool_result.get('message_type') or AIOpsChatMessage.TYPE_ANALYSIS,
+            'pending_action_draft': None,
+            'metadata': {
+                'execution_mode': 'trace_fastpath',
+                'formatter_mode': 'fallback',
+                'formatter_attempts': 0,
+            },
+        }
     tools, registry, managed_clients = _build_runtime_tool_registry(active_mcp_servers, user)
     if not tools:
         emit(
@@ -4032,11 +4607,6 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         text='\u6b63\u5728\u89c4\u5212\u5de5\u5177\u8c03\u7528',
     )
 
-    messages = [
-        {'role': 'system', 'content': _build_runtime_prompt(config, active_mcp_servers, active_skills, user)},
-        *_build_history_messages(session, config),
-    ]
-
     executed_tool_names = []
     sections = []
     citations = []
@@ -4044,6 +4614,16 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     message_type = AIOpsChatMessage.TYPE_TEXT
     final_content = ''
     collected_tool_outputs = []
+
+    messages = [
+        {'role': 'system', 'content': _build_runtime_prompt(config, active_mcp_servers, active_skills, user)},
+        *_build_history_messages(session, config),
+    ]
+    if any(keyword in question.lower() for keyword in ['链路追踪', '调用链', 'trace', 'tracing']):
+        messages.append({
+            'role': 'user',
+            'content': '路由约束：本问题明确限定在链路追踪/Trace/调用链中排查服务异常，必须调用 query_traces；不要改用 query_alerts。query 参数只传服务名或 traceId，若用户问异常/错误则 errors_only=true。',
+        })
 
     try:
         for round_index in range(6):
@@ -4152,6 +4732,31 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             },
             text='模型或工具调用失败',
         )
+        if sections or collected_tool_outputs:
+            citations = _dedupe_citations(citations)
+            final_content = _ensure_followup_line(
+                _normalize_formatter_output(_build_fallback_answer(
+                    sections,
+                    citations,
+                    pending_action_draft=pending_action_draft,
+                    question=question,
+                    collected_tool_outputs=collected_tool_outputs,
+                )),
+                citations,
+            )
+            return {
+                'content': final_content,
+                'citations': citations,
+                'tool_calls': executed_tool_names,
+                'message_type': message_type,
+                'pending_action_draft': pending_action_draft,
+                'metadata': {
+                    'execution_mode': 'mcp_skills',
+                    'formatter_mode': 'fallback',
+                    'formatter_attempts': 0,
+                    'fallback_reason': str(exc)[:300],
+                },
+            }
         return _build_dispatch_error_result(
             str(exc),
             code='runtime_error',

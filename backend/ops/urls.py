@@ -20,6 +20,7 @@ router.register(r'transaction-tickets', views.TransactionTicketViewSet, basename
 router.register(r'alerts', views.AlertViewSet)
 router.register(r'logs', views.LogEntryViewSet)
 router.register(r'log/datasources', log_views.LogDataSourceViewSet, basename='log-datasource')
+router.register(r'observability/tracing/datasources', observability_views.TracingDataSourceViewSet, basename='tracing-datasource')
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
 router.register(r'nginx/envs', nginx_views.NginxEnvironmentViewSet)
@@ -51,6 +52,7 @@ urlpatterns = [
     path('middleware/overview/', middleware_views.middleware_overview, name='middleware-overview'),
     path('middleware/action/', middleware_views.middleware_action, name='middleware-action'),
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),
+    path('observability/tracing/providers/', observability_views.tracing_providers, name='observability-tracing-providers'),
     path('observability/tracing/catalog/', observability_views.observability_tracing_catalog, name='observability-tracing-catalog'),
     path('observability/tracing/search/', observability_views.observability_tracing_search, name='observability-tracing-search'),
     path('observability/tracing/traces/<str:trace_id>/', observability_views.observability_trace_detail, name='observability-trace-detail'),
