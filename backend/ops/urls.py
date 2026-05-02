@@ -52,6 +52,7 @@ urlpatterns = [
     path('middleware/overview/', middleware_views.middleware_overview, name='middleware-overview'),
     path('middleware/action/', middleware_views.middleware_action, name='middleware-action'),
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),
+    path('observability/grafana/config/', observability_views.grafana_setting_view, name='observability-grafana-config'),
     path('observability/tracing/providers/', observability_views.tracing_providers, name='observability-tracing-providers'),
     path('observability/tracing/catalog/', observability_views.observability_tracing_catalog, name='observability-tracing-catalog'),
     path('observability/tracing/search/', observability_views.observability_tracing_search, name='observability-tracing-search'),

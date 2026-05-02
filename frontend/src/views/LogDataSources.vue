@@ -23,25 +23,6 @@
       </button>
     </div>
 
-    <div class="overview-grid">
-      <div class="overview-card warm">
-        <span>数据源总数</span>
-        <strong>{{ items.length }}</strong>
-      </div>
-      <div class="overview-card cool">
-        <span>启用中的数据源</span>
-        <strong>{{ enabledCount }}</strong>
-      </div>
-      <div class="overview-card accent">
-        <span>默认数据源</span>
-        <strong>{{ defaultCount }}</strong>
-      </div>
-      <div class="overview-card neutral">
-        <span>覆盖类型</span>
-        <strong>{{ providerCoverage }}</strong>
-      </div>
-    </div>
-
     <div class="table-card">
       <div class="table-head">
         <div class="filter-bar">
@@ -60,7 +41,7 @@
       </div>
 
       <el-table :data="filteredItems" v-loading="loading" stripe style="width: 100%">
-        <el-table-column prop="name" label="名称" min-width="180">
+        <el-table-column prop="name" label="名称" min-width="220">
           <template #default="{ row }">
             <div class="name-cell">
               <span class="name-text">{{ row.name }}</span>
@@ -269,9 +250,6 @@ function getProviderDefaults(provider) {
   return config
 }
 
-const enabledCount = computed(() => items.value.filter((item) => item.is_enabled).length)
-const defaultCount = computed(() => items.value.filter((item) => item.is_default).length)
-const providerCoverage = computed(() => new Set(items.value.map((item) => item.provider)).size)
 const filteredItems = computed(() => {
   return items.value.filter((item) => {
     if (providerFilter.value && item.provider !== providerFilter.value) return false
@@ -536,32 +514,6 @@ onMounted(async () => {
   box-shadow: 0 18px 36px rgba(15,23,42,.06);
 }
 
-.overview-grid {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.overview-card {
-  border-radius: 12px;
-  min-height: 72px;
-  padding: 10px 12px;
-}
-
-.overview-card span {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.overview-card strong {
-  font-size: 22px;
-}
-
-.overview-card.warm { background: linear-gradient(135deg, #fef3c7, #fdba74); }
-.overview-card.cool { background: linear-gradient(135deg, #dbeafe, #93c5fd); }
-.overview-card.accent { background: linear-gradient(135deg, #dcfce7, #86efac); }
-.overview-card.neutral { background: linear-gradient(135deg, #f1f5f9, #cbd5e1); }
-
 .name-cell {
   display: flex;
   align-items: center;
@@ -601,13 +553,9 @@ onMounted(async () => {
 
 @media (max-width: 960px) {
   .page-title-row { align-items: flex-start; }
-  .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .switch-row { flex-direction: column; gap: 12px; padding-left: 0; }
 }
 
-@media (max-width: 640px) {
-  .overview-grid { grid-template-columns: 1fr; }
-}
 .hero.panel { border-radius: 20px; }
 </style>
 

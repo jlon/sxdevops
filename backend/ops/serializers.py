@@ -10,6 +10,7 @@ from .models import (
     DeploymentApprovalNode,
     DeploymentApprovalStep,
     DockerHost,
+    GrafanaSetting,
     Host,
     HostTask,
     HostTaskExecution,
@@ -1052,6 +1053,37 @@ class TracingDataSourceSerializer(serializers.ModelSerializer):
                 masked[key] = value
         data['config'] = masked
         return data
+
+
+class GrafanaSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GrafanaSetting
+        fields = '__all__'
+        read_only_fields = ['name', 'updated_by', 'created_at', 'updated_at']
+
+    def validate_dashboards(self, value):
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('dashboards 必须为数组')
+        normalized = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise serializers.ValidationError('dashboards 中的每一项都必须为对象')
+            normalized.append(item)
+        return normalized
+
+    def validate_folders(self, value):
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('folders 必须为数组')
+        normalized = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise serializers.ValidationError('folders 中的每一项都必须为对象')
+            normalized.append(item)
+        return normalized
 
 
 class K8sClusterSerializer(serializers.ModelSerializer):

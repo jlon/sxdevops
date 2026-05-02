@@ -685,6 +685,25 @@ class TracingDataSource(models.Model):
         return f'{self.get_provider_display()} - {self.name}'
 
 
+class GrafanaSetting(models.Model):
+    name = models.CharField('配置名称', max_length=64, default='default', unique=True)
+    enabled = models.BooleanField('启用', default=True)
+    url = models.CharField('Grafana URL', max_length=255, blank=True, default='')
+    default_path = models.CharField('默认看板路径', max_length=255, blank=True, default='')
+    folders = models.JSONField('目录配置', default=list, blank=True)
+    dashboards = models.JSONField('看板配置', default=list, blank=True)
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = 'Grafana 配置'
+        verbose_name_plural = 'Grafana 配置'
+
+    def __str__(self):
+        return self.name
+
+
 class K8sCluster(models.Model):
     STATUS_CHOICES = [
         ('connected', '已连接'),

@@ -91,6 +91,8 @@ export const deleteLogDataSource = (id) => request.delete(`/log/datasources/${id
 export const testLogDataSource = (id) => request.post(`/log/datasources/${id}/test_connection/`)
 
 export const getObservabilityOverview = (params) => request.get('/observability/overview/', { params })
+export const getGrafanaConfig = () => request.get('/observability/grafana/config/')
+export const updateGrafanaConfig = (data) => request.put('/observability/grafana/config/', data)
 export const getTracingProviders = () => request.get('/observability/tracing/providers/')
 export const getTracingDataSources = (params) => request.get('/observability/tracing/datasources/', { params })
 export const createTracingDataSource = (data) => request.post('/observability/tracing/datasources/', data)

@@ -8,6 +8,12 @@
           <p class="page-desc inline-subtitle">{{ activeLogTab.description }}</p>
         </div>
       </div>
+      <div class="hero-actions">
+        <el-button size="small" @click="refreshLogDataSources" :loading="loadingSources || !!currentTab?.catalogLoading">
+          <el-icon><RefreshRight /></el-icon>
+          刷新数据源
+        </el-button>
+      </div>
     </section>
 
     <div class="neo-tabs theme-blue log-center-tabs">
@@ -28,10 +34,19 @@
     </el-empty>
 
     <template v-else>
-      <section class="panel tabs-panel">
-        <el-tabs v-model="activeTabName" type="card" editable @edit="handleTabsEdit">
-          <el-tab-pane v-for="tab in queryTabs" :key="tab.id" :name="tab.id" :label="tab.title" />
-        </el-tabs>
+      <section class="tabs-panel tabs-panel--session">
+        <div class="tabs-session-bar">
+          <el-tabs v-model="activeTabName" type="card" class="session-tabs" @tab-remove="removeQueryTab">
+            <el-tab-pane
+              v-for="tab in queryTabs"
+              :key="tab.id"
+              :name="tab.id"
+              :label="tab.title"
+              :closable="queryTabs.length > 1"
+            />
+          </el-tabs>
+          <el-button class="session-add-btn" size="small" type="primary" plain @click="addQueryTab">+ 新建查询</el-button>
+        </div>
       </section>
 
       <div v-if="currentTab" class="query-layout">
@@ -45,7 +60,6 @@
             <div class="toolbar-actions toolbar-actions--compact">
               <el-button size="small" @click="saveFavorite(currentTab)" :disabled="!currentTab.datasourceId">收藏</el-button>
               <el-button size="small" @click="savedDialogVisible = true">历史/收藏</el-button>
-              <el-button size="small" @click="loadCatalog(currentTab)" :loading="currentTab.catalogLoading">刷新数据源</el-button>
               <el-button size="small" type="primary" @click="runQuery(currentTab)" :loading="currentTab.queryLoading">查询日志</el-button>
             </div>
           </div>
@@ -220,7 +234,7 @@
       <section v-if="currentTab" class="panel chart-panel compact-panel">
         <div class="panel-head slim-head">
           <h3>趋势图</h3>
-          <span>{{ currentResults.logs.length ? '按时间聚合展示' : '暂无图表数据' }}</span>
+          <span class="panel-meta-text">{{ currentResults.logs.length ? '按时间聚合展示' : '暂无图表数据' }}</span>
         </div>
         <div ref="chartRef" class="chart"></div>
       </section>
@@ -229,12 +243,12 @@
         <div class="panel-head slim-head">
           <h3>查询结果</h3>
           <div class="result-tags">
-            <el-tag type="warning">总匹配 {{ currentResults.total || 0 }} 条</el-tag>
-            <el-tag type="success">已返回 {{ currentResults.logs.length }} 条</el-tag>
-            <el-tag type="primary" effect="plain">来源 {{ currentResults.source || '--' }}</el-tag>
-            <el-tag type="info" effect="plain">耗时 {{ currentResults.took_ms != null ? `${currentResults.took_ms} ms` : '--' }}</el-tag>
-            <el-tag type="danger" effect="plain">错误 {{ errorCount }}</el-tag>
-            <el-tag v-if="currentResults.progress" type="info">{{ currentResults.progress }}</el-tag>
+            <el-tag size="small" type="warning" effect="plain">总匹配 {{ currentResults.total || 0 }} 条</el-tag>
+            <el-tag size="small" type="success" effect="plain">已返回 {{ currentResults.logs.length }} 条</el-tag>
+            <el-tag size="small" type="primary" effect="plain">来源 {{ currentResults.source || '--' }}</el-tag>
+            <el-tag size="small" type="info" effect="plain">耗时 {{ currentResults.took_ms != null ? `${currentResults.took_ms} ms` : '--' }}</el-tag>
+            <el-tag size="small" type="danger" effect="plain">错误 {{ errorCount }}</el-tag>
+            <el-tag v-if="currentResults.progress" size="small" type="info" effect="plain">{{ currentResults.progress }}</el-tag>
           </div>
         </div>
         <el-alert v-if="currentTab.errorMessage" :title="currentTab.errorMessage" type="error" show-icon :closable="false" />
@@ -725,6 +739,13 @@ async function fetchDataSources() {
   }
 }
 
+async function refreshLogDataSources() {
+  await fetchDataSources()
+  if (currentTab.value?.datasourceId) {
+    await loadCatalog(currentTab.value)
+  }
+}
+
 function resetTabState(tab) {
   tab.sourceName = ''
   tab.queryText = ''
@@ -952,23 +973,22 @@ async function applySavedQuery(item) {
   ElMessage.success('已套用查询条件')
 }
 
-function handleTabsEdit(targetName, action) {
-  if (action === 'add') {
-    const base = currentTab.value
-      ? {
-          datasourceId: currentTab.value.datasourceId,
-          timeRange: currentTab.value.timeRange,
-          quickRange: currentTab.value.quickRange,
-          limit: currentTab.value.limit,
-        }
-      : { datasourceId: getPreferredDatasourceId() }
-    const tab = createQueryTab(base)
-    queryTabs.value.push(tab)
-    activeTabName.value = tab.id
-    prepareTab(tab)
-    return
-  }
+function addQueryTab() {
+  const base = currentTab.value
+    ? {
+        datasourceId: currentTab.value.datasourceId,
+        timeRange: currentTab.value.timeRange,
+        quickRange: currentTab.value.quickRange,
+        limit: currentTab.value.limit,
+      }
+    : { datasourceId: getPreferredDatasourceId() }
+  const tab = createQueryTab(base)
+  queryTabs.value.push(tab)
+  activeTabName.value = tab.id
+  prepareTab(tab)
+}
 
+function removeQueryTab(targetName) {
   if (queryTabs.value.length <= 1) return
   const index = queryTabs.value.findIndex((item) => item.id === targetName)
   if (index === -1) return
@@ -1339,6 +1359,13 @@ onUnmounted(() => {
   line-height: 1.1;
 }
 
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 
 .log-center-tabs {
   margin-bottom: 0;
@@ -1375,12 +1402,45 @@ onUnmounted(() => {
 }
 
 .tabs-panel {
-  padding: 10px 12px 4px;
+  padding: 0;
+}
+
+.tabs-panel--session {
+  margin-bottom: 2px;
+}
+
+.tabs-session-bar {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.76);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  border-radius: 14px 14px 0 0;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 4px 6px 2px;
+  box-shadow: inset 0 -1px 0 rgba(226, 232, 240, 0.72);
+}
+
+.session-tabs {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-add-btn {
+  border-color: rgba(191, 219, 254, 0.9);
+  border-radius: 9px;
+  color: #2563eb;
+  flex-shrink: 0;
+  margin-bottom: 2px;
+  min-height: 28px;
+  padding: 0 11px;
+  background: rgba(239, 246, 255, 0.88);
 }
 
 .query-layout {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   grid-template-columns: minmax(0, 1.82fr) minmax(280px, 0.78fr);
 }
 
@@ -1420,7 +1480,7 @@ onUnmounted(() => {
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   border: 1px solid rgba(15, 23, 42, 0.06);
   border-radius: 16px;
-  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.035);
   padding: 9px 11px;
 }
 
@@ -1663,23 +1723,35 @@ onUnmounted(() => {
 }
 
 .source-card {
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 12px;
+  padding: 7px 8px;
 }
 
 .compact-card {
-  background: linear-gradient(90deg, rgba(59, 130, 246, 0.08) 0%, rgba(14, 165, 233, 0.04) 100%);
-  border: 1px solid rgba(59, 130, 246, 0.14);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 250, 252, 0.92) 100%);
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .compact-info-panel {
-  padding: 9px 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(249, 250, 252, 0.92) 100%);
+  border-color: rgba(226, 232, 240, 0.8);
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.03);
+  padding: 8px 9px;
+}
+
+.compact-info-panel .panel-head h3 {
+  font-size: 14px;
 }
 
 .compact-source-card {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
+  padding: 2px 0 0;
 }
 
 .source-title-row {
@@ -1696,7 +1768,8 @@ onUnmounted(() => {
 
 .source-title {
   color: #0f172a;
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 600;
   line-height: 1.35;
   min-width: 0;
 }
@@ -1716,31 +1789,39 @@ onUnmounted(() => {
 
 .summary-list {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   margin-top: 0;
+  grid-template-columns: 1fr;
 }
 
 .summary-list--compact {
-  gap: 6px;
+  gap: 5px;
 }
 
 .summary-item {
-  background: rgba(255, 255, 255, 0.72);
-  border-radius: 10px;
-  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  border-radius: 9px;
+  min-height: 54px;
+  padding: 6px 8px;
 }
 
 .summary-item span {
   color: #64748b;
   display: block;
   font-size: 11px;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .summary-item strong {
   color: #0f172a;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.45;
   word-break: break-word;
+}
+
+.compact-info-panel :deep(.el-tag) {
+  border-radius: 999px;
 }
 
 .log-query-form :deep(.el-form-item) {
@@ -1815,6 +1896,53 @@ onUnmounted(() => {
   margin-top: -2px;
 }
 
+.tabs-panel :deep(.el-tabs__header) {
+  margin-bottom: 0;
+}
+
+.tabs-panel :deep(.el-tabs__nav-wrap::after) {
+  height: 0;
+}
+
+.tabs-panel :deep(.el-tabs__nav-scroll) {
+  padding-bottom: 1px;
+}
+
+.tabs-panel :deep(.el-tabs__nav) {
+  border: 0 !important;
+}
+
+.tabs-panel :deep(.el-tabs__item) {
+  height: 29px;
+  line-height: 29px;
+  padding: 0 11px;
+  font-size: 12px;
+  border-radius: 9px;
+  margin-right: 4px;
+}
+
+.tabs-panel :deep(.el-tabs__item.is-top) {
+  background: rgba(248, 250, 252, 0.9);
+  border-color: transparent;
+  color: #64748b;
+}
+
+.tabs-panel :deep(.el-tabs__item.is-top.is-active) {
+  background: rgba(239, 246, 255, 0.96);
+  border-color: rgba(191, 219, 254, 0.92);
+  color: #2563eb;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.08);
+}
+
+.tabs-panel :deep(.el-tabs__item.is-top:hover) {
+  color: #2563eb;
+}
+
+.tabs-panel :deep(.el-icon-close) {
+  margin-left: 5px;
+  color: #94a3b8;
+}
+
 .query-pill {
   background: rgba(248, 250, 252, 0.82);
   border: 1px solid rgba(226, 232, 240, 0.92);
@@ -1827,36 +1955,73 @@ onUnmounted(() => {
 }
 
 .compact-panel {
-  padding-top: 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(249, 250, 252, 0.94) 100%);
+  border-color: rgba(226, 232, 240, 0.82);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
+  padding: 8px 10px 10px;
+}
+
+.compact-panel .panel-head {
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.compact-panel .panel-head h3 {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+.panel-meta-text {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .chart {
-  height: 112px;
+  height: 108px;
 }
 
 .compact-empty {
-  min-height: 92px;
+  min-height: 84px;
 }
 
 .log-list {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.compact-log-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  gap: 0;
   overflow: hidden;
 }
 
+.compact-log-card {
+  background: transparent;
+  border: 0;
+  border-top: 1px solid rgba(226, 232, 240, 0.86);
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.compact-log-card:first-child {
+  border-top: 0;
+}
+
 .compact-log-main {
-  background: #fff;
+  background: transparent;
   border: 0;
   cursor: pointer;
-  padding: 7px 10px;
+  padding: 8px 10px 8px 11px;
   text-align: left;
+  transition: background-color .18s ease;
   width: 100%;
+}
+
+.compact-log-main:hover {
+  background: rgba(248, 250, 252, 0.88);
 }
 
 .log-head-row {
@@ -1864,20 +2029,24 @@ onUnmounted(() => {
   display: flex;
   gap: 8px;
   justify-content: space-between;
-  margin-bottom: 3px;
+  margin-bottom: 4px;
 }
 
 .log-meta-inline {
   align-items: center;
   display: flex;
-  gap: 4px;
+  gap: 5px;
   flex-wrap: wrap;
+}
+
+.log-meta-inline :deep(.el-tag) {
+  border-radius: 999px;
 }
 
 .inline-message {
   color: #0f172a;
   font-size: 12px;
-  line-height: 1.42;
+  line-height: 1.5;
   overflow: hidden;
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -1895,12 +2064,24 @@ onUnmounted(() => {
 .expand-text {
   flex-shrink: 0;
   font-size: 11px;
+  transition: color .18s ease;
+}
+
+.compact-log-main:hover .expand-text {
+  color: #2563eb;
 }
 
 .result-tags {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
+}
+
+.result-tags :deep(.el-tag) {
+  border-radius: 999px;
+  font-size: 11px;
+  min-height: 22px;
+  padding: 0 8px;
 }
 
 .saved-tabs :deep(.el-tabs__header) {
@@ -2015,30 +2196,30 @@ onUnmounted(() => {
 }
 
 .compact-detail {
-  background: #f8fafc;
-  border-top: 1px solid #e2e8f0;
-  padding: 9px 10px;
+  background: rgba(248, 250, 252, 0.82);
+  border-top: 1px solid rgba(226, 232, 240, 0.82);
+  padding: 8px 10px 9px;
 }
 
 .detail-actions {
-  margin-bottom: 6px;
+  margin-bottom: 5px;
 }
 
 .compact-grid {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-bottom: 6px;
+  margin-bottom: 5px;
 }
 
 .compact-attr {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(226, 232, 240, 0.88);
+  border-radius: 9px;
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 7px 9px;
+  padding: 6px 8px;
 }
 
 .compact-attr span {
@@ -2095,7 +2276,8 @@ pre {
 
   .log-filter-datasource-row,
   .log-inline-filter,
-  .source-title-row {
+  .source-title-row,
+  .summary-list {
     align-items: stretch;
     grid-template-columns: 1fr;
   }
@@ -2108,6 +2290,17 @@ pre {
   .field-label-with-help {
     flex-wrap: wrap;
     white-space: normal;
+  }
+
+  .tabs-session-bar {
+    align-items: stretch;
+    flex-direction: column;
+    padding-bottom: 8px;
+  }
+
+  .session-add-btn {
+    margin-bottom: 0;
+    width: 100%;
   }
 
   .log-query-form :deep(.el-form-item__label) {

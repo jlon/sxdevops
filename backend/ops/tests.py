@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
-from ops.models import Alert, DockerHost, Host, K8sCluster, K8sConfigRevision
+from ops.models import Alert, DockerHost, GrafanaSetting, Host, K8sCluster, K8sConfigRevision
 
 
 TEST_LOG_PROVIDER_CONFIGS = {
@@ -523,6 +523,165 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['modules']['grafana']['dashboard_count'], 1)
         self.assertEqual(payload['modules']['grafana']['dashboards'][0]['key'], 'custom-trace')
         self.assertEqual(payload['modules']['grafana']['dashboards'][0]['url'], 'http://grafana.example.com/d/custom-trace')
+
+    def test_grafana_config_endpoint_returns_defaults_when_not_persisted(self):
+        response = self.client.get('/api/observability/grafana/config/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload['persisted'])
+        self.assertEqual(payload['url'], 'http://grafana.example.com')
+        self.assertEqual(payload['default_path'], '/d/apm-overview')
+        self.assertEqual(payload['folders'], [])
+        self.assertGreaterEqual(len(payload['dashboards']), 1)
+
+    def test_grafana_config_endpoint_can_persist_page_config(self):
+        response = self.client.put(
+            '/api/observability/grafana/config/',
+            {
+                'enabled': True,
+                'url': '',
+                'default_path': '',
+                'folders': [
+                    {'path': '基础设施', 'folder_collapsed': False},
+                    {'path': '基础设施/节点', 'folder_collapsed': True},
+                ],
+                'dashboards': [
+                    {
+                        'key': 'infra-overview',
+                        'title': '基础设施总览',
+                        'slug': 'infra-overview',
+                        'description': '基础设施看板',
+                        'folder': '基础设施',
+                        'path': '',
+                        'full_url': 'http://grafana.internal.local/d/infra-overview',
+                        'panel_count': 12,
+                        'tags': ['infra'],
+                    }
+                ],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['persisted'])
+        self.assertEqual(payload['url'], '')
+        self.assertEqual(payload['default_path'], '')
+        self.assertEqual(len(payload['folders']), 2)
+        self.assertEqual(payload['folders'][1]['path'], '基础设施/节点')
+
+        setting = GrafanaSetting.objects.get(name='default')
+        self.assertEqual(setting.url, '')
+        self.assertEqual(setting.default_path, '')
+        self.assertEqual(setting.folders[0]['path'], '基础设施')
+        self.assertEqual(setting.dashboards[0]['folder'], '基础设施')
+        self.assertEqual(setting.updated_by, 'observer-admin')
+
+    def test_observability_overview_prefers_persisted_grafana_setting(self):
+        GrafanaSetting.objects.create(
+            name='default',
+            enabled=True,
+            url='http://grafana.persisted.example.com',
+            default_path='/d/persisted-overview',
+            dashboards=[
+                {
+                    'key': 'persisted-overview',
+                    'title': '持久化看板',
+                    'slug': 'persisted-overview',
+                    'path': '/d/persisted-overview',
+                    'panel_count': 8,
+                    'tags': ['ops'],
+                    'description': '来自页面保存的 Grafana 配置',
+                }
+            ],
+            updated_by='observer-admin',
+        )
+
+        response = self.client.get('/api/observability/overview/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['modules']['grafana']['url'], 'http://grafana.persisted.example.com')
+        self.assertEqual(payload['modules']['grafana']['dashboards'][0]['key'], 'persisted-overview')
+        self.assertEqual(
+            payload['modules']['grafana']['dashboards'][0]['url'],
+            'http://grafana.persisted.example.com/d/persisted-overview',
+        )
+
+    def test_observability_overview_uses_dashboard_full_url_when_provided(self):
+        GrafanaSetting.objects.create(
+            name='default',
+            enabled=True,
+            url='',
+            default_path='',
+            dashboards=[
+                {
+                    'key': 'nightingale-style',
+                    'title': '夜莺式看板',
+                    'slug': 'nightingale-style',
+                    'path': '',
+                    'full_url': 'http://47.95.15.209:3000/d/custom-board?orgId=1&kiosk=true',
+                    'panel_count': 9,
+                    'tags': ['容器', '全局'],
+                    'description': '直接写完整 Grafana 链接',
+                }
+            ],
+            updated_by='observer-admin',
+        )
+
+        response = self.client.get('/api/observability/overview/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['modules']['grafana']['configured'])
+        self.assertEqual(
+            payload['modules']['grafana']['dashboards'][0]['url'],
+            'http://47.95.15.209:3000/d/custom-board?orgId=1&kiosk=true',
+        )
+        self.assertEqual(
+            payload['modules']['grafana']['dashboards'][0]['full_url'],
+            'http://47.95.15.209:3000/d/custom-board?orgId=1&kiosk=true',
+        )
+        self.assertEqual(
+            payload['modules']['grafana']['embed_url'],
+            'http://47.95.15.209:3000/d/custom-board?orgId=1&kiosk=true',
+        )
+
+    def test_observability_overview_returns_configured_grafana_folders(self):
+        GrafanaSetting.objects.create(
+            name='default',
+            enabled=True,
+            url='',
+            default_path='',
+            folders=[
+                {'path': '基础设施', 'folder_collapsed': False},
+                {'path': '基础设施/节点', 'folder_collapsed': True},
+                {'path': '应用服务', 'folder_collapsed': False},
+            ],
+            dashboards=[
+                {
+                    'key': 'node-overview',
+                    'title': '节点总览',
+                    'slug': 'node-overview',
+                    'folder': '基础设施/节点',
+                    'path': '',
+                    'full_url': 'http://grafana.example.com/d/node-overview',
+                    'panel_count': 6,
+                    'tags': ['node'],
+                    'description': '节点资源看板',
+                }
+            ],
+            updated_by='observer-admin',
+        )
+
+        response = self.client.get('/api/observability/overview/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload['modules']['grafana']['folders']), 3)
+        self.assertEqual(payload['modules']['grafana']['folders'][1]['path'], '基础设施/节点')
+        self.assertEqual(payload['modules']['grafana']['dashboards'][0]['folder'], '基础设施/节点')
 
     @patch('ops.tracing_providers.http_requests.post')
     def test_tracing_catalog_uses_skywalking_graphql_when_configured(self, mock_post):

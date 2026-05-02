@@ -46,108 +46,142 @@
     </div>
 
     <template v-if="activeTraceTab === 'traces' && canViewTrace">
-    <section class="panel trace-query-unified-card">
-      <div class="trace-query-unified-head">
-        <div class="trace-query-title-block">
-          <div class="trace-query-title-row">
-            <h3>Trace 查询</h3>
+    <div class="trace-query-layout">
+      <section class="panel trace-query-unified-card">
+        <div class="trace-query-unified-head">
+          <div class="trace-query-title-block">
+            <div class="trace-query-title-row">
+              <h3>Trace 查询</h3>
+            </div>
           </div>
-        </div>
-      </div>
-
-      <div class="trace-query-unified-body">
-        <div class="trace-query-provider-strip">
-          <div class="trace-filter-datasource-row">
-            <span class="trace-query-provider-label">数据源</span>
-            <el-select
-              v-model="filters.datasourceId"
-              class="search-control trace-datasource-control"
-              size="small"
-              clearable
-              filterable
-              placeholder="选择当前 Provider 下的数据源"
-              :disabled="!canViewTraceDataSources || !filteredTracingDataSources.length"
-              @change="changeDataSource"
-            >
-              <el-option
-                v-for="item in filteredTracingDataSources"
-                :key="item.id"
-                :label="`${item.name}${item.is_default ? '（默认）' : ''}（${providerNameByKey(item.provider)}）`"
-                :value="String(item.id)"
-              />
-            </el-select>
+          <div class="trace-query-actions">
+            <el-button size="small" type="primary" class="search-action-primary" @click="runSearch()" :loading="loading.search">查询 Trace</el-button>
+            <el-button size="small" plain class="search-action-secondary" @click="resetFilters">重置</el-button>
           </div>
         </div>
 
-        <div class="search-panel search-panel--merged">
-          <div class="trace-filter-service-row">
-            <div class="trace-filter-grid trace-filter-grid--primary">
-              <div class="trace-inline-filter">
-                <span class="trace-inline-filter__label">服务</span>
-                <el-select v-model="filters.serviceId" class="search-control" size="small" clearable filterable placeholder="选择服务">
-                  <el-option v-for="item in services" :key="item.id" :label="item.name" :value="item.id" />
+        <div class="trace-query-unified-body">
+          <div class="trace-query-provider-strip">
+            <div class="trace-filter-datasource-row">
+              <span class="trace-query-provider-label">数据源</span>
+              <el-select
+                v-model="filters.datasourceId"
+                class="search-control trace-datasource-control"
+                size="small"
+                clearable
+                filterable
+                placeholder="选择当前 Provider 下的数据源"
+                :disabled="!canViewTraceDataSources || !filteredTracingDataSources.length"
+                @change="changeDataSource"
+              >
+                <el-option
+                  v-for="item in filteredTracingDataSources"
+                  :key="item.id"
+                  :label="`${item.name}${item.is_default ? '（默认）' : ''}（${providerNameByKey(item.provider)}）`"
+                  :value="String(item.id)"
+                />
+              </el-select>
+            </div>
+          </div>
+
+          <div class="search-panel search-panel--merged">
+            <div class="trace-filter-service-row">
+              <div class="trace-filter-grid trace-filter-grid--primary">
+                <div class="trace-inline-filter">
+                  <span class="trace-inline-filter__label">服务</span>
+                  <el-select v-model="filters.serviceId" class="search-control" size="small" clearable filterable placeholder="选择服务">
+                    <el-option v-for="item in services" :key="item.id" :label="item.name" :value="item.id" />
+                  </el-select>
+                </div>
+                <div class="trace-inline-filter">
+                  <span class="trace-inline-filter__label">Trace</span>
+                  <el-input class="search-control" size="small" v-model.trim="filters.traceId" placeholder="输入 Trace ID 直达" clearable />
+                </div>
+                <div class="trace-inline-filter">
+                  <span class="trace-inline-filter__label">关键字</span>
+                  <el-input class="search-control" size="small" v-model.trim="filters.keyword" placeholder="接口 / 服务名 / 关键字" clearable />
+                </div>
+                <div class="trace-inline-filter trace-inline-filter--compact">
+                  <span class="trace-inline-filter__label">数量</span>
+                  <el-input-number class="search-number advanced-filter-control advanced-filter-number" size="small" v-model="filters.limit" :min="5" :max="50" :step="5" />
+                </div>
+              </div>
+            </div>
+
+            <div class="trace-filter-grid trace-filter-grid--advanced trace-filter-grid--toolbar">
+              <div class="trace-inline-filter trace-inline-filter--compact">
+                <span class="trace-inline-filter__label">状态</span>
+                <el-select v-model="filters.traceState" class="search-control advanced-filter-control" size="small" placeholder="全部状态">
+                  <el-option label="全部状态" value="ALL" />
+                  <el-option label="正常链路" value="SUCCESS" />
+                  <el-option label="错误链路" value="ERROR" />
                 </el-select>
               </div>
-              <div class="trace-inline-filter">
-                <span class="trace-inline-filter__label">Trace</span>
-                <el-input class="search-control" size="small" v-model.trim="filters.traceId" placeholder="输入 Trace ID 直达" clearable />
-              </div>
-              <div class="trace-inline-filter">
-                <span class="trace-inline-filter__label">关键字</span>
-                <el-input class="search-control" size="small" v-model.trim="filters.keyword" placeholder="接口 / 服务名 / 关键字" clearable />
-              </div>
               <div class="trace-inline-filter trace-inline-filter--compact">
-                <span class="trace-inline-filter__label">数量</span>
-                <el-input-number class="search-number advanced-filter-control advanced-filter-number" size="small" v-model="filters.limit" :min="5" :max="50" :step="5" />
+                <span class="trace-inline-filter__label">排序</span>
+                <el-select v-model="filters.sortBy" class="search-control advanced-filter-control" size="small" placeholder="最近开始">
+                  <el-option label="最近开始" value="latest" />
+                  <el-option label="最慢优先" value="slowest" />
+                  <el-option label="错误优先" value="errors" />
+                </el-select>
+              </div>
+              <div class="trace-inline-filter trace-inline-filter--time">
+                <span class="trace-inline-filter__label">时间</span>
+                <el-date-picker
+                  v-model="filters.timeRange"
+                  class="search-control time-range-picker advanced-filter-time"
+                  size="small"
+                  type="datetimerange"
+                  range-separator="至"
+                  start-placeholder="开始"
+                  end-placeholder="结束"
+                  format="YYYY-MM-DD HH:mm"
+                  unlink-panels
+                  :shortcuts="timeRangeShortcuts"
+                />
               </div>
             </div>
-          </div>
-          <div class="trace-filter-grid trace-filter-grid--advanced trace-filter-grid--toolbar">
-            <div class="trace-inline-filter trace-inline-filter--compact">
-              <span class="trace-inline-filter__label">状态</span>
-              <el-select v-model="filters.traceState" class="search-control advanced-filter-control" size="small" placeholder="全部状态">
-                <el-option label="全部状态" value="ALL" />
-                <el-option label="正常链路" value="SUCCESS" />
-                <el-option label="错误链路" value="ERROR" />
-              </el-select>
-            </div>
-            <div class="trace-inline-filter trace-inline-filter--compact">
-              <span class="trace-inline-filter__label">排序</span>
-              <el-select v-model="filters.sortBy" class="search-control advanced-filter-control" size="small" placeholder="最近开始">
-                <el-option label="最近开始" value="latest" />
-                <el-option label="最慢优先" value="slowest" />
-                <el-option label="错误优先" value="errors" />
-              </el-select>
-            </div>
-            <div class="trace-inline-filter trace-inline-filter--time">
-              <span class="trace-inline-filter__label">时间</span>
-              <el-date-picker
-                v-model="filters.timeRange"
-                class="search-control time-range-picker advanced-filter-time"
-                size="small"
-                type="datetimerange"
-                range-separator="至"
-                start-placeholder="开始"
-                end-placeholder="结束"
-                format="YYYY-MM-DD HH:mm"
-                unlink-panels
-                :shortcuts="timeRangeShortcuts"
-              />
-            </div>
-            <div class="trace-filter-actions">
-              <el-button size="small" type="primary" class="search-action-primary" @click="runSearch()" :loading="loading.search">查询 Trace</el-button>
-              <el-button size="small" plain class="search-action-secondary" @click="resetFilters">重置</el-button>
-            </div>
-          </div>
 
-          <div class="search-summary-bar trace-query-summary-bar">
-            <span v-for="item in searchPanelSummary" :key="item.label" class="query-pill">
-              {{ item.label }}：{{ item.value }}
-            </span>
+            <div class="search-summary-bar trace-query-summary-bar">
+              <span v-for="item in searchPanelSummary" :key="item.label" class="query-pill">
+                {{ item.label }}：{{ item.value }}
+              </span>
+            </div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
+
+      <section class="panel trace-info-panel compact-info-panel">
+        <div class="section-head trace-info-head">
+          <h3>当前数据源</h3>
+          <el-tag v-if="selectedTracingDataSource" size="small" :type="traceProviderTagType(selectedTracingDataSource.provider)">
+            {{ providerNameByKey(selectedTracingDataSource.provider) }}
+          </el-tag>
+        </div>
+
+        <div v-if="selectedTracingDataSource" class="trace-source-card">
+          <div class="trace-source-title-row">
+            <strong class="trace-source-title">{{ selectedTracingDataSource.name }}</strong>
+            <div class="trace-source-tags">
+              <el-tag size="small" :type="selectedTracingDataSource.is_enabled ? 'success' : 'info'">
+                {{ selectedTracingDataSource.is_enabled ? '启用' : '停用' }}
+              </el-tag>
+              <el-tag v-if="selectedTracingDataSource.is_default" size="small" type="warning">默认</el-tag>
+            </div>
+          </div>
+          <div v-if="selectedTracingDataSource.description" class="trace-source-desc">
+            {{ selectedTracingDataSource.description }}
+          </div>
+          <div class="trace-summary-list">
+            <div v-for="item in traceDatasourceSummary" :key="item.label" class="trace-summary-item">
+              <span>{{ item.label }}</span>
+              <strong :class="{ 'is-multiline': item.multiline }" :title="item.multiline ? undefined : item.value">{{ item.value }}</strong>
+            </div>
+          </div>
+        </div>
+        <el-empty v-else description="当前还未选择链路数据源" :image-size="72" />
+      </section>
+    </div>
 
     <section class="panel">
       <div class="section-head">
@@ -659,6 +693,19 @@ const searchPanelSummary = computed(() => {
   return items
 })
 
+const traceDatasourceSummary = computed(() => {
+  const datasource = selectedTracingDataSource.value
+  if (!datasource) return []
+  const config = datasource.config || {}
+  const items = [
+    { label: '连接地址', value: formatDatasourceSummaryLines(datasource), multiline: true },
+  ]
+  if (datasource.provider === 'skywalking' && config.default_layer) {
+    items.push({ label: '默认 Layer', value: config.default_layer })
+  }
+  return items
+})
+
 const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
 const canViewTrace = computed(() => authStore.hasPermission('ops.trace.view'))
 const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
@@ -1025,8 +1072,23 @@ function formatDatasourceSummary(row) {
   return [config.query_url, config.ui_url].filter(Boolean).join(' / ') || '未配置查询地址'
 }
 
+function formatDatasourceSummaryLines(row) {
+  const config = row?.config || {}
+  if (row?.provider === 'skywalking') return [config.oap_url, config.ui_url].filter(Boolean).join('\n') || '未配置 SkyWalking 地址'
+  return [config.query_url, config.ui_url].filter(Boolean).join('\n') || '未配置查询地址'
+}
+
 function providerNameByKey(provider) {
   return providers.value.find((item) => item.provider === provider)?.provider_name || provider || '--'
+}
+
+function traceProviderTagType(provider) {
+  return {
+    skywalking: 'success',
+    tempo: 'warning',
+    jaeger: 'primary',
+    zipkin: 'info',
+  }[provider] || 'info'
 }
 
 function traceServiceName(row) {
@@ -1715,6 +1777,13 @@ onUnmounted(() => {
   margin: 0;
 }
 
+.trace-query-layout {
+  align-items: stretch;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1.76fr) minmax(282px, 0.75fr);
+}
+
 .trace-query-unified-card {
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   border: 1px solid rgba(15, 23, 42, 0.06);
@@ -1751,6 +1820,100 @@ onUnmounted(() => {
   font-size: 14px;
   letter-spacing: 0.01em;
   margin: 0;
+}
+
+.trace-query-actions {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.trace-info-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(249, 250, 252, 0.94) 100%);
+  border-color: rgba(226, 232, 240, 0.84);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 9px 10px;
+}
+
+.trace-info-head {
+  margin-bottom: 6px;
+}
+
+.trace-source-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trace-source-title-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.trace-source-title {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.trace-source-tags {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.trace-source-desc {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.trace-summary-list {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: 1fr;
+}
+
+.trace-summary-item {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(226, 232, 240, 0.88);
+  border-radius: 9px;
+  min-height: 54px;
+  padding: 6px 8px;
+}
+
+.trace-summary-item span {
+  color: #64748b;
+  display: block;
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+
+.trace-summary-item strong {
+  color: #0f172a;
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-summary-item strong.is-multiline {
+  overflow: visible;
+  text-overflow: initial;
+  white-space: pre-line;
+  word-break: break-all;
 }
 
 .trace-query-unified-body {
@@ -1893,19 +2056,18 @@ onUnmounted(() => {
 .trace-filter-grid--primary {
   align-items: center;
   column-gap: 8px;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr) minmax(0, 1.16fr) minmax(118px, 0.44fr);
+  grid-template-columns: minmax(0, 0.94fr) minmax(182px, 0.78fr) minmax(188px, 0.82fr) minmax(118px, 0.42fr);
 }
 
 .trace-filter-grid--advanced {
   align-items: center;
   column-gap: 8px;
-  grid-template-columns: minmax(146px, 0.44fr) minmax(146px, 0.44fr) minmax(360px, 1fr) auto;
+  grid-template-columns: minmax(146px, 0.44fr) minmax(146px, 0.44fr) minmax(360px, 1fr);
   margin-top: 7px;
 }
 
 .trace-filter-grid--toolbar {
   align-items: center;
-  justify-content: flex-start;
   padding: 0;
 }
 
@@ -1920,25 +2082,6 @@ onUnmounted(() => {
 .advanced-filter-time {
   min-width: 0;
   width: 100%;
-}
-
-.trace-filter-actions {
-  align-items: center;
-  background: rgba(248, 250, 252, 0.92);
-  border: 1px solid rgba(226, 232, 240, 0.96);
-  border-radius: 10px;
-  display: flex;
-  gap: 4px;
-  justify-content: flex-end;
-  justify-self: end;
-  min-height: 30px;
-  padding: 3px;
-  white-space: nowrap;
-  width: auto;
-}
-
-.trace-filter-actions .el-button + .el-button {
-  margin-left: 0;
 }
 
 .search-control :deep(.el-select__wrapper),
@@ -2943,12 +3086,16 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1460px) {
+  .trace-query-layout {
+    grid-template-columns: minmax(0, 1.65fr) minmax(260px, 0.69fr);
+  }
+
   .trace-filter-grid--primary {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.04fr) minmax(110px, 0.4fr);
+    grid-template-columns: minmax(0, 0.92fr) minmax(172px, 0.74fr) minmax(180px, 0.78fr) minmax(112px, 0.38fr);
   }
 
   .trace-filter-grid--advanced {
-    grid-template-columns: minmax(132px, 0.42fr) minmax(132px, 0.42fr) minmax(300px, 1fr) auto;
+    grid-template-columns: minmax(132px, 0.42fr) minmax(132px, 0.42fr) minmax(300px, 1fr);
   }
 
   .search-action-primary {
@@ -2982,13 +3129,8 @@ onUnmounted(() => {
     width: auto;
   }
 
-  .trace-filter-actions {
-    border-left: 0;
-    justify-content: flex-start;
-    padding-left: 0;
-  }
-
   .trace-header-card,
+  .trace-query-layout,
   .content-grid,
   .topology-layout {
     grid-template-columns: 1fr;
@@ -3045,6 +3187,11 @@ onUnmounted(() => {
     grid-template-columns: 1fr;
   }
 
+  .trace-source-title-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .trace-filter-grid--toolbar {
     align-items: stretch;
   }
@@ -3065,9 +3212,8 @@ onUnmounted(() => {
     width: 100%;
   }
 
-  .trace-filter-actions {
-    gap: 6px;
-    margin-left: 0;
+  .trace-query-actions {
+    justify-content: flex-start;
     width: 100%;
   }
 

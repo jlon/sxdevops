@@ -12,8 +12,8 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
-from .models import Alert, LogDataSource, TracingDataSource
-from .serializers import AlertSerializer, TracingDataSourceSerializer
+from .models import Alert, GrafanaSetting, LogDataSource, TracingDataSource
+from .serializers import AlertSerializer, GrafanaSettingSerializer, TracingDataSourceSerializer
 from .tracing_providers import (
     DEMO_TRACES,
     ObservabilityError,
@@ -77,35 +77,56 @@ def _grafana_config():
     config.setdefault('url', '')
     config.setdefault('default_path', '')
     config.setdefault('demo_mode', True)
+    config.setdefault('folders', [])
+    config.setdefault('dashboards', [])
+    db_config = _get_grafana_setting()
+    if db_config:
+        config.update({
+            'enabled': db_config.enabled,
+            'url': db_config.url,
+            'default_path': db_config.default_path,
+            'folders': db_config.folders or config.get('folders') or [],
+            'dashboards': db_config.dashboards or config.get('dashboards') or [],
+        })
     return config
+
+
+def _get_grafana_setting():
+    return GrafanaSetting.objects.filter(name='default').first()
 
 
 def _grafana_meta():
     config = _grafana_config()
     configured_dashboards = config.get('dashboards') or DEMO_GRAFANA_DASHBOARDS
+    configured_folders = config.get('folders') or []
     dashboards = []
     base_url = config.get('url') or ''
     default_path = (config.get('default_path') or '').strip()
     for item in configured_dashboards:
+        full_url = (item.get('full_url') or item.get('url') or '').strip()
         item_path = (item.get('path') or '').strip()
         slug = item.get('slug') or item.get('key') or ''
         path = item_path or default_path or (f"/d/{quote(slug)}" if slug else '')
+        resolved_url = full_url or (_join_external_url(base_url, path) if base_url and path else base_url)
         dashboards.append({
             **item,
             'path': path,
-            'url': _join_external_url(base_url, path) if base_url and path else base_url,
+            'full_url': full_url,
+            'url': resolved_url,
         })
-    configured = bool(config.get('enabled') and base_url)
+    has_dashboard_url = any(item.get('url') for item in dashboards)
+    configured = bool(config.get('enabled') and (base_url or has_dashboard_url))
     return {
         'enabled': bool(config.get('enabled')),
         'configured': configured,
         'source': 'grafana' if configured else 'demo',
         'status_text': '已接入 Grafana' if configured else '未配置外部地址，当前展示推荐看板',
         'url': base_url,
-        'embed_url': _join_external_url(base_url, default_path) if configured and default_path else base_url,
+        'embed_url': _join_external_url(base_url, default_path) if base_url and default_path else (dashboards[0]['url'] if dashboards else base_url),
         'dashboard_count': len(dashboards),
         'panel_count': sum(item['panel_count'] for item in dashboards),
         'datasource_count': 4,
+        'folders': configured_folders,
         'dashboards': dashboards,
     }
 
@@ -244,6 +265,53 @@ class TracingDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.trace.datasource.view')])
 def tracing_providers(request):
     return Response({'providers': tracing_provider_info()})
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.grafana.view')])
+def grafana_setting_view(request):
+    instance = _get_grafana_setting()
+    if request.method == 'GET':
+        config = _grafana_config()
+        payload = {
+            'id': instance.id if instance else None,
+            'name': instance.name if instance else 'default',
+            'enabled': bool(config.get('enabled')),
+            'url': config.get('url') or '',
+            'default_path': config.get('default_path') or '',
+            'folders': config.get('folders') or [],
+            'dashboards': config.get('dashboards') or DEMO_GRAFANA_DASHBOARDS,
+            'updated_by': instance.updated_by if instance else '',
+            'created_at': instance.created_at if instance else None,
+            'updated_at': instance.updated_at if instance else None,
+            'persisted': bool(instance),
+        }
+        return Response(payload)
+
+    if not user_has_permissions(request.user, ['ops.grafana.manage']):
+        return Response({'detail': '缺少 ops.grafana.manage 权限'}, status=status.HTTP_403_FORBIDDEN)
+
+    if instance is None:
+        instance = GrafanaSetting(name='default')
+    serializer = GrafanaSettingSerializer(instance=instance, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    saved = serializer.save(updated_by=request.user.username)
+    record_event(
+        request=request,
+        module='ops',
+        category='configuration',
+        action='update_grafana_setting',
+        title='更新 Grafana 配置',
+        summary='已更新监控看板接入配置',
+        resource_type='grafana_setting',
+        resource_id=saved.id,
+        resource_name=saved.name,
+        correlation_id=f'grafana-setting:{saved.id}',
+        metadata={'url': saved.url, 'enabled': saved.enabled, 'default_path': saved.default_path},
+    )
+    response_data = GrafanaSettingSerializer(saved).data
+    response_data['persisted'] = True
+    return Response(response_data)
 
 
 @api_view(['GET'])
