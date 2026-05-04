@@ -91,6 +91,11 @@ export const deleteLogDataSource = (id) => request.delete(`/log/datasources/${id
 export const testLogDataSource = (id) => request.post(`/log/datasources/${id}/test_connection/`)
 
 export const getObservabilityOverview = (params) => request.get('/observability/overview/', { params })
+export const getObservabilityFireMap = (params) => request.get('/observability/fire-map/', { params })
+export const getFireMapSystems = (params) => request.get('/observability/fire-map/systems/', { params })
+export const createFireMapSystem = (data) => request.post('/observability/fire-map/systems/', data)
+export const updateFireMapSystem = (id, data) => request.put(`/observability/fire-map/systems/${id}/`, data)
+export const deleteFireMapSystem = (id) => request.delete(`/observability/fire-map/systems/${id}/`)
 export const getObservabilityDataSourceLinks = (params) => request.get('/observability/datasource-links/', { params })
 export const createObservabilityDataSourceLink = (data) => request.post('/observability/datasource-links/', data)
 export const updateObservabilityDataSourceLink = (id, data) => request.put(`/observability/datasource-links/${id}/`, data)

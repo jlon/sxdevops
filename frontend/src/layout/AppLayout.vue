@@ -323,6 +323,7 @@ const menuItems = [
     title: '可观测性',
     icon: 'DataLine',
     children: [
+      { path: '/observability/firemap', title: '灭火图', icon: 'Aim', permission: 'ops.observability.firemap.view' },
       {
         path: '/observability/overview',
         title: '平台总览',

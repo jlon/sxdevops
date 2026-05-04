@@ -271,12 +271,21 @@ const routes = [
         path: 'observability',
         redirect: () => {
           const authStore = useAuthStore(pinia)
+          if (authStore.hasPermission('ops.observability.firemap.view')) {
+            return '/observability/firemap'
+          }
           if (authStore.hasAnyPermission(['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'])) {
             return '/observability/overview'
           }
           return '/403'
         },
         meta: { hidden: true },
+      },
+      {
+        path: 'observability/firemap',
+        name: 'ObservabilityFireMap',
+        component: () => import('@/views/ObservabilityFireMap.vue'),
+        meta: { title: '灭火图', icon: 'Aim', permission: 'ops.observability.firemap.view' },
       },
       {
         path: 'observability/overview',

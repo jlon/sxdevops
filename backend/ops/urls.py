@@ -21,6 +21,7 @@ router.register(r'alerts', views.AlertViewSet)
 router.register(r'logs', views.LogEntryViewSet)
 router.register(r'log/datasources', log_views.LogDataSourceViewSet, basename='log-datasource')
 router.register(r'observability/datasource-links', observability_views.ObservabilityDataSourceLinkViewSet, basename='observability-datasource-link')
+router.register(r'observability/fire-map/systems', observability_views.FireMapSystemViewSet, basename='firemap-system')
 router.register(r'observability/tracing/datasources', observability_views.TracingDataSourceViewSet, basename='tracing-datasource')
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
@@ -52,6 +53,7 @@ urlpatterns = [
     path('docker/containers/<str:container_id>/inspect/', docker_views.container_inspect, name='docker-container-inspect'),
     path('middleware/overview/', middleware_views.middleware_overview, name='middleware-overview'),
     path('middleware/action/', middleware_views.middleware_action, name='middleware-action'),
+    path('observability/fire-map/', observability_views.observability_firemap, name='observability-fire-map'),
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),
     path('observability/grafana/config/', observability_views.grafana_setting_view, name='observability-grafana-config'),
     path('observability/tracing/providers/', observability_views.tracing_providers, name='observability-tracing-providers'),

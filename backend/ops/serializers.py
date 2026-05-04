@@ -10,6 +10,7 @@ from .models import (
     DeploymentApprovalNode,
     DeploymentApprovalStep,
     DockerHost,
+    FireMapSystem,
     GrafanaSetting,
     Host,
     HostTask,
@@ -933,6 +934,91 @@ class LogEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = LogEntry
         fields = '__all__'
+
+
+class FireMapSystemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FireMapSystem
+        fields = '__all__'
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+
+    def _validate_json_list(self, value, field_name):
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError(f'{field_name} 必须是数组')
+        return value
+
+    def _validate_json_object(self, value, field_name):
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(f'{field_name} 必须是对象')
+        return value
+
+    def validate_name(self, value):
+        name = str(value or '').strip()
+        if not name:
+            raise serializers.ValidationError('请填写业务系统名称')
+        return name
+
+    def validate_domain(self, value):
+        return str(value or '').strip()
+
+    def validate_tier(self, value):
+        return str(value or '').strip()
+
+    def validate_owner(self, value):
+        return str(value or '').strip()
+
+    def validate_summary(self, value):
+        return str(value or '').strip()
+
+    def validate_keywords(self, value):
+        items = self._validate_json_list(value, 'keywords')
+        return [str(item).strip() for item in items if str(item).strip()]
+
+    def validate_north_star(self, value):
+        item = self._validate_json_object(value, 'north_star')
+        label = str(item.get('label') or '').strip()
+        if not label:
+            label = '可用率'
+        return {
+            'label': label,
+            'value': item.get('value', 99),
+            'target': item.get('target', 99.9),
+            'unit': str(item.get('unit') or '%').strip(),
+            'direction': str(item.get('direction') or 'higher').strip() or 'higher',
+        }
+
+    def validate_metrics(self, value):
+        return self._validate_json_list(value, 'metrics')
+
+    def validate_service_specs(self, value):
+        return self._validate_json_list(value, 'service_specs')
+
+    def validate_dependencies(self, value):
+        return self._validate_json_list(value, 'dependencies')
+
+    def validate_rule_config(self, value):
+        return self._validate_json_object(value, 'rule_config')
+
+    def validate_playbook(self, value):
+        items = self._validate_json_list(value, 'playbook')
+        return [str(item).strip() for item in items if str(item).strip()]
+
+    def validate(self, attrs):
+        attrs.setdefault('north_star', {
+            'label': '可用率',
+            'value': 99,
+            'target': 99.9,
+            'unit': '%',
+            'direction': 'higher',
+        })
+        attrs.setdefault('rule_config', {})
+        if attrs.get('health_score') is not None:
+            attrs['health_score'] = max(0, min(100, int(attrs['health_score'])))
+        return attrs
 
 
 class LogDataSourceSerializer(serializers.ModelSerializer):

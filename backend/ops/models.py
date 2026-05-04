@@ -634,6 +634,56 @@ class LogEntry(models.Model):
         return f'[{self.level}] {self.service}: {self.message[:50]}'
 
 
+class FireMapSystem(models.Model):
+    STATUS_HEALTHY = 'healthy'
+    STATUS_WARNING = 'warning'
+    STATUS_CRITICAL = 'critical'
+    STATUS_OFFLINE = 'offline'
+    STATUS_CHOICES = [
+        (STATUS_HEALTHY, '健康'),
+        (STATUS_WARNING, '告警'),
+        (STATUS_CRITICAL, '故障'),
+        (STATUS_OFFLINE, '离线'),
+    ]
+
+    name = models.CharField('业务系统名称', max_length=128, unique=True)
+    domain = models.CharField('业务域', max_length=64, blank=True, default='')
+    tier = models.CharField('分层', max_length=64, blank=True, default='')
+    owner = models.CharField('负责人', max_length=64, blank=True, default='')
+    summary = models.CharField('摘要', max_length=255, blank=True, default='')
+    base_status = models.CharField('基础状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_HEALTHY)
+    health_score = models.PositiveSmallIntegerField(
+        '健康分',
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+    keywords = models.JSONField('匹配关键字', default=list, blank=True)
+    north_star = models.JSONField('北极星指标', default=dict, blank=True)
+    metrics = models.JSONField('核心指标', default=list, blank=True)
+    service_specs = models.JSONField('服务分解', default=list, blank=True)
+    dependencies = models.JSONField('依赖关系', default=list, blank=True)
+    rule_config = models.JSONField('灭火图规则配置', default=dict, blank=True)
+    playbook = models.JSONField('处置步骤', default=list, blank=True)
+    focus_service_id = models.CharField('默认服务节点', max_length=128, blank=True, default='')
+    focus_interface_id = models.CharField('默认接口节点', max_length=128, blank=True, default='')
+    focus_keyword = models.CharField('默认排障关键字', max_length=128, blank=True, default='')
+    sort_order = models.PositiveIntegerField('排序', default=100)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='system')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '灭火图业务系统'
+        verbose_name_plural = '灭火图业务系统'
+        ordering = ['sort_order', 'name', '-id']
+
+    def __str__(self):
+        return self.name
+
+
 class LogDataSource(models.Model):
     PROVIDER_CHOICES = [
         ('loki', 'Loki'),

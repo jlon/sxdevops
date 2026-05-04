@@ -9,6 +9,7 @@ from rest_framework.test import APIClient
 from ops.models import (
     Alert,
     DockerHost,
+    FireMapSystem,
     GrafanaSetting,
     Host,
     K8sCluster,
@@ -442,6 +443,49 @@ class ObservabilityViewsTests(TestCase):
         self.user = get_user_model().objects.create_superuser('observer-admin', 'observer@example.com', 'Admin@123456')
         self.client.force_authenticate(user=self.user)
 
+    def _mock_ecommerce_prometheus_get(self, success_rate=96.5, conflict_rate=3.5, checkout_5xx_rate=0, checkout_rps=0.2, checkout_p95_seconds=0.42):
+        def vector(*items):
+            return {
+                'status': 'success',
+                'data': {
+                    'resultType': 'vector',
+                    'result': list(items),
+                },
+            }
+
+        def scalar(value):
+            return vector({'metric': {}, 'value': [1777862400, str(value)]})
+
+        def series(label, value, label_name='deployment'):
+            return {'metric': {label_name: label}, 'value': [1777862400, str(value)]}
+
+        def fake_get(url, params=None, **kwargs):
+            query = (params or {}).get('query', '')
+            if 'outcome="success"' in query:
+                return MockHttpResponse(scalar(success_rate))
+            if 'outcome="conflict"' in query:
+                return MockHttpResponse(scalar(conflict_rate))
+            if 'path="/api/checkout",status=~"5.."' in query:
+                return MockHttpResponse(scalar(checkout_5xx_rate))
+            if 'path="/api/checkout"' in query and 'sum(rate(ecommerce_http_requests_total' in query and 'status' not in query:
+                return MockHttpResponse(scalar(checkout_rps))
+            if 'sum by (le)' in query and 'path="/api/checkout"' in query:
+                return MockHttpResponse(scalar(checkout_p95_seconds))
+            if 'kube_deployment_status_replicas_available' in query or 'kube_deployment_spec_replicas' in query:
+                return MockHttpResponse(vector(
+                    series('api-gateway', 1),
+                    series('cart', 1),
+                    series('order', 1),
+                    series('inventory', 1),
+                    series('catalog', 1),
+                    series('postgres', 1),
+                    series('redis', 1),
+                    series('kafka', 1),
+                ))
+            return MockHttpResponse(vector())
+
+        return fake_get
+
     def test_datasource_link_resolves_trace_to_loki_query(self):
         log_source = LogDataSource.objects.create(
             name='电商-k3s-loki',
@@ -807,6 +851,237 @@ class ObservabilityViewsTests(TestCase):
         self.assertGreaterEqual(payload['summary']['service_count'], 1)
         self.assertTrue(any(item['provider'] == 'demo' for item in payload['providers']))
 
+    def test_observability_firemap_returns_business_cards_and_topology(self):
+        response = self.client.get('/api/observability/fire-map/?system=observability-stack')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['selected_system_id'], 'observability-stack')
+        self.assertGreaterEqual(payload['summary']['system_count'], 4)
+        self.assertGreaterEqual(len(payload['systems']), 4)
+        self.assertTrue(payload['selected_system']['children'])
+        self.assertTrue(payload['selected_system']['dependencies'])
+        self.assertGreaterEqual(payload['topology']['node_count'], 1)
+        self.assertTrue(any(item['id'] == 'firemap' for item in payload['data_sources']))
+
+    @override_settings(OBSERVABILITY_CONFIG={
+        **TEST_OBSERVABILITY_CONFIG,
+        'prometheus': {
+            'enabled': True,
+            'query_url': 'http://prometheus.example.com',
+            'timeout': 3,
+        },
+    })
+    @patch('ops.observability_views.http_requests.get')
+    def test_observability_firemap_uses_live_ecommerce_prometheus_metrics(self, mock_get):
+        mock_get.side_effect = self._mock_ecommerce_prometheus_get()
+
+        response = self.client.get('/api/observability/fire-map/?system=commerce-core')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        selected = payload['selected_system']
+        self.assertEqual(selected['id'], 'commerce-core')
+        self.assertEqual(selected['north_star']['value'], 96.5)
+        self.assertEqual(selected['north_star']['status'], 'warning')
+        self.assertTrue(selected['live']['enabled'])
+        self.assertEqual(selected['live']['north_star_metric'], 'checkout_success_rate')
+        self.assertEqual(selected['rule_config']['window'], '5m')
+        self.assertEqual(selected['rule_config']['health_score']['weights']['success_rate'], 0.62)
+        self.assertIn('rule_config', selected['form'])
+        self.assertEqual(selected['children'][0]['id'], 'api-gateway')
+        conflict_metric = next(item for item in selected['metrics'] if item['label'] == 'Checkout 409占比')
+        self.assertEqual(conflict_metric['value'], 3.5)
+        self.assertEqual(conflict_metric['status'], 'warning')
+        inventory = next(item for item in selected['children'] if item['id'] == 'inventory')
+        self.assertEqual(inventory['status'], 'warning')
+        self.assertIn('Checkout 409', inventory['hint'])
+        inventory_api = next(item for item in inventory['children'] if item['id'] == 'inventory-availability')
+        self.assertIn('库存', inventory_api['hint'])
+        self.assertGreater(selected['health_score'], 80)
+        self.assertLess(selected['health_score'], 100)
+
+    @override_settings(OBSERVABILITY_CONFIG={
+        **TEST_OBSERVABILITY_CONFIG,
+        'prometheus': {
+            'enabled': True,
+            'query_url': 'http://prometheus.example.com',
+            'timeout': 3,
+        },
+    })
+    @patch('ops.observability_views.http_requests.get')
+    def test_observability_firemap_uses_configured_ecommerce_rules(self, mock_get):
+        system = FireMapSystem.objects.create(
+            name='电商交易核心',
+            domain='核心业务',
+            tier='交易链路',
+            owner='commerce-oncall',
+            rule_config={
+                'window': '10m',
+                'north_star': {'target': 95},
+                'status_rules': {
+                    'critical': {'health_score_lt': 50, 'success_rate_lt': 90, 'checkout_5xx_rate_gte': 5},
+                    'warning': {'health_score_lt': 80, 'success_rate_lt': 95, 'checkout_conflict_rate_gte': 10, 'checkout_p95_ms_gt': 500},
+                },
+                'root_cause_rules': [
+                    {
+                        'id': 'inventory-conflict',
+                        'label': '库存冲突',
+                        'metric': 'checkout_conflict_rate',
+                        'min_rate': 10,
+                        'critical_rate': 50,
+                        'min_rps': 0.001,
+                        'zero_success_is_critical': True,
+                        'target_service_id': 'inventory',
+                        'target_interface_id': 'inventory-availability',
+                        'metric_label': '库存冲突率',
+                        'warning_message': '库存冲突超过配置阈值。',
+                        'critical_message': '库存冲突达到故障阈值。',
+                    }
+                ],
+            },
+        )
+        mock_get.side_effect = self._mock_ecommerce_prometheus_get()
+
+        response = self.client.get(f'/api/observability/fire-map/?system=custom-{system.id}')
+
+        self.assertEqual(response.status_code, 200)
+        selected = response.json()['selected_system']
+        self.assertEqual(selected['name'], '电商交易核心')
+        self.assertEqual(selected['rule_config']['window'], '10m')
+        self.assertEqual(selected['rule_config']['north_star']['target'], 95)
+        self.assertEqual(selected['status'], 'healthy')
+        inventory = next(item for item in selected['children'] if item['id'] == 'inventory')
+        self.assertEqual(inventory['status'], 'healthy')
+        conflict_metric = next(item for item in selected['metrics'] if item['label'] == 'Checkout 409占比')
+        self.assertEqual(conflict_metric['target'], 10)
+        self.assertEqual(conflict_metric['status'], 'healthy')
+
+    def test_observability_firemap_requires_firemap_permission(self):
+        limited_user = get_user_model().objects.create_user('firemap-viewer', password='Admin@123456')
+        self.client.force_authenticate(user=limited_user)
+
+        response = self.client.get('/api/observability/fire-map/')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_firemap_system_cards_can_be_managed_and_rendered(self):
+        payload = {
+            'name': '增长活动平台',
+            'domain': '营销增长',
+            'tier': '业务系统',
+            'owner': 'growth-oncall',
+            'summary': '活动投放、领券和转化链路的业务级卡片。',
+            'base_status': 'warning',
+            'health_score': 82,
+            'keywords': ['增长活动', 'growth'],
+            'north_star': {'label': '转化成功率', 'value': 97.5, 'target': 99, 'unit': '%', 'direction': 'higher'},
+            'metrics': [{'label': '转化成功率', 'value': 97.5, 'target': 99, 'unit': '%', 'direction': 'higher'}],
+            'service_specs': [
+                {
+                    'id': 'growth-core',
+                    'name': 'growth-service',
+                    'role': '活动核心服务',
+                    'base_status': 'warning',
+                    'metrics': [{'label': '错误率', 'value': 1.1, 'target': 0.5, 'unit': '%', 'direction': 'lower'}],
+                    'interfaces': [
+                        {
+                            'id': 'growth-coupon-api',
+                            'name': '发券接口',
+                            'base_status': 'warning',
+                            'hint': '发券成功率低于目标',
+                            'metrics': [{'label': 'P95', 'value': 260, 'target': 180, 'unit': 'ms', 'direction': 'lower'}],
+                        }
+                    ],
+                }
+            ],
+            'dependencies': [
+                {
+                    'id': 'growth-redis',
+                    'name': 'Redis 缓存',
+                    'role': 'downstream',
+                    'kind': '缓存',
+                    'base_status': 'healthy',
+                    'metrics': [{'label': '命中率', 'value': 98, 'target': 95, 'unit': '%', 'direction': 'higher'}],
+                    'impact': '缓存穿透会影响活动接口耗时。',
+                }
+            ],
+            'playbook': ['确认活动配置', '检查发券接口', '对齐最近发布'],
+            'focus_service_id': 'growth-core',
+            'focus_interface_id': 'growth-coupon-api',
+            'sort_order': 5,
+        }
+
+        create_response = self.client.post('/api/observability/fire-map/systems/', payload, format='json')
+        self.assertEqual(create_response.status_code, 201)
+        system_id = create_response.json()['id']
+
+        overview_response = self.client.get(f'/api/observability/fire-map/?system=custom-{system_id}')
+        self.assertEqual(overview_response.status_code, 200)
+        overview = overview_response.json()
+        self.assertEqual(overview['selected_system_id'], f'custom-{system_id}')
+        self.assertEqual(overview['selected_system']['name'], '增长活动平台')
+        self.assertTrue(overview['selected_system']['editable'])
+        self.assertEqual(overview['selected_system']['source_id'], system_id)
+        self.assertEqual(overview['selected_system']['children'][0]['id'], 'growth-core')
+
+        payload['owner'] = 'growth-sre'
+        payload['health_score'] = 91
+        payload['base_status'] = 'healthy'
+        update_response = self.client.put(
+            f'/api/observability/fire-map/systems/{system_id}/',
+            payload,
+            format='json',
+        )
+        self.assertEqual(update_response.status_code, 200)
+
+        updated_overview = self.client.get(f'/api/observability/fire-map/?system=custom-{system_id}').json()
+        self.assertEqual(updated_overview['selected_system']['owner'], 'growth-sre')
+        self.assertEqual(updated_overview['selected_system']['health_score'], 91)
+
+        delete_response = self.client.delete(f'/api/observability/fire-map/systems/{system_id}/')
+        self.assertEqual(delete_response.status_code, 204)
+        self.assertFalse(FireMapSystem.objects.filter(id=system_id).exists())
+
+    def test_builtin_firemap_card_can_be_overridden_and_hidden(self):
+        override = FireMapSystem.objects.create(
+            name='电商交易核心',
+            domain='交易域',
+            tier='P0',
+            owner='new-owner',
+            summary='覆盖内置卡片配置',
+            base_status='healthy',
+            health_score=95,
+            north_star={'label': '下单成功率', 'value': 99.8, 'target': 99.9, 'unit': '%', 'direction': 'higher'},
+            created_by='observer-admin',
+            updated_by='observer-admin',
+        )
+
+        response = self.client.get('/api/observability/fire-map/?system=电商交易核心')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['selected_system']['source'], 'custom')
+        self.assertTrue(payload['selected_system']['builtin_backed'])
+        self.assertEqual(payload['selected_system']['source_id'], override.id)
+        self.assertEqual(payload['selected_system']['owner'], 'new-owner')
+
+        override.is_enabled = False
+        override.save(update_fields=['is_enabled'])
+        hidden_response = self.client.get('/api/observability/fire-map/')
+        self.assertFalse(any(item['name'] == '电商交易核心' for item in hidden_response.json()['systems']))
+
+    def test_firemap_system_manage_requires_manage_permission(self):
+        limited_user = get_user_model().objects.create_user('firemap-readonly', password='Admin@123456')
+        self.client.force_authenticate(user=limited_user)
+
+        response = self.client.post(
+            '/api/observability/fire-map/systems/',
+            {'name': '只读用户卡片', 'base_status': 'healthy'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+
     @patch('ops.observability_views.user_has_permissions')
     def test_observability_overview_allows_log_only_user_without_trace_visibility(self, mock_permissions):
         existing_payload = self.client.get('/api/log/datasources/').json()
@@ -1064,6 +1339,39 @@ class ObservabilityViewsTests(TestCase):
                     }
                 }
             }),
+            MockHttpResponse({
+                'data': {
+                    'queryTrace': {
+                        'spans': [
+                            {
+                                'traceId': 'trace-1',
+                                'segmentId': 'segment-1',
+                                'spanId': 0,
+                                'parentSpanId': -1,
+                                'serviceCode': 'gateway-service',
+                                'serviceInstanceName': 'gateway-prod-01',
+                                'startTime': 1711674900000,
+                                'endTime': 1711674900212,
+                                'endpointName': 'GET /api/orders/{id}',
+                                'type': 'Entry',
+                                'peer': '',
+                                'component': 'SpringMVC',
+                                'isError': False,
+                                'layer': 'HTTP',
+                                'tags': [{'key': 'http.status_code', 'value': '200'}],
+                                'logs': [],
+                            }
+                        ]
+                    }
+                }
+            }),
+            MockHttpResponse({
+                'data': {
+                    'getServiceInstances': [
+                        {'id': 'gateway-prod-01', 'name': 'gateway-prod-01'},
+                    ]
+                }
+            }),
         ]
 
         response = self.client.get('/api/observability/tracing/catalog/')
@@ -1076,7 +1384,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['recent_traces'][0]['trace_id'], 'trace-1')
         self.assertEqual(payload['recent_traces'][0]['summary'], '')
         self.assertTrue(any(item['provider'] == 'demo' for item in payload['providers']))
-        self.assertEqual(mock_post.call_count, 3)
+        self.assertEqual(mock_post.call_count, 5)
 
     def test_tracing_catalog_can_force_demo_provider(self):
         response = self.client.get('/api/observability/tracing/catalog/?provider=demo')
@@ -1225,6 +1533,34 @@ class ObservabilityViewsTests(TestCase):
                     }
                 ]
             }),
+            MockHttpResponse({
+                'data': [
+                    {
+                        'traceID': 'jaeger-trace-1',
+                        'processes': {'p1': {'serviceName': 'gateway-service'}, 'p2': {'serviceName': 'order-service'}},
+                        'spans': [
+                            {
+                                'spanID': 'span-root',
+                                'processID': 'p1',
+                                'operationName': 'GET /api/orders',
+                                'startTime': 1711674900000000,
+                                'duration': 250000,
+                                'tags': [{'key': 'http.status_code', 'value': '200'}],
+                                'references': [],
+                            },
+                            {
+                                'spanID': 'span-child',
+                                'processID': 'p2',
+                                'operationName': 'queryOrder',
+                                'startTime': 1711674900040000,
+                                'duration': 120000,
+                                'tags': [],
+                                'references': [{'refType': 'CHILD_OF', 'spanID': 'span-root'}],
+                            },
+                        ],
+                    }
+                ]
+            }),
         ]
 
         with override_settings(
@@ -1304,6 +1640,8 @@ class ObservabilityViewsTests(TestCase):
             MockHttpResponse({'data': [trace_payload]}),
             MockHttpResponse({'data': [trace_payload]}),
             MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
         ]
 
         response = self.client.post(
@@ -1323,7 +1661,14 @@ class ObservabilityViewsTests(TestCase):
         payload = response.json()
         self.assertEqual(str(payload['tracing']['datasource_id']), str(datasource_id))
         self.assertEqual(payload['traces'][0]['trace_id'], 'jaeger-trace-alt')
-        self.assertEqual(mock_get.call_args_list[-1].args[0], 'http://jaeger-alt.example.com/api/traces')
+        self.assertIn(
+            'http://jaeger-alt.example.com/api/traces',
+            [call.args[0] for call in mock_get.call_args_list],
+        )
+        self.assertEqual(
+            mock_get.call_args_list[-1].args[0],
+            'http://jaeger-alt.example.com/api/traces/jaeger-trace-alt',
+        )
 
     @patch('ops.tracing_providers.http_requests.get')
     def test_tracing_search_supports_absolute_time_range(self, mock_get):
@@ -1362,6 +1707,8 @@ class ObservabilityViewsTests(TestCase):
             MockHttpResponse({'data': [trace_payload]}),
             MockHttpResponse({'data': [trace_payload]}),
             MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
         ]
 
         start_time = '2026-04-10T11:00:00+08:00'
@@ -1382,7 +1729,12 @@ class ObservabilityViewsTests(TestCase):
         payload = response.json()
         self.assertEqual(payload['query']['start_time'], start_time)
         self.assertEqual(payload['query']['end_time'], end_time)
-        params = mock_get.call_args_list[-1].kwargs['params']
+        trace_calls = [
+            call
+            for call in mock_get.call_args_list
+            if call.args[0] == 'http://jaeger-absolute.example.com/api/traces'
+        ]
+        params = trace_calls[-1].kwargs['params']
         self.assertEqual(params['start'], int(datetime.fromisoformat(start_time).timestamp() * 1000000))
         self.assertEqual(params['end'], int(datetime.fromisoformat(end_time).timestamp() * 1000000))
 
@@ -1436,6 +1788,8 @@ class ObservabilityViewsTests(TestCase):
         }
         mock_get.side_effect = [
             MockHttpResponse({'data': ['gateway-service']}),
+            MockHttpResponse({'data': [trace_payload]}),
+            MockHttpResponse({'data': [trace_payload]}),
             MockHttpResponse({'data': [trace_payload]}),
             MockHttpResponse({'data': [trace_payload]}),
             MockHttpResponse({'data': [trace_payload]}),
@@ -1582,6 +1936,39 @@ class ObservabilityViewsTests(TestCase):
                             }
                         ]
                     }
+                }
+            }),
+            MockHttpResponse({
+                'data': {
+                    'queryTrace': {
+                        'spans': [
+                            {
+                                'traceId': 'trace-1',
+                                'segmentId': 'segment-1',
+                                'spanId': 0,
+                                'parentSpanId': -1,
+                                'serviceCode': 'gateway-service',
+                                'serviceInstanceName': 'gateway-prod-01',
+                                'startTime': 1711674900000,
+                                'endTime': 1711674900212,
+                                'endpointName': 'GET /api/orders/{id}',
+                                'type': 'Entry',
+                                'peer': '',
+                                'component': 'SpringMVC',
+                                'isError': False,
+                                'layer': 'HTTP',
+                                'tags': [{'key': 'http.status_code', 'value': '200'}],
+                                'logs': [],
+                            }
+                        ]
+                    }
+                }
+            }),
+            MockHttpResponse({
+                'data': {
+                    'getServiceInstances': [
+                        {'id': 'gateway-prod-01', 'name': 'gateway-prod-01'},
+                    ]
                 }
             }),
             MockHttpResponse({

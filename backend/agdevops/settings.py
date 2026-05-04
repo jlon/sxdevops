@@ -280,6 +280,16 @@ OBSERVABILITY_CONFIG = {
         'query_url': os.getenv('ZIPKIN_QUERY_URL', ''),
         'demo_mode': os.getenv('ZIPKIN_DEMO_MODE', '1') == '1',
     },
+    'prometheus': {
+        'enabled': os.getenv('PROMETHEUS_ENABLED', '1') != '0',
+        'query_url': os.getenv('PROMETHEUS_QUERY_URL', ''),
+        'grafana_url': os.getenv('PROMETHEUS_GRAFANA_URL', ''),
+        'grafana_datasource_uid': os.getenv('PROMETHEUS_GRAFANA_DATASOURCE_UID', 'prometheus-infra'),
+        'grafana_datasource_id': os.getenv('PROMETHEUS_GRAFANA_DATASOURCE_ID', ''),
+        'grafana_api_token': os.getenv('PROMETHEUS_GRAFANA_API_TOKEN', ''),
+        'inferred_grafana_port': os.getenv('PROMETHEUS_INFERRED_GRAFANA_PORT', '30300'),
+        'timeout': os.getenv('PROMETHEUS_QUERY_TIMEOUT', '6'),
+    },
     'grafana': {
         'enabled': os.getenv('GRAFANA_ENABLED', '1') != '0',
         'url': os.getenv('GRAFANA_URL', ''),

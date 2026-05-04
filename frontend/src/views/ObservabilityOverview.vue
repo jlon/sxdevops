@@ -30,6 +30,24 @@
       </div>
 
       <div class="module-grid">
+        <article v-if="canViewFireMap" class="module-card">
+          <div class="module-head">
+            <div class="module-title">
+              <el-icon><Aim /></el-icon>
+              <strong>灭火图</strong>
+            </div>
+            <el-tag size="small" type="danger">排障入口</el-tag>
+          </div>
+          <div class="module-meta">
+            <span>业务卡片</span>
+            <span>层级下钻</span>
+            <span>依赖影响</span>
+          </div>
+          <div class="module-actions">
+            <el-button size="small" link type="primary" @click="go('/observability/firemap')">打开灭火图</el-button>
+          </div>
+        </article>
+
         <article v-if="overview.modules?.logs" class="module-card">
           <div class="module-head">
             <div class="module-title">
@@ -127,7 +145,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Bell, Connection, DataLine, Histogram, RefreshRight, Search } from '@element-plus/icons-vue'
+import { Aim, Bell, Connection, DataLine, Histogram, RefreshRight, Search } from '@element-plus/icons-vue'
 import { getObservabilityOverview } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import ObservabilityDataSourceLinks from './ObservabilityDataSourceLinks.vue'
@@ -139,6 +157,7 @@ const overview = ref({ modules: {}, summary: {} })
 const canViewLogDatasources = computed(() => authStore.hasPermission('ops.log.datasource.view'))
 const canViewTraceDatasources = computed(() => authStore.hasPermission('ops.trace.datasource.view'))
 const canViewLinks = computed(() => authStore.hasPermission('ops.observability.link.view'))
+const canViewFireMap = computed(() => authStore.hasPermission('ops.observability.firemap.view'))
 
 const statCards = computed(() => [
   { label: '日志数据源', value: overview.value.summary?.datasource_count || 0, tone: '' },
