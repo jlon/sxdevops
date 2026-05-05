@@ -265,16 +265,16 @@ const routes = [
         path: 'alerts',
         name: 'Alerts',
         component: () => import('@/views/Alerts.vue'),
-        meta: { title: '告警中心', icon: 'Bell', permission: 'ops.alert.view' },
+        meta: { title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
       },
       {
         path: 'observability',
         redirect: () => {
           const authStore = useAuthStore(pinia)
           if (authStore.hasPermission('ops.observability.firemap.view')) {
-            return '/observability/firemap'
+            return '/observability/system-posture'
           }
-          if (authStore.hasAnyPermission(['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'])) {
+          if (authStore.hasAnyPermission(['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'])) {
             return '/observability/overview'
           }
           return '/403'
@@ -282,10 +282,15 @@ const routes = [
         meta: { hidden: true },
       },
       {
+        path: 'observability/system-posture',
+        name: 'ObservabilitySystemPosture',
+        component: () => import('@/views/ObservabilitySystemPosture.vue'),
+        meta: { title: '系统态势', icon: 'Aim', permission: 'ops.observability.firemap.view' },
+      },
+      {
         path: 'observability/firemap',
-        name: 'ObservabilityFireMap',
-        component: () => import('@/views/ObservabilityFireMap.vue'),
-        meta: { title: '灭火图', icon: 'Aim', permission: 'ops.observability.firemap.view' },
+        redirect: '/observability/system-posture',
+        meta: { hidden: true },
       },
       {
         path: 'observability/overview',
@@ -294,7 +299,7 @@ const routes = [
         meta: {
           title: '平台总览',
           icon: 'DataLine',
-          anyPermissions: ['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
+          anyPermissions: ['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
         },
       },
       {
@@ -409,6 +414,12 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) {
+      return savedPosition
+    }
+    return { top: 0 }
+  },
 })
 
 router.beforeEach(async (to) => {

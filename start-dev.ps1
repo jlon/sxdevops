@@ -15,19 +15,42 @@ $frontendErr = Join-Path $logDir 'frontend.stderr.log'
 function Test-PortListening {
     param([int]$Port)
 
-    $connections = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
-    return [bool]$connections
+    $matches = netstat -ano -p TCP | Select-String -Pattern "LISTENING\s+\d+$"
+    foreach ($line in $matches) {
+        $text = ($line.ToString() -replace '\s+', ' ').Trim()
+        $parts = $text.Split(' ')
+        if ($parts.Length -lt 5) {
+            continue
+        }
+        $local = $parts[1]
+        if ($local -match ":(\d+)$" -and [int]$Matches[1] -eq $Port) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Get-PortProcess {
     param([int]$Port)
 
-    $connection = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (!$connection) {
-        return $null
+    $matches = netstat -ano -p TCP | Select-String -Pattern "LISTENING\s+\d+$"
+    foreach ($line in $matches) {
+        $text = ($line.ToString() -replace '\s+', ' ').Trim()
+        $parts = $text.Split(' ')
+        if ($parts.Length -lt 5) {
+            continue
+        }
+        $local = $parts[1]
+        $pidText = $parts[-1]
+        if ($local -match ":(\d+)$" -and [int]$Matches[1] -eq $Port) {
+            $ownerPid = 0
+            if ([int]::TryParse($pidText, [ref]$ownerPid)) {
+                return Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+            }
+            return $null
+        }
     }
-
-    return Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
+    return $null
 }
 
 function Clear-DevPort {

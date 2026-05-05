@@ -274,11 +274,11 @@
                   <span>{{ attr.value }}</span>
                 </div>
               </div>
-              <div v-if="traceIdFromLog(item) && (canViewTracing || canViewGrafana)" class="detail-actions">
+              <div v-if="canJumpFromLog(item)" class="detail-actions">
                 <span class="detail-actions__label">关联跳转</span>
                 <div class="detail-actions__buttons">
-                  <el-button v-if="canViewTracing" size="small" link type="primary" @click="openTraceFromLog(item)">链路追踪</el-button>
-                  <el-button v-if="canViewGrafana" size="small" link type="warning" @click="openGrafanaFromLog(item)">监控看板</el-button>
+                  <el-button v-if="canViewTracing && traceIdFromLog(item)" size="small" link type="primary" @click="openTraceFromLog(item)">链路追踪</el-button>
+                  <el-button v-if="canViewGrafana && canOpenGrafanaFromLog(item)" size="small" link type="warning" @click="openGrafanaFromLog(item)">监控看板</el-button>
                 </div>
               </div>
               <pre>{{ item.message }}</pre>
@@ -362,6 +362,7 @@ import echarts from '@/lib/echarts'
 import { ElMessage } from 'element-plus'
 import { getLogDataSources, getLogProviderCatalog, queryLogs, resolveLogToGrafana, resolveLogToTrace } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { openRouteInNewTab } from '@/utils/router'
 
 const route = useRoute()
 const router = useRouter()
@@ -518,12 +519,81 @@ function defaultTimeRange(minutes = 60) {
   return [new Date(end.getTime() - minutes * 60 * 1000), end]
 }
 
+function applyGrafanaRound(timestamp, unit) {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return timestamp
+  switch (unit) {
+    case 's':
+      date.setMilliseconds(0)
+      break
+    case 'm':
+      date.setSeconds(0, 0)
+      break
+    case 'h':
+      date.setMinutes(0, 0, 0)
+      break
+    case 'd':
+      date.setHours(0, 0, 0, 0)
+      break
+    case 'w': {
+      const day = date.getDay() || 7
+      date.setDate(date.getDate() - day + 1)
+      date.setHours(0, 0, 0, 0)
+      break
+    }
+    case 'M':
+      date.setDate(1)
+      date.setHours(0, 0, 0, 0)
+      break
+    case 'y':
+      date.setMonth(0, 1)
+      date.setHours(0, 0, 0, 0)
+      break
+    default:
+      break
+  }
+  return date.getTime()
+}
+
+function parseGrafanaRelativeTime(value) {
+  const raw = String(value || '').trim()
+  if (!raw || !raw.startsWith('now')) return Number.NaN
+  if (raw === 'now') return Date.now()
+
+  const match = raw.match(/^now(?:(?<sign>[+-])(?<amount>\d+)(?<unit>[smhdwMy]))?(?:\/(?<round>[smhdwMy]))?$/)
+  if (!match) return Number.NaN
+
+  let timestamp = Date.now()
+  const { sign, amount, unit, round } = match.groups || {}
+  if (sign && amount && unit) {
+    const multipliers = {
+      s: 1000,
+      m: 60 * 1000,
+      h: 60 * 60 * 1000,
+      d: 24 * 60 * 60 * 1000,
+      w: 7 * 24 * 60 * 60 * 1000,
+      M: 30 * 24 * 60 * 60 * 1000,
+      y: 365 * 24 * 60 * 60 * 1000,
+    }
+    const delta = Number(amount) * (multipliers[unit] || 0)
+    timestamp += sign === '-' ? -delta : delta
+  }
+
+  if (round) {
+    timestamp = applyGrafanaRound(timestamp, round)
+  }
+
+  return timestamp
+}
+
 function toTimestampMs(value) {
   if (value instanceof Date) return value.getTime()
   if (typeof value === 'number') return value
   if (typeof value === 'string' && value.trim()) {
     const numeric = Number(value)
     if (!Number.isNaN(numeric)) return numeric
+    const relative = parseGrafanaRelativeTime(value)
+    if (!Number.isNaN(relative)) return relative
     const parsed = new Date(value).getTime()
     if (!Number.isNaN(parsed)) return parsed
   }
@@ -792,6 +862,15 @@ function routeLokiQuery() {
   return typeof raw === 'string' ? raw.trim() : ''
 }
 
+function routeTimeRange(fallbackMinutes = 60) {
+  const from = toTimestampMs(route.query.from)
+  const to = toTimestampMs(route.query.to)
+  if (route.query.from && route.query.to && Number.isFinite(from) && Number.isFinite(to)) {
+    return normalizeTimeRange([from, to])
+  }
+  return defaultTimeRange(fallbackMinutes)
+}
+
 function unescapeLogValue(value) {
   return String(value || '').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
 }
@@ -859,11 +938,18 @@ function buildLokiRouteTitle(query) {
 function traceServiceFromLog(item) {
   const attributes = item?.attributes || {}
   return [
+    attributes.workload,
+    attributes.workload_name,
+    attributes.workloadName,
+    attributes['k8s.workload.name'],
+    attributes.kubernetes_workload_name,
+    attributes.deployment,
+    attributes.deployment_name,
+    attributes['k8s.deployment.name'],
     attributes.service_name,
     attributes.service,
     attributes['service.name'],
     attributes.serviceName,
-    attributes.workload,
     attributes.app,
     attributes.application,
     attributes.container,
@@ -871,6 +957,21 @@ function traceServiceFromLog(item) {
     attributes['k8s.container.name'],
     item?.source,
   ].find((value) => typeof value === 'string' && value.trim()) || ''
+}
+
+function workloadTypeFromLog(item) {
+  const attributes = item?.attributes || {}
+  const raw = [
+    attributes.workload_type,
+    attributes.workloadType,
+    attributes['workload.type'],
+    attributes['k8s.workload.type'],
+    attributes.kubernetes_workload_type,
+    attributes.controller_kind,
+    attributes.owner_kind,
+    attributes.kind,
+  ].find((value) => typeof value === 'string' && value.trim()) || 'deployment'
+  return String(raw).replace(/^apps\//i, '').toLowerCase()
 }
 
 function traceNamespaceFromLog(item) {
@@ -883,6 +984,12 @@ function traceNamespaceFromLog(item) {
     attributes['k8s.namespace.name'],
     attributes.kubernetes_namespace_name,
   ].find((value) => typeof value === 'string' && value.trim()) || ''
+}
+
+function logItemNearRange(item, minutes = 30) {
+  const center = toTimestampMs(item?.timestamp)
+  const span = minutes * 60 * 1000
+  return [center - span, center + span]
 }
 
 function traceIdFromLog(item) {
@@ -900,6 +1007,14 @@ function traceIdFromLog(item) {
   return match?.[1] || ''
 }
 
+function canOpenGrafanaFromLog(item) {
+  return Boolean(traceServiceFromLog(item))
+}
+
+function canJumpFromLog(item) {
+  return Boolean((canViewTracing.value && traceIdFromLog(item)) || (canViewGrafana.value && canOpenGrafanaFromLog(item)))
+}
+
 async function applyTraceRoutePreset(force = false) {
   const traceId = routeTraceId()
   if (!traceId || !dataSources.value.length) return false
@@ -909,6 +1024,8 @@ async function applyTraceRoutePreset(force = false) {
     logDatasourceId: routeLogDatasourceId(),
     lokiQuery: routeLokiQuery(),
     source: route.query.source || '',
+    from: route.query.from || '',
+    to: route.query.to || '',
   })
   if (!force && currentTab.value?.routeFingerprint === currentFingerprint) return false
 
@@ -924,7 +1041,7 @@ async function applyTraceRoutePreset(force = false) {
 
   tab.title = buildTraceLogTitle(traceId)
   tab.datasourceId = datasource.id
-  tab.timeRange = defaultTimeRange(Number(route.query.window || 60))
+  tab.timeRange = routeTimeRange(Number(route.query.window || 60))
   tab.quickRange = ''
   tab.limit = 200
   tab.routeFingerprint = currentFingerprint
@@ -955,6 +1072,8 @@ async function applyLokiRoutePreset(force = false) {
     logDatasourceId: routeLogDatasourceId(),
     window: route.query.window || '',
     autoRun: route.query.autoRun || '',
+    from: route.query.from || '',
+    to: route.query.to || '',
   })
   if (!force && currentTab.value?.routeFingerprint === currentFingerprint) return false
 
@@ -970,7 +1089,7 @@ async function applyLokiRoutePreset(force = false) {
 
   tab.title = buildLokiRouteTitle(lokiQuery)
   tab.datasourceId = datasource.id
-  tab.timeRange = defaultTimeRange(Number(route.query.window || 60))
+  tab.timeRange = routeTimeRange(Number(route.query.window || 60))
   tab.quickRange = ''
   tab.limit = 200
   tab.routeFingerprint = currentFingerprint
@@ -1039,6 +1158,7 @@ async function openTraceFromLog(item) {
   const traceId = traceIdFromLog(item)
   if (!traceId) return
   const service = traceServiceFromLog(item)
+  const [from, to] = logItemNearRange(item)
   try {
     const resolved = await resolveLogToTrace({
       trace_id: traceId,
@@ -1046,64 +1166,77 @@ async function openTraceFromLog(item) {
       attributes: item.attributes || {},
       message: item.message || '',
     })
-    router.push({
+    openRouteInNewTab(router, {
       path: '/observability/tracing',
       query: {
         traceId: resolved.trace_id || traceId,
         service: service || undefined,
         provider: resolved.tracing_datasource?.provider || undefined,
         datasourceId: resolved.tracing_datasource?.id ? String(resolved.tracing_datasource.id) : undefined,
+        from,
+        to,
       },
     })
   } catch {
-    router.push({
+    openRouteInNewTab(router, {
       path: '/observability/tracing',
       query: {
         traceId,
         service: service || undefined,
+        from,
+        to,
       },
     })
   }
 }
 
 async function openGrafanaFromLog(item) {
-  const traceId = traceIdFromLog(item)
-  if (!traceId) return
   const service = traceServiceFromLog(item)
   const namespace = traceNamespaceFromLog(item)
-  const range = normalizeTimeRange(currentTab.value?.timeRange)
+  const workloadType = workloadTypeFromLog(item)
+  if (!service) return
+  const [from, to] = logItemNearRange(item)
   try {
     const resolved = await resolveLogToGrafana({
-      trace_id: traceId,
       log_datasource_id: currentTab.value?.datasourceId,
-      dashboard_key: 'kubernetes-compute-resources-workload',
-      attributes: item.attributes || {},
+      dashboard_key: 'Kubernetes / Compute Resources / Workload',
+      ignore_trace_id: true,
+      attributes: {
+        ...(item.attributes || {}),
+        workload: service,
+        workload_type: workloadType,
+        namespace: namespace || item.attributes?.namespace,
+      },
       message: item.message || '',
-      from: toTimestampMs(range[0]),
-      to: toTimestampMs(range[1]),
+      from,
+      to,
     })
-    router.push({
+    openRouteInNewTab(router, {
       path: '/observability/grafana',
       query: {
         ...(resolved.query || {}),
+        dashboard: resolved.query?.dashboard || 'Kubernetes / Compute Resources / Workload',
         service: service || undefined,
         'var-workload': resolved.query?.['var-workload'] || service || undefined,
+        'var-workload_type': resolved.query?.['var-workload_type'] || workloadType || undefined,
         'var-namespace': resolved.query?.['var-namespace'] || namespace || undefined,
+        from,
+        to,
         fullscreen: '1',
       },
     })
   } catch {
-    router.push({
+    openRouteInNewTab(router, {
       path: '/observability/grafana',
       query: {
-        dashboard: 'kubernetes-compute-resources-workload',
-        traceId,
+        dashboard: 'Kubernetes / Compute Resources / Workload',
         service: service || undefined,
         'var-workload': service || undefined,
+        'var-workload_type': workloadType || undefined,
         'var-namespace': namespace || undefined,
         source: 'log',
-        from: toTimestampMs(range[0]),
-        to: toTimestampMs(range[1]),
+        from,
+        to,
         fullscreen: '1',
       },
     })
@@ -1582,6 +1715,8 @@ watch(
     route.query.source,
     route.query.title,
     route.query.window,
+    route.query.from,
+    route.query.to,
     route.query.autoRun,
   ].join('|'),
   async () => {
@@ -1658,6 +1793,13 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.hero-actions :deep(.el-button) {
+  border-radius: 10px;
+  font-weight: 500;
+  min-height: 32px;
+  padding: 0 14px;
 }
 
 

@@ -8,8 +8,14 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 from ops.models import (
     Alert,
+    AlertAction,
+    AlertIntegration,
+    AlertNotificationChannel,
+    AlertNotificationRule,
+    AlertRecipient,
+    AlertRecipientGroup,
     DockerHost,
-    FireMapSystem,
+    SystemPostureSystem,
     GrafanaSetting,
     Host,
     K8sCluster,
@@ -522,6 +528,44 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['log_datasource']['id'], log_source.id)
         self.assertEqual(payload['query'], '{container="checkout"} | json | trace_id="0123456789abcdef0123456789abcdef"')
 
+    def test_datasource_link_resolves_trace_to_loki_query_with_zero_padded_trace_id(self):
+        log_source = LogDataSource.objects.create(
+            name='电商-k3s-loki',
+            provider='loki',
+            config={'endpoint': 'http://loki.example:3100'},
+        )
+        trace_source = TracingDataSource.objects.create(
+            name='电商-k3s-tempo',
+            provider='tempo',
+            config={'query_url': 'http://tempo.example:3200'},
+        )
+        ObservabilityDataSourceLink.objects.create(
+            name='电商 k3s Loki ↔ Tempo',
+            log_datasource=log_source,
+            tracing_datasource=trace_source,
+            is_default=True,
+            trace_id_fields=['trace_id', 'traceId'],
+            log_query_template='${__tags} | json | trace_id="${__trace.traceId}"',
+            log_label_mappings=[{'trace_tag': 'service.name', 'log_label': 'container'}],
+        )
+
+        response = self.client.post(
+            '/api/observability/datasource-links/resolve_trace_to_logs/',
+            {
+                'trace_id': '8e3554cc72d7f903d71408b205ab5a2',
+                'tracing_datasource_id': trace_source.id,
+                'tags': {'service.name': 'api-gateway'},
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload['query'],
+            '{container="api-gateway"} | json | trace_id="08e3554cc72d7f903d71408b205ab5a2"',
+        )
+
     def test_datasource_link_resolves_trace_to_grafana_dashboard(self):
         log_source = LogDataSource.objects.create(
             name='电商-k3s-loki',
@@ -627,6 +671,7 @@ class ObservabilityViewsTests(TestCase):
             grafana_variable_mappings=[
                 {'trace_tag': 'service.name', 'variable': 'workload'},
                 {'trace_tag': 'service.namespace', 'variable': 'namespace'},
+                {'trace_tag': 'workload.type', 'variable': 'workload_type'},
             ],
         )
 
@@ -702,6 +747,58 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['query']['traceId'], '0123456789abcdef0123456789abcdef')
         self.assertEqual(payload['query']['var-workload'], 'checkout')
         self.assertEqual(payload['query']['var-namespace'], 'default')
+        self.assertEqual(payload['query']['var-workload_type'], 'deployment')
+
+    def test_datasource_link_resolves_log_to_workload_dashboard_without_trace_id(self):
+        log_source = LogDataSource.objects.create(
+            name='电商-k3s-loki',
+            provider='loki',
+            config={'endpoint': 'http://loki.example:3100'},
+        )
+        trace_source = TracingDataSource.objects.create(
+            name='电商-k3s-tempo',
+            provider='tempo',
+            config={'query_url': 'http://tempo.example:3200'},
+        )
+        ObservabilityDataSourceLink.objects.create(
+            name='电商 k3s Loki ↔ Tempo',
+            log_datasource=log_source,
+            tracing_datasource=trace_source,
+            is_default=True,
+            log_to_grafana_enabled=True,
+            grafana_dashboard_key='kubernetes-compute-resources-workload',
+            log_label_mappings=[
+                {'trace_tag': 'service.name', 'log_label': 'app'},
+                {'trace_tag': 'service.namespace', 'log_label': 'namespace'},
+            ],
+            grafana_variable_mappings=[
+                {'trace_tag': 'service.name', 'variable': 'workload'},
+                {'trace_tag': 'service.namespace', 'variable': 'namespace'},
+                {'trace_tag': 'workload.type', 'variable': 'workload_type'},
+            ],
+        )
+
+        response = self.client.post(
+            '/api/observability/datasource-links/resolve_log_to_grafana/',
+            {
+                'log_datasource_id': log_source.id,
+                'attributes': {'app': 'checkout', 'namespace': 'default', 'workload_type': 'deployment', 'trace_id': '0123456789abcdef0123456789abcdef'},
+                'message': 'checkout failed trace_id=0123456789abcdef0123456789abcdef',
+                'dashboard_key': 'Kubernetes / Compute Resources / Workload',
+                'ignore_trace_id': True,
+                'from': 1710000000000,
+                'to': 1710000300000,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['dashboard']['key'], 'kubernetes-compute-resources-workload')
+        self.assertNotIn('traceId', payload['query'])
+        self.assertEqual(payload['query']['var-workload'], 'checkout')
+        self.assertEqual(payload['query']['var-namespace'], 'default')
+        self.assertEqual(payload['query']['var-workload_type'], 'deployment')
 
     def test_datasource_link_resolves_workload_dashboard_to_loki_query(self):
         log_source = LogDataSource.objects.create(
@@ -788,6 +885,82 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['service'], 'checkout')
         self.assertEqual(payload['tags']['service.namespace'], 'default')
 
+    def test_datasource_link_resolve_grafana_to_trace_requires_dashboard_match(self):
+        log_source = LogDataSource.objects.create(
+            name='电商-k3s-loki',
+            provider='loki',
+            config={'endpoint': 'http://loki.example:3100'},
+        )
+        trace_source = TracingDataSource.objects.create(
+            name='电商-k3s-tempo',
+            provider='tempo',
+            config={'query_url': 'http://tempo.example:3200'},
+        )
+        ObservabilityDataSourceLink.objects.create(
+            name='电商 k3s Loki ↔ Tempo',
+            log_datasource=log_source,
+            tracing_datasource=trace_source,
+            is_default=True,
+            grafana_dashboard_key='kubernetes-compute-resources-workload',
+            grafana_variable_mappings=[
+                {'trace_tag': 'service.name', 'variable': 'workload'},
+                {'trace_tag': 'service.namespace', 'variable': 'namespace'},
+            ],
+        )
+
+        response = self.client.post(
+            '/api/observability/datasource-links/resolve_grafana_to_trace/',
+            {
+                'dashboard_key': 'Node Exporter / Nodes',
+                'query': {
+                    'var-job': 'node-exporter',
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()['detail'], '未找到可用的 Grafana 看板到链路关联')
+
+    def test_datasource_link_resolve_grafana_to_logs_requires_dashboard_match(self):
+        log_source = LogDataSource.objects.create(
+            name='电商-k3s-loki',
+            provider='loki',
+            config={'endpoint': 'http://loki.example:3100'},
+        )
+        trace_source = TracingDataSource.objects.create(
+            name='电商-k3s-tempo',
+            provider='tempo',
+            config={'query_url': 'http://tempo.example:3200'},
+        )
+        ObservabilityDataSourceLink.objects.create(
+            name='电商 k3s Loki ↔ Tempo',
+            log_datasource=log_source,
+            tracing_datasource=trace_source,
+            is_default=True,
+            grafana_dashboard_key='kubernetes-compute-resources-workload',
+            log_label_mappings=[
+                {'trace_tag': 'service.name', 'log_label': 'container'},
+            ],
+            grafana_variable_mappings=[
+                {'trace_tag': 'service.name', 'variable': 'workload'},
+            ],
+        )
+
+        response = self.client.post(
+            '/api/observability/datasource-links/resolve_grafana_to_logs/',
+            {
+                'dashboard_key': 'Node Exporter / Nodes',
+                'query': {
+                    'var-job': 'node-exporter',
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()['detail'], '未找到可用的 Grafana 看板到日志关联')
+
     def test_datasource_link_resolves_log_to_trace_target(self):
         log_source = LogDataSource.objects.create(
             name='电商-k3s-loki',
@@ -851,8 +1024,8 @@ class ObservabilityViewsTests(TestCase):
         self.assertGreaterEqual(payload['summary']['service_count'], 1)
         self.assertTrue(any(item['provider'] == 'demo' for item in payload['providers']))
 
-    def test_observability_firemap_returns_business_cards_and_topology(self):
-        response = self.client.get('/api/observability/fire-map/?system=observability-stack')
+    def test_observability_system_posture_returns_business_cards_and_topology(self):
+        response = self.client.get('/api/observability/system-posture/?system=observability-stack')
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -862,7 +1035,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertTrue(payload['selected_system']['children'])
         self.assertTrue(payload['selected_system']['dependencies'])
         self.assertGreaterEqual(payload['topology']['node_count'], 1)
-        self.assertTrue(any(item['id'] == 'firemap' for item in payload['data_sources']))
+        self.assertTrue(any(item['id'] == 'system-posture' for item in payload['data_sources']))
 
     @override_settings(OBSERVABILITY_CONFIG={
         **TEST_OBSERVABILITY_CONFIG,
@@ -873,10 +1046,10 @@ class ObservabilityViewsTests(TestCase):
         },
     })
     @patch('ops.observability_views.http_requests.get')
-    def test_observability_firemap_uses_live_ecommerce_prometheus_metrics(self, mock_get):
+    def test_observability_system_posture_uses_live_ecommerce_prometheus_metrics(self, mock_get):
         mock_get.side_effect = self._mock_ecommerce_prometheus_get()
 
-        response = self.client.get('/api/observability/fire-map/?system=commerce-core')
+        response = self.client.get('/api/observability/system-posture/?system=commerce-core')
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -910,8 +1083,8 @@ class ObservabilityViewsTests(TestCase):
         },
     })
     @patch('ops.observability_views.http_requests.get')
-    def test_observability_firemap_uses_configured_ecommerce_rules(self, mock_get):
-        system = FireMapSystem.objects.create(
+    def test_observability_system_posture_uses_configured_ecommerce_rules(self, mock_get):
+        system = SystemPostureSystem.objects.create(
             name='电商交易核心',
             domain='核心业务',
             tier='交易链路',
@@ -943,7 +1116,7 @@ class ObservabilityViewsTests(TestCase):
         )
         mock_get.side_effect = self._mock_ecommerce_prometheus_get()
 
-        response = self.client.get(f'/api/observability/fire-map/?system=custom-{system.id}')
+        response = self.client.get(f'/api/observability/system-posture/?system=custom-{system.id}')
 
         self.assertEqual(response.status_code, 200)
         selected = response.json()['selected_system']
@@ -957,15 +1130,15 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(conflict_metric['target'], 10)
         self.assertEqual(conflict_metric['status'], 'healthy')
 
-    def test_observability_firemap_requires_firemap_permission(self):
-        limited_user = get_user_model().objects.create_user('firemap-viewer', password='Admin@123456')
+    def test_observability_system_posture_requires_firemap_permission(self):
+        limited_user = get_user_model().objects.create_user('system-posture-viewer', password='Admin@123456')
         self.client.force_authenticate(user=limited_user)
 
-        response = self.client.get('/api/observability/fire-map/')
+        response = self.client.get('/api/observability/system-posture/')
 
         self.assertEqual(response.status_code, 403)
 
-    def test_firemap_system_cards_can_be_managed_and_rendered(self):
+    def test_system_posture_cards_can_be_managed_and_rendered(self):
         payload = {
             'name': '增长活动平台',
             'domain': '营销增长',
@@ -1012,11 +1185,11 @@ class ObservabilityViewsTests(TestCase):
             'sort_order': 5,
         }
 
-        create_response = self.client.post('/api/observability/fire-map/systems/', payload, format='json')
+        create_response = self.client.post('/api/observability/system-posture/systems/', payload, format='json')
         self.assertEqual(create_response.status_code, 201)
         system_id = create_response.json()['id']
 
-        overview_response = self.client.get(f'/api/observability/fire-map/?system=custom-{system_id}')
+        overview_response = self.client.get(f'/api/observability/system-posture/?system=custom-{system_id}')
         self.assertEqual(overview_response.status_code, 200)
         overview = overview_response.json()
         self.assertEqual(overview['selected_system_id'], f'custom-{system_id}')
@@ -1029,22 +1202,22 @@ class ObservabilityViewsTests(TestCase):
         payload['health_score'] = 91
         payload['base_status'] = 'healthy'
         update_response = self.client.put(
-            f'/api/observability/fire-map/systems/{system_id}/',
+            f'/api/observability/system-posture/systems/{system_id}/',
             payload,
             format='json',
         )
         self.assertEqual(update_response.status_code, 200)
 
-        updated_overview = self.client.get(f'/api/observability/fire-map/?system=custom-{system_id}').json()
+        updated_overview = self.client.get(f'/api/observability/system-posture/?system=custom-{system_id}').json()
         self.assertEqual(updated_overview['selected_system']['owner'], 'growth-sre')
         self.assertEqual(updated_overview['selected_system']['health_score'], 91)
 
-        delete_response = self.client.delete(f'/api/observability/fire-map/systems/{system_id}/')
+        delete_response = self.client.delete(f'/api/observability/system-posture/systems/{system_id}/')
         self.assertEqual(delete_response.status_code, 204)
-        self.assertFalse(FireMapSystem.objects.filter(id=system_id).exists())
+        self.assertFalse(SystemPostureSystem.objects.filter(id=system_id).exists())
 
-    def test_builtin_firemap_card_can_be_overridden_and_hidden(self):
-        override = FireMapSystem.objects.create(
+    def test_builtin_system_posture_card_can_be_overridden_and_hidden(self):
+        override = SystemPostureSystem.objects.create(
             name='电商交易核心',
             domain='交易域',
             tier='P0',
@@ -1057,7 +1230,7 @@ class ObservabilityViewsTests(TestCase):
             updated_by='observer-admin',
         )
 
-        response = self.client.get('/api/observability/fire-map/?system=电商交易核心')
+        response = self.client.get('/api/observability/system-posture/?system=电商交易核心')
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload['selected_system']['source'], 'custom')
@@ -1067,15 +1240,15 @@ class ObservabilityViewsTests(TestCase):
 
         override.is_enabled = False
         override.save(update_fields=['is_enabled'])
-        hidden_response = self.client.get('/api/observability/fire-map/')
+        hidden_response = self.client.get('/api/observability/system-posture/')
         self.assertFalse(any(item['name'] == '电商交易核心' for item in hidden_response.json()['systems']))
 
-    def test_firemap_system_manage_requires_manage_permission(self):
-        limited_user = get_user_model().objects.create_user('firemap-readonly', password='Admin@123456')
+    def test_system_posture_manage_requires_manage_permission(self):
+        limited_user = get_user_model().objects.create_user('system-posture-readonly', password='Admin@123456')
         self.client.force_authenticate(user=limited_user)
 
         response = self.client.post(
-            '/api/observability/fire-map/systems/',
+            '/api/observability/system-posture/systems/',
             {'name': '只读用户卡片', 'base_status': 'healthy'},
             format='json',
         )
@@ -2610,4 +2783,94 @@ class AlertViewSetFilterTests(TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]['level'], 'critical')
         self.assertFalse(results[0]['is_acknowledged'])
+
+
+class AlertWebhookIngestTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.integration = AlertIntegration.objects.create(name='Prometheus', provider='prometheus', default_labels={'environment': 'prod'})
+
+    def test_prometheus_webhook_creates_normalized_alert(self):
+        response = self.client.post(
+            f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
+            {
+                'status': 'firing',
+                'groupKey': 'service=order',
+                'commonLabels': {'service': 'order-center'},
+                'alerts': [{
+                    'status': 'firing',
+                    'fingerprint': 'fp-001',
+                    'labels': {'alertname': 'HighErrorRate', 'severity': 'critical', 'instance': '10.0.1.10:9100'},
+                    'annotations': {'summary': 'Order error rate high', 'description': '5xx ratio above threshold'},
+                    'startsAt': '2026-05-04T10:00:00+08:00',
+                }],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 202)
+        alert = Alert.objects.get()
+        self.assertEqual(alert.source_type, 'prometheus')
+        self.assertEqual(alert.level, 'critical')
+        self.assertEqual(alert.service, 'order-center')
+        self.assertEqual(alert.labels['environment'], 'prod')
+        self.assertEqual(alert.status, Alert.STATUS_ACTIVE)
+        self.assertTrue(AlertAction.objects.filter(alert=alert, action=AlertAction.ACTION_WEBHOOK).exists())
+
+    def test_invalid_webhook_token_is_rejected(self):
+        response = self.client.post('/api/alerts/webhooks/prometheus/bad-token/', {'alerts': []}, format='json')
+        self.assertEqual(response.status_code, 403)
+
+    def test_provider_webhook_requires_token(self):
+        response = self.client.post('/api/alerts/webhooks/prometheus/', {'alerts': []}, format='json')
+        self.assertEqual(response.status_code, 403)
+
+    def test_generic_webhook_allows_tokenless_ingest(self):
+        response = self.client.post(
+            '/api/alerts/webhooks/generic/',
+            {'title': 'Generic alert', 'level': 'warning', 'resource': 'demo-resource'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(Alert.objects.filter(title='Generic alert', source_type='generic').exists())
+
+
+class AlertActionApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_superuser('alert-operator', 'operator@example.com', 'Admin@123456')
+        self.client.force_authenticate(user=self.user)
+        self.alert = Alert.objects.create(title='CPU high', level='warning', source='monitor', source_type='generic', message='cpu high')
+
+    def test_claim_and_mute_alert(self):
+        claim_response = self.client.post(f'/api/alerts/{self.alert.id}/claim/')
+        self.assertEqual(claim_response.status_code, 200)
+        self.alert.refresh_from_db()
+        self.assertEqual(self.alert.claimed_by, 'alert-operator')
+
+        mute_response = self.client.post(f'/api/alerts/{self.alert.id}/mute/', {'minutes': 30}, format='json')
+        self.assertEqual(mute_response.status_code, 200)
+        self.alert.refresh_from_db()
+        self.assertEqual(self.alert.status, Alert.STATUS_MUTED)
+        self.assertTrue(self.alert.is_suppressed)
+
+    def test_notification_rule_can_be_configured(self):
+        channel = AlertNotificationChannel.objects.create(name='email', channel_type='email', config={'to': ['ops@example.com']})
+        recipient = AlertRecipient.objects.create(name='Ops', email='ops@example.com')
+        group = AlertRecipientGroup.objects.create(name='oncall')
+        group.recipients.add(recipient)
+        response = self.client.post(
+            '/api/alert-notification-rules/',
+            {
+                'name': 'critical notify',
+                'min_level': 'warning',
+                'matchers': [{'key': 'source_type', 'op': '==', 'value': 'generic'}],
+                'channel_ids': [channel.id],
+                'recipient_group_ids': [group.id],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        rule = AlertNotificationRule.objects.get(name='critical notify')
+        self.assertEqual(rule.channels.count(), 1)
+        self.assertEqual(rule.recipient_groups.count(), 1)
 

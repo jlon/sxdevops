@@ -18,10 +18,22 @@ router.register(r'deployment-approval-flows', views.DeploymentApprovalFlowViewSe
 router.register(r'deployments', views.DeploymentViewSet)
 router.register(r'transaction-tickets', views.TransactionTicketViewSet, basename='transaction-ticket')
 router.register(r'alerts', views.AlertViewSet)
+router.register(r'alert-integrations', views.AlertIntegrationViewSet, basename='alert-integration')
+router.register(r'alert-recipients', views.AlertRecipientViewSet, basename='alert-recipient')
+router.register(r'alert-recipient-groups', views.AlertRecipientGroupViewSet, basename='alert-recipient-group')
+router.register(r'alert-notification-channels', views.AlertNotificationChannelViewSet, basename='alert-notification-channel')
+router.register(r'alert-notification-rules', views.AlertNotificationRuleViewSet, basename='alert-notification-rule')
+router.register(r'alert-aggregation-rules', views.AlertAggregationRuleViewSet, basename='alert-aggregation-rule')
+router.register(r'alert-inhibition-rules', views.AlertInhibitionRuleViewSet, basename='alert-inhibition-rule')
+router.register(r'alert-mute-rules', views.AlertMuteRuleViewSet, basename='alert-mute-rule')
+router.register(r'alert-escalation-policies', views.AlertEscalationPolicyViewSet, basename='alert-escalation-policy')
+router.register(r'alert-notification-logs', views.AlertNotificationLogViewSet, basename='alert-notification-log')
+router.register(r'alert-actions', views.AlertActionViewSet, basename='alert-action')
 router.register(r'logs', views.LogEntryViewSet)
 router.register(r'log/datasources', log_views.LogDataSourceViewSet, basename='log-datasource')
 router.register(r'observability/datasource-links', observability_views.ObservabilityDataSourceLinkViewSet, basename='observability-datasource-link')
-router.register(r'observability/fire-map/systems', observability_views.FireMapSystemViewSet, basename='firemap-system')
+router.register(r'observability/system-posture/systems', observability_views.SystemPostureSystemViewSet, basename='system-posture-system')
+router.register(r'observability/fire-map/systems', observability_views.SystemPostureSystemViewSet, basename='firemap-system')
 router.register(r'observability/tracing/datasources', observability_views.TracingDataSourceViewSet, basename='tracing-datasource')
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
@@ -34,6 +46,9 @@ router.register(r'nginx/routes', nginx_views.NginxRouteViewSet)
 
 urlpatterns = [
     path('dashboard/stats/', views.dashboard_stats, name='dashboard-stats'),
+    path('alerts/webhooks/<str:provider>/', views.alert_webhook, name='alert-webhook'),
+    path('alerts/webhooks/<str:provider>/<str:token>/', views.alert_webhook, name='alert-webhook-token'),
+    path('alerts/card-actions/<uuid:token>/', views.alert_card_action, name='alert-card-action'),
     path('log/providers/', log_views.log_providers, name='log-providers'),
     path('log/providers/<str:provider>/catalog/', log_views.log_provider_catalog, name='log-provider-catalog'),
     path('log/query/', log_views.log_query, name='log-query'),
@@ -53,7 +68,8 @@ urlpatterns = [
     path('docker/containers/<str:container_id>/inspect/', docker_views.container_inspect, name='docker-container-inspect'),
     path('middleware/overview/', middleware_views.middleware_overview, name='middleware-overview'),
     path('middleware/action/', middleware_views.middleware_action, name='middleware-action'),
-    path('observability/fire-map/', observability_views.observability_firemap, name='observability-fire-map'),
+    path('observability/system-posture/', observability_views.observability_system_posture, name='observability-system-posture'),
+    path('observability/fire-map/', observability_views.observability_system_posture, name='observability-fire-map'),
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),
     path('observability/grafana/config/', observability_views.grafana_setting_view, name='observability-grafana-config'),
     path('observability/tracing/providers/', observability_views.tracing_providers, name='observability-tracing-providers'),

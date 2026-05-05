@@ -15,9 +15,6 @@
           <el-icon><RefreshRight /></el-icon>
           刷新
         </el-button>
-        <el-button size="small" v-if="canQueryLogs" @click="router.push('/logs/query')">日志查询</el-button>
-        <el-button size="small" v-if="canViewAlerts" @click="router.push('/alerts')">告警中心</el-button>
-        <el-button size="small" v-if="canViewGrafana" @click="router.push('/observability/grafana')">监控看板</el-button>
         <el-button size="small" v-if="hasNativeTracingUi" type="primary" @click="openTracingUi">
           外部打开
         </el-button>
@@ -376,14 +373,13 @@
             <div v-if="selectedTraceId" class="trace-context-actions">
               <div class="context-copy">
                 <strong>排障联动</strong>
-                <span>用 Trace ID、服务和时间窗口串起日志、告警、发布、监控与原生平台。</span>
+                <span>用 Trace ID、服务和时间窗口串起日志、看板、告警和发布。</span>
               </div>
               <div class="context-actions">
                 <button v-if="canQueryLogs" type="button" class="context-action-btn primary" @click="openLogsForCurrentTrace">查日志</button>
+                <button v-if="canViewGrafana" type="button" class="context-action-btn" @click="openGrafanaForTrace">查看板</button>
                 <button v-if="canViewAlerts" type="button" class="context-action-btn" @click="openAlertsForTrace">查告警</button>
                 <button v-if="canViewDeployments" type="button" class="context-action-btn" @click="openDeploymentsForTrace">看发布</button>
-                <button v-if="canViewGrafana" type="button" class="context-action-btn" @click="openGrafanaForTrace">看监控</button>
-                <button v-if="hasNativeTracingUi" type="button" class="context-action-btn" @click="openTracingUi">原生平台</button>
               </div>
             </div>
 
@@ -597,6 +593,7 @@ import { Connection, Document, RefreshRight, Search } from '@element-plus/icons-
 import echarts from '@/lib/echarts'
 import { getObservabilityOverview, getTraceDetail, getTracingCatalog, getTracingDataSources, resolveTraceToGrafana, resolveTraceToLogs, searchTracing } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { openRouteInNewTab } from '@/utils/router'
 import TracingDataSources from './TracingDataSources.vue'
 
 const router = useRouter()
@@ -1341,6 +1338,15 @@ function routeWindowMinutes() {
   return raw
 }
 
+function routeTimeRange() {
+  const from = Number(route.query.from || 0)
+  const to = Number(route.query.to || 0)
+  if (Number.isFinite(from) && Number.isFinite(to) && from > 0 && to > 0) {
+    return normalizeTimeRange([from, to])
+  }
+  return buildRelativeTimeRange(routeWindowMinutes())
+}
+
 async function loadOverview() {
   overview.value = await getObservabilityOverview({ provider: filters.provider, datasource_id: filters.datasourceId })
 }
@@ -1454,8 +1460,8 @@ async function applyRouteTracePreset(force = false) {
     await loadCatalog()
   }
 
-  filters.durationMinutes = routeWindowMinutes()
-  filters.timeRange = buildRelativeTimeRange(filters.durationMinutes)
+  filters.timeRange = routeTimeRange()
+  syncDurationMinutesFromTimeRange()
 
   if (!traceId) {
     const nextServiceId = serviceIdFromRouteValue(routeService)
@@ -1587,15 +1593,28 @@ function traceTagsForLogJump(row) {
   }
 }
 
+function traceLogTimeRange(row) {
+  const start = parseDateValue(row?.start_time || rootSpan.value?.start_time)
+  const durationMs = Number(row?.duration_ms || traceDetail.value?.duration_ms || 0)
+  if (start) {
+    const startMs = start.getTime()
+    const endMs = startMs + Math.max(durationMs, 60 * 1000)
+    return [startMs - 5 * 60 * 1000, endMs + 5 * 60 * 1000]
+  }
+  const [from, to] = normalizeTimeRange(filters.timeRange)
+  return [from?.getTime(), to?.getTime()]
+}
+
 async function openLogsForTrace(row) {
   if (!canQueryLogs.value || !row?.trace_id) return
+  const [from, to] = traceLogTimeRange(row)
   try {
     const resolved = await resolveTraceToLogs({
       trace_id: row.trace_id,
       tracing_datasource_id: filters.datasourceId,
       tags: traceTagsForLogJump(row),
     })
-    router.push({
+    openRouteInNewTab(router, {
       path: '/logs/query',
       query: {
         traceId: row.trace_id,
@@ -1604,16 +1623,20 @@ async function openLogsForTrace(row) {
         logDatasourceId: resolved.log_datasource?.id ? String(resolved.log_datasource.id) : undefined,
         lokiQuery: resolved.query || undefined,
         window: String(resolved.window_minutes || filters.durationMinutes || 60),
+        from,
+        to,
         autoRun: '1',
       },
     })
   } catch {
-    router.push({
+    openRouteInNewTab(router, {
       path: '/logs/query',
       query: {
         traceId: row.trace_id,
         service: row.service_name || row.service_id || '',
         window: String(filters.durationMinutes || 60),
+        from,
+        to,
         autoRun: '1',
       },
     })
@@ -1624,12 +1647,14 @@ function openLogsForCurrentTrace() {
   openLogsForTrace({
     trace_id: selectedTraceId.value,
     service_name: traceContextService.value,
+    start_time: rootSpan.value?.start_time,
+    duration_ms: traceDetail.value?.duration_ms,
   })
 }
 
 function openAlertsForTrace() {
   if (!canViewAlerts.value || !selectedTraceId.value) return
-  router.push({
+  openRouteInNewTab(router, {
     path: '/alerts',
     query: {
       search: traceContextService.value || selectedTraceId.value,
@@ -1641,7 +1666,7 @@ function openAlertsForTrace() {
 
 function openDeploymentsForTrace() {
   if (!canViewDeployments.value || !selectedTraceId.value) return
-  router.push({
+  openRouteInNewTab(router, {
     path: '/workorders/releases',
     query: {
       keyword: traceContextService.value || traceTitle.value,
@@ -1699,7 +1724,7 @@ async function openGrafanaForTrace() {
       from: start ? start.getTime() : undefined,
       to: end ? end.getTime() : undefined,
     })
-    router.push({
+    openRouteInNewTab(router, {
       path: '/observability/grafana',
       query: {
         ...(resolved.query || {}),
@@ -1710,7 +1735,7 @@ async function openGrafanaForTrace() {
       },
     })
   } catch {
-    router.push({
+    openRouteInNewTab(router, {
       path: '/observability/grafana',
       query: {
         dashboard: 'kubernetes-compute-resources-workload',
@@ -1927,7 +1952,7 @@ onMounted(async () => {
 })
 
 watch(
-  () => [route.query.provider || '', route.query.datasourceId || '', route.query.traceId || '', route.query.service || '', route.query.keyword || '', route.query.window || ''].join('|'),
+  () => [route.query.provider || '', route.query.datasourceId || '', route.query.traceId || '', route.query.service || '', route.query.keyword || '', route.query.window || '', route.query.from || '', route.query.to || ''].join('|'),
   async (value, previous) => {
     if (!value || value === previous) return
     await applyRouteTracePreset()
@@ -1994,6 +2019,17 @@ onUnmounted(() => {
 .hero {
   align-items: center;
   justify-content: space-between;
+}
+
+.hero-actions {
+  align-items: center;
+}
+
+.hero-actions :deep(.el-button) {
+  border-radius: 10px;
+  font-weight: 500;
+  min-height: 32px;
+  padding: 0 14px;
 }
 
 .hero-title-row {

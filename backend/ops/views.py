@@ -5,7 +5,7 @@ from django.db.models import Avg, Count, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from eventwall.mixins import EventWallModelViewSetMixin
@@ -23,6 +23,17 @@ from .host_task_schedules import (
 from .host_tasks import build_host_target_queryset, start_host_task
 from .models import (
     Alert,
+    AlertAction,
+    AlertAggregationRule,
+    AlertEscalationPolicy,
+    AlertInhibitionRule,
+    AlertIntegration,
+    AlertMuteRule,
+    AlertNotificationChannel,
+    AlertNotificationLog,
+    AlertNotificationRule,
+    AlertRecipient,
+    AlertRecipientGroup,
     Deployment,
     DeploymentApprovalFlow,
     DeploymentApprovalStep,
@@ -35,6 +46,17 @@ from .models import (
     TransactionTicket,
 )
 from .serializers import (
+    AlertActionSerializer,
+    AlertAggregationRuleSerializer,
+    AlertEscalationPolicySerializer,
+    AlertInhibitionRuleSerializer,
+    AlertIntegrationSerializer,
+    AlertMuteRuleSerializer,
+    AlertNotificationChannelSerializer,
+    AlertNotificationLogSerializer,
+    AlertNotificationRuleSerializer,
+    AlertRecipientGroupSerializer,
+    AlertRecipientSerializer,
     AlertSerializer,
     ApprovalActionSerializer,
     DeploymentActionSerializer,
@@ -52,6 +74,17 @@ from .serializers import (
     HostTaskTemplateSerializer,
     LogEntrySerializer,
     TransactionTicketSerializer,
+)
+from .alerting import (
+    alert_group_summary,
+    alert_summary,
+    apply_alert_action,
+    dispatch_alert_notifications,
+    handle_interaction_token,
+    ingest_webhook,
+    match_matchers,
+    normalize_provider,
+    resolve_integration,
 )
 
 
@@ -1142,11 +1175,16 @@ class TransactionTicketViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
         )
 
 
-class AlertViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = Alert.objects.select_related('host').all()
+class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = Alert.objects.select_related('host', 'integration').prefetch_related('actions', 'notification_logs__channel', 'notification_logs__rule').all()
     serializer_class = AlertSerializer
-    search_fields = ['title', 'source', 'message', 'host__hostname']
-    filterset_fields = ['level', 'is_acknowledged']
+    search_fields = ['title', 'source', 'message', 'host__hostname', 'service', 'resource', 'business_line', 'cluster', 'namespace']
+    filterset_fields = ['level', 'status', 'source_type', 'source', 'is_acknowledged', 'is_suppressed', 'service', 'environment', 'cluster', 'namespace', 'region', 'business_line', 'claimed_by']
+    event_module = 'ops'
+    event_resource_type = 'alert'
+    event_resource_label = '告警'
+    event_resource_name_fields = ('title',)
+    event_exclude_fields = ('raw_payload',)
     rbac_permissions = {
         'list': ['ops.alert.view'],
         'retrieve': ['ops.alert.view'],
@@ -1154,7 +1192,356 @@ class AlertViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'update': ['ops.alert.manage'],
         'partial_update': ['ops.alert.manage'],
         'destroy': ['ops.alert.manage'],
+        'summary': ['ops.alert.view'],
+        'groups': ['ops.alert.view'],
+        'acknowledge': ['ops.alert.manage'],
+        'claim': ['ops.alert.manage'],
+        'unclaim': ['ops.alert.manage'],
+        'mute': ['ops.alert.manage'],
+        'escalate': ['ops.alert.manage'],
+        'resolve': ['ops.alert.manage'],
+        'close': ['ops.alert.manage'],
+        'reopen': ['ops.alert.manage'],
+        'notify': ['ops.alert.notify'],
     }
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        params = self.request.query_params
+        if params.get('only_open') in {'1', 'true', 'True'}:
+            queryset = queryset.exclude(status__in=[Alert.STATUS_RESOLVED, Alert.STATUS_CLOSED])
+        resource = params.get('resource')
+        if resource:
+            queryset = queryset.filter(Q(resource__icontains=resource) | Q(host__hostname__icontains=resource))
+        label_key = params.get('label_key')
+        label_value = params.get('label_value')
+        if label_key and label_value:
+            matched_ids = [
+                alert.id for alert in queryset[:5000]
+                if str((alert.labels or {}).get(label_key, '')) == str(label_value)
+            ]
+            queryset = Alert.objects.filter(id__in=matched_ids)
+        return queryset
+
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        queryset = self.filter_queryset(self.get_queryset())
+        return Response(alert_summary(queryset[:5000]))
+
+    @action(detail=False, methods=['get'])
+    def groups(self, request):
+        queryset = self.filter_queryset(self.get_queryset())
+        group_by = [item.strip() for item in request.query_params.get('group_by', '').split(',') if item.strip()]
+        return Response(alert_group_summary(queryset, group_by=group_by or None))
+
+    def _actor(self, request):
+        return request.user.username if request.user and request.user.is_authenticated else ''
+
+    def _action_response(self, request, action_name, note='', metadata=None, mute_minutes=60):
+        alert = self.get_object()
+        apply_alert_action(
+            alert,
+            action_name,
+            actor=self._actor(request),
+            note=note,
+            metadata=metadata or {},
+            request=request,
+            mute_minutes=mute_minutes,
+        )
+        alert.refresh_from_db()
+        record_event(
+            request=request,
+            module='ops',
+            category='alert',
+            action=action_name,
+            title=f'告警{dict(AlertAction.ACTION_CHOICES).get(action_name, action_name)}',
+            summary=f'{request.user.username} 对告警 {alert.title} 执行 {action_name}',
+            resource_type='alert',
+            resource_id=alert.id,
+            resource_name=alert.title,
+            severity=EventRecord.SEVERITY_WARNING if action_name in {AlertAction.ACTION_ESCALATE, AlertAction.ACTION_MUTE} else EventRecord.SEVERITY_INFO,
+            correlation_id=f'alert:{alert.id}',
+        )
+        return Response(self.get_serializer(alert).data)
+
+    @action(detail=True, methods=['post'])
+    def acknowledge(self, request, pk=None):
+        return self._action_response(request, AlertAction.ACTION_ACKNOWLEDGE, note=request.data.get('note', ''))
+
+    @action(detail=True, methods=['post'])
+    def claim(self, request, pk=None):
+        return self._action_response(request, AlertAction.ACTION_CLAIM, note=request.data.get('note', ''))
+
+    @action(detail=True, methods=['post'])
+    def unclaim(self, request, pk=None):
+        return self._action_response(request, AlertAction.ACTION_UNCLAIM, note=request.data.get('note', ''))
+
+    @action(detail=True, methods=['post'])
+    def mute(self, request, pk=None):
+        try:
+            mute_minutes = int(request.data.get('minutes') or 60)
+        except (TypeError, ValueError):
+            mute_minutes = 60
+        return self._action_response(request, AlertAction.ACTION_MUTE, note=request.data.get('note', ''), mute_minutes=max(mute_minutes, 1))
+
+    @action(detail=True, methods=['post'])
+    def escalate(self, request, pk=None):
+        return self._action_response(request, AlertAction.ACTION_ESCALATE, note=request.data.get('note', ''))
+
+    @action(detail=True, methods=['post'])
+    def resolve(self, request, pk=None):
+        return self._action_response(request, AlertAction.ACTION_RESOLVE, note=request.data.get('note', ''))
+
+    @action(detail=True, methods=['post'])
+    def close(self, request, pk=None):
+        return self._action_response(request, AlertAction.ACTION_CLOSE, note=request.data.get('note', ''))
+
+    @action(detail=True, methods=['post'])
+    def reopen(self, request, pk=None):
+        return self._action_response(request, AlertAction.ACTION_REOPEN, note=request.data.get('note', ''))
+
+    @action(detail=True, methods=['post'])
+    def notify(self, request, pk=None):
+        alert = self.get_object()
+        logs = dispatch_alert_notifications(alert, action=request.data.get('action') or 'fire', request=request, force=True)
+        return Response({'sent': len(logs), 'logs': AlertNotificationLogSerializer(logs, many=True).data})
+
+
+class AlertIntegrationViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertIntegration.objects.all()
+    serializer_class = AlertIntegrationSerializer
+    search_fields = ['name', 'provider', 'description']
+    event_module = 'ops'
+    event_resource_type = 'alert_integration'
+    event_resource_label = '告警接入源'
+    event_resource_name_fields = ('name',)
+    event_exclude_fields = ('secret', 'token')
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+    }
+
+
+class AlertRecipientViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertRecipient.objects.select_related('user').all()
+    serializer_class = AlertRecipientSerializer
+    search_fields = ['name', 'phone', 'email', 'description']
+    event_module = 'ops'
+    event_resource_type = 'alert_recipient'
+    event_resource_label = '告警接收人'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+    }
+
+
+class AlertRecipientGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertRecipientGroup.objects.prefetch_related('recipients', 'users').all()
+    serializer_class = AlertRecipientGroupSerializer
+    search_fields = ['name', 'description']
+    event_module = 'ops'
+    event_resource_type = 'alert_recipient_group'
+    event_resource_label = '告警接收组'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+    }
+
+
+class AlertNotificationChannelViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertNotificationChannel.objects.all()
+    serializer_class = AlertNotificationChannelSerializer
+    search_fields = ['name', 'channel_type']
+    event_module = 'ops'
+    event_resource_type = 'alert_notification_channel'
+    event_resource_label = '告警通知渠道'
+    event_resource_name_fields = ('name',)
+    event_exclude_fields = ('config',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+        'test': ['ops.alert.notify'],
+    }
+
+    @action(detail=True, methods=['post'])
+    def test(self, request, pk=None):
+        channel = self.get_object()
+        alert = Alert.objects.order_by('-created_at').first()
+        if not alert:
+            alert = Alert.objects.create(
+                title='告警通知测试',
+                level='info',
+                source='AgDevOps',
+                source_type=Alert.SOURCE_GENERIC,
+                message='这是一条用于验证通知渠道的测试告警。',
+                status=Alert.STATUS_ACTIVE,
+            )
+        temp_rule = AlertNotificationRule(name='渠道测试', is_enabled=True)
+        logs = []
+        from .alerting import send_alert_notification
+        logs.append(send_alert_notification(channel, alert, {'names': ['渠道测试']}, action='test', rule=None, request=request))
+        return Response(AlertNotificationLogSerializer(logs, many=True).data)
+
+
+class AlertAggregationRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertAggregationRule.objects.all()
+    serializer_class = AlertAggregationRuleSerializer
+    search_fields = ['name', 'description']
+    event_module = 'ops'
+    event_resource_type = 'alert_aggregation_rule'
+    event_resource_label = '告警聚合规则'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+    }
+
+
+class AlertInhibitionRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertInhibitionRule.objects.all()
+    serializer_class = AlertInhibitionRuleSerializer
+    search_fields = ['name', 'description']
+    event_module = 'ops'
+    event_resource_type = 'alert_inhibition_rule'
+    event_resource_label = '告警抑制规则'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+    }
+
+
+class AlertMuteRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertMuteRule.objects.all()
+    serializer_class = AlertMuteRuleSerializer
+    search_fields = ['name', 'reason']
+    event_module = 'ops'
+    event_resource_type = 'alert_mute_rule'
+    event_resource_label = '告警屏蔽规则'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+    }
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user.username)
+
+
+class AlertEscalationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertEscalationPolicy.objects.all()
+    serializer_class = AlertEscalationPolicySerializer
+    search_fields = ['name', 'description']
+    event_module = 'ops'
+    event_resource_type = 'alert_escalation_policy'
+    event_resource_label = '告警升级策略'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+    }
+
+
+class AlertNotificationRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertNotificationRule.objects.select_related('aggregation_rule', 'escalation_policy').prefetch_related('channels', 'recipients', 'recipient_groups').all()
+    serializer_class = AlertNotificationRuleSerializer
+    search_fields = ['name', 'description']
+    event_module = 'ops'
+    event_resource_type = 'alert_notification_rule'
+    event_resource_label = '告警通知规则'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+    }
+
+
+class AlertNotificationLogViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = AlertNotificationLog.objects.select_related('alert', 'rule', 'channel').all()
+    serializer_class = AlertNotificationLogSerializer
+    search_fields = ['recipient_summary', 'response_body', 'error_message']
+    filterset_fields = ['alert', 'rule', 'channel', 'action', 'status']
+    rbac_permissions = {
+        'list': ['ops.alert.view'],
+        'retrieve': ['ops.alert.view'],
+    }
+
+
+class AlertActionViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = AlertAction.objects.select_related('alert').all()
+    serializer_class = AlertActionSerializer
+    search_fields = ['actor', 'note', 'action']
+    filterset_fields = ['alert', 'action', 'actor']
+    rbac_permissions = {
+        'list': ['ops.alert.view'],
+        'retrieve': ['ops.alert.view'],
+    }
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def alert_webhook(request, provider, token=''):
+    provider = normalize_provider(provider)
+    supplied_token = token or request.query_params.get('token') or request.headers.get('X-Alert-Token') or request.headers.get('X-Agdevops-Token')
+    if provider != Alert.SOURCE_GENERIC and not supplied_token:
+        return Response({'detail': '该告警接入源必须携带有效令牌。'}, status=status.HTTP_403_FORBIDDEN)
+    integration = resolve_integration(provider, supplied_token)
+    if supplied_token and not integration:
+        return Response({'detail': '告警接入源令牌无效或已禁用。'}, status=status.HTTP_403_FORBIDDEN)
+    result = ingest_webhook(provider, request.data, integration=integration, request=request)
+    return Response({
+        'success': True,
+        'provider': provider,
+        'created': result['created'],
+        'updated': result['updated'],
+        'alert_ids': [alert.id for alert in result['alerts']],
+    }, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
+def alert_card_action(request, token):
+    ok, message, alert = handle_interaction_token(token, request=request)
+    http_status = status.HTTP_200_OK if ok else status.HTTP_400_BAD_REQUEST
+    return Response({'success': ok, 'message': message, 'alert_id': alert.id if alert else None}, status=http_status)
 
 
 class LogEntryViewSet(RBACPermissionMixin, viewsets.ModelViewSet):

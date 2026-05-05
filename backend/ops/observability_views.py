@@ -20,10 +20,10 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
-from .models import Alert, Deployment, FireMapSystem, GrafanaSetting, LogDataSource, LogEntry, ObservabilityDataSourceLink, TracingDataSource
+from .models import Alert, Deployment, GrafanaSetting, LogDataSource, LogEntry, ObservabilityDataSourceLink, SystemPostureSystem, TracingDataSource
 from .serializers import (
     AlertSerializer,
-    FireMapSystemSerializer,
+    SystemPostureSystemSerializer,
     GrafanaSettingSerializer,
     ObservabilityDataSourceLinkSerializer,
     TracingDataSourceSerializer,
@@ -88,6 +88,7 @@ DEFAULT_LOG_LABEL_MAPPINGS = [
 DEFAULT_GRAFANA_VARIABLE_MAPPINGS = [
     {'trace_tag': 'service.name', 'variable': 'workload'},
     {'trace_tag': 'service.namespace', 'variable': 'namespace'},
+    {'trace_tag': 'workload.type', 'variable': 'workload_type'},
 ]
 
 SERVICE_TAG_ALIASES = [
@@ -111,6 +112,16 @@ NAMESPACE_TAG_ALIASES = [
     'k8s.namespace.name',
     'kubernetes_namespace_name',
     'kubernetes.namespace',
+]
+WORKLOAD_TYPE_TAG_ALIASES = [
+    'workload.type',
+    'workload_type',
+    'workloadType',
+    'k8s.workload.type',
+    'kubernetes_workload_type',
+    'controller_kind',
+    'owner_kind',
+    'kind',
 ]
 
 
@@ -173,10 +184,13 @@ def _merge_standard_trace_tags(tags):
     normalized = dict(tags or {})
     service = _first_text_value(normalized, SERVICE_TAG_ALIASES)
     namespace = _first_text_value(normalized, NAMESPACE_TAG_ALIASES)
+    workload_type = _first_text_value(normalized, WORKLOAD_TYPE_TAG_ALIASES) or 'deployment'
     if service and not normalized.get('service.name'):
         normalized['service.name'] = service
     if namespace and not normalized.get('service.namespace'):
         normalized['service.namespace'] = namespace
+    if workload_type and not normalized.get('workload.type'):
+        normalized['workload.type'] = workload_type.lower()
     return normalized
 
 
@@ -225,14 +239,22 @@ def _render_log_selector(tags, mappings):
     return '{' + ','.join(selector_parts) + '}' if selector_parts else ''
 
 
+def _normalize_trace_id_for_log(trace_id):
+    value = str(trace_id or '').strip()
+    if re.fullmatch(r'[0-9a-fA-F]{31}', value):
+        return f'0{value}'
+    return value
+
+
 def _render_log_query(link, trace_id, tags=None):
     template = (link.log_query_template or DEFAULT_LOG_QUERY_TEMPLATE).strip() or DEFAULT_LOG_QUERY_TEMPLATE
     selector = _render_log_selector(tags, link.log_label_mappings)
     query = template.replace('${__tags}', selector)
-    query = query.replace('${__trace.traceId}', trace_id)
-    query = query.replace('${__trace.traceID}', trace_id)
-    query = query.replace('${__trace.id}', trace_id)
-    query = query.replace('${traceId}', trace_id)
+    log_trace_id = _normalize_trace_id_for_log(trace_id)
+    query = query.replace('${__trace.traceId}', log_trace_id)
+    query = query.replace('${__trace.traceID}', log_trace_id)
+    query = query.replace('${__trace.id}', log_trace_id)
+    query = query.replace('${traceId}', log_trace_id)
     if not trace_id:
         query = re.sub(r'\s*\|\s*(?:json\s*\|\s*)?trace_?id\s*=\s*""', '', query, flags=re.IGNORECASE)
     return query.strip()
@@ -258,12 +280,29 @@ def _resolve_observability_link(log_datasource_id='', tracing_datasource_id='', 
 
 def _resolve_observability_link_for_dashboard(dashboard_key=''):
     key = str(dashboard_key or '').strip()
+    if not key:
+        return None
     queryset = ObservabilityDataSourceLink.objects.select_related('log_datasource', 'tracing_datasource').filter(is_enabled=True)
-    if key:
-        exact = queryset.filter(grafana_dashboard_key__iexact=key).order_by('-is_default', 'name').first()
-        if exact:
-            return exact
-    return queryset.order_by('-is_default', 'name').first()
+    _, dashboard = _find_grafana_dashboard(key)
+    candidates = [key]
+    if dashboard:
+        candidates.extend([
+            dashboard.get('key'),
+            dashboard.get('slug'),
+            dashboard.get('title'),
+        ])
+    normalized = {str(item or '').strip().lower() for item in candidates if str(item or '').strip()}
+    compact = {re.sub(r'[^a-z0-9]+', '', item) for item in normalized if item}
+    for link in queryset.order_by('-is_default', 'name'):
+        link_key = str(link.grafana_dashboard_key or '').strip()
+        if not link_key:
+            continue
+        lowered = link_key.lower()
+        if lowered in normalized:
+            return link
+        if re.sub(r'[^a-z0-9]+', '', lowered) in compact:
+            return link
+    return None
 
 
 def _link_payload(link):
@@ -282,6 +321,7 @@ def _find_grafana_dashboard(dashboard_key=''):
     key = str(dashboard_key or '').strip()
     if key:
         normalized_key = key.lower()
+        compact_key = re.sub(r'[^a-z0-9]+', '', normalized_key)
         for dashboard in dashboards:
             candidates = [
                 dashboard.get('key'),
@@ -290,6 +330,14 @@ def _find_grafana_dashboard(dashboard_key=''):
             ]
             if any(str(candidate or '').strip().lower() == normalized_key for candidate in candidates):
                 return grafana, dashboard
+            if any(re.sub(r'[^a-z0-9]+', '', str(candidate or '').strip().lower()) == compact_key for candidate in candidates):
+                return grafana, dashboard
+        if 'workload' in normalized_key:
+            for dashboard in dashboards:
+                title = str(dashboard.get('title') or '').lower()
+                tags = {str(tag).lower() for tag in dashboard.get('tags') or []}
+                if 'workload' in title or 'workload' in tags:
+                    return grafana, dashboard
     for dashboard in dashboards:
         tags = {str(tag).lower() for tag in dashboard.get('tags') or []}
         title = str(dashboard.get('title') or '').lower()
@@ -300,7 +348,9 @@ def _find_grafana_dashboard(dashboard_key=''):
 
 def _render_grafana_query(link, trace_id, tags=None):
     tags = _merge_standard_trace_tags(tags or {})
-    query = {'traceId': trace_id}
+    query = {}
+    if trace_id:
+        query['traceId'] = trace_id
     service = tags.get('service.name') or tags.get('service') or ''
     if isinstance(service, str) and service.strip():
         query['service'] = service.strip()
@@ -308,6 +358,9 @@ def _render_grafana_query(link, trace_id, tags=None):
         value = tags.get(item['trace_tag'])
         if isinstance(value, str) and value.strip():
             query[f'var-{item["variable"]}'] = value.strip()
+    workload_type = tags.get('workload.type')
+    if isinstance(workload_type, str) and workload_type.strip() and not query.get('var-workload_type'):
+        query['var-workload_type'] = workload_type.strip().lower()
     return query
 
 
@@ -781,7 +834,7 @@ FIREMAP_SYSTEM_TEMPLATES = [
         ],
         'playbook': [
             '先区分是 DNS、WAF 还是源站的问题。',
-            '入口侧异常往往会同时放大多个业务卡片的火苗。',
+            '入口侧异常往往会同时放大多个业务系统的健康波动。',
             '将入口延迟与业务慢 Span 对齐后再决定是否回滚。',
         ],
     },
@@ -871,7 +924,7 @@ def _firemap_system_to_template(system, builtin_backed=False):
                 'kind': '网关',
                 'base_status': 'healthy' if system.base_status == 'healthy' else 'warning',
                 'metrics': [{'label': '可用率', 'value': 99.9, 'target': 99.5, 'unit': '%', 'direction': 'higher'}],
-                'impact': '入口侧稳定性会影响该业务卡片的外部可用性。',
+                'impact': '入口侧稳定性会影响该系统的外部可用性。',
             },
             {
                 'id': f'{system_id}-{slug}-storage',
@@ -917,7 +970,7 @@ def _firemap_system_to_template(system, builtin_backed=False):
         'domain': system.domain or '未分组',
         'tier': system.tier or '业务系统',
         'owner': system.owner or '未设置',
-        'summary': system.summary or '自定义业务卡片，支持按关键字对齐告警、日志、Trace 和事件。',
+        'summary': system.summary or '自定义系统态势卡片，支持按关键字对齐告警、日志、Trace 和事件。',
         'base_status': system.base_status,
         'health_score': system.health_score,
         'keywords': keywords or [system.name, system.domain, system.owner],
@@ -935,7 +988,7 @@ def _firemap_system_to_template(system, builtin_backed=False):
 
 
 def _firemap_templates():
-    systems = list(FireMapSystem.objects.all())
+    systems = list(SystemPostureSystem.objects.all())
     custom_by_name = {system.name: system for system in systems}
     builtin_names = {item['name'] for item in FIREMAP_SYSTEM_TEMPLATES}
     templates = []
@@ -2295,7 +2348,7 @@ def _build_firemap_system_payload(template, access, catalog=None):
             'id': f"{template['id']}-hint",
             'title': template['name'],
             'level': status,
-            'source': 'firemap',
+            'source': 'system_posture',
             'message': template['summary'],
             'time': timezone.now().isoformat(),
             'host_name': '',
@@ -2411,12 +2464,12 @@ def _firemap_data_sources(access, catalog=None, grafana=None, logs=None, alerts=
             'path': '/events/overview',
         })
     sources.append({
-        'id': 'firemap',
-        'name': '灭火图',
+        'id': 'system-posture',
+        'name': '系统态势',
         'status': 'healthy',
         'count': system_count if system_count is not None else len(FIREMAP_SYSTEM_TEMPLATES),
-        'description': '业务级排障入口',
-        'path': '/observability/firemap',
+        'description': '业务系统健康与 SLA 总览入口',
+        'path': '/observability/system-posture',
     })
     return sources
 
@@ -2551,13 +2604,13 @@ def _firemap_timeline(template):
     return items[:8]
 
 
-class FireMapSystemViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = FireMapSystem.objects.all()
-    serializer_class = FireMapSystemSerializer
+class SystemPostureSystemViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = SystemPostureSystem.objects.all()
+    serializer_class = SystemPostureSystemSerializer
     pagination_class = None
     event_module = 'ops'
-    event_resource_type = 'firemap_system'
-    event_resource_label = '灭火图业务卡片'
+    event_resource_type = 'system_posture_system'
+    event_resource_label = '系统态势卡片'
     event_resource_name_fields = ('name',)
     rbac_permissions = {
         'list': ['ops.observability.firemap.view'],
@@ -2585,6 +2638,9 @@ class FireMapSystemViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, view
     def perform_update(self, serializer):
         username = getattr(self.request.user, 'username', '') or 'system'
         serializer.save(updated_by=username)
+
+
+FireMapSystemViewSet = SystemPostureSystemViewSet
 
 
 class ObservabilityDataSourceLinkViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
@@ -2703,13 +2759,15 @@ class ObservabilityDataSourceLinkViewSet(EventWallModelViewSetMixin, RBACPermiss
 
         attributes = request.data.get('attributes') if isinstance(request.data.get('attributes'), dict) else {}
         message = request.data.get('message') or ''
-        trace_id = (
-            str(request.data.get('trace_id') or '').strip()
-            or _trace_id_from_mapping(attributes, fields=link.trace_id_fields, message=message, regex=link.trace_id_regex)
-        )
-        if not trace_id:
-            return Response({'detail': '未能从日志内容中解析 Trace ID'}, status=status.HTTP_400_BAD_REQUEST)
+        trace_id = ''
+        if not request.data.get('ignore_trace_id'):
+            trace_id = (
+                str(request.data.get('trace_id') or '').strip()
+                or _trace_id_from_mapping(attributes, fields=link.trace_id_fields, message=message, regex=link.trace_id_regex)
+            )
         tags = _tags_from_log_attributes(link, attributes)
+        if not trace_id and not (tags.get('service.name') or tags.get('service')):
+            return Response({'detail': '日志内容缺少可用于看板筛选的 workload/service 标签'}, status=status.HTTP_400_BAD_REQUEST)
         payload = _grafana_resolve_payload(link, trace_id, tags=tags, request_data=request.data)
         if not payload:
             return Response({'detail': '未找到可用的 Grafana 看板配置'}, status=status.HTTP_404_NOT_FOUND)
@@ -2916,7 +2974,7 @@ def grafana_setting_view(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.observability.firemap.view')])
-def observability_firemap(request):
+def observability_system_posture(request):
     access = _observability_access(request)
     provider = request.query_params.get('provider', '')
     layer = request.query_params.get('layer', '')
@@ -2967,7 +3025,7 @@ def observability_firemap(request):
 
     navigation = []
     if access.get('firemap'):
-        navigation.append({'title': '灭火图', 'path': '/observability/firemap', 'description': '从业务卡片到根因路径的统一排障入口。', 'tone': 'danger'})
+        navigation.append({'title': '系统态势', 'path': '/observability/system-posture', 'description': '查看业务系统健康、SLA 指标与依赖影响。', 'tone': 'danger'})
     if access.get('trace'):
         navigation.append({'title': '链路追踪', 'path': '/observability/tracing', 'description': '查看 Trace、Span 和调用拓扑。', 'tone': 'success'})
     if access.get('log_query') or access.get('log_datasource'):
@@ -2991,9 +3049,9 @@ def observability_firemap(request):
         'timeline': selected_changes,
         'quick_actions': selected_system.get('actions') or [],
         'tips': [
-            '先看顶部红色系统卡片，再沿着中间的依赖图下钻到服务和接口。',
+            '先看顶部高风险系统，再沿着中间的依赖图下钻到服务和接口。',
             '从告警、日志、链路和事件四种证据同时对齐故障时间线，减少误判。',
-            '灭火图只负责把故障范围收敛到最小可行动单位，真正处理仍然跳回原始观测数据。',
+            '系统态势负责汇总业务健康、依赖影响和证据入口，真正处理仍然回到原始观测数据。',
         ],
         'context': {
             'provider': provider,
@@ -3002,6 +3060,9 @@ def observability_firemap(request):
             'can_manage': access.get('firemap_manage'),
         },
     })
+
+
+observability_firemap = observability_system_posture
 
 
 @api_view(['GET'])

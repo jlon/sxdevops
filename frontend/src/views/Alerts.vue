@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="alerts-page">
     <section class="hero panel">
       <div class="hero-copy">
@@ -6,186 +6,1040 @@
           <span class="hero-icon">
             <el-icon><Bell /></el-icon>
           </span>
-          <h2>告警中心</h2>
-          <p class="page-inline-desc">集中查看、确认与定位告警</p>
+          <h2>&#x544A;&#x8B66;&#x4E2D;&#x5FC3;</h2>
+          <p class="page-inline-desc">&#x7EDF;&#x4E00;&#x63A5;&#x6536;&#x591A;&#x6E90;&#x544A;&#x8B66;&#xFF0C;&#x652F;&#x6301;&#x805A;&#x5408;&#x3001;&#x6291;&#x5236;&#x3001;&#x5C4F;&#x853D;&#x3001;&#x8BA4;&#x9886;&#x3001;&#x5347;&#x7EA7;&#x4E0E;&#x901A;&#x77E5;&#x5206;&#x53D1;</p>
         </div>
       </div>
       <div class="hero-actions">
-        <el-button size="small" @click="fetchData" :loading="loading">刷新</el-button>
-        <el-button size="small" v-if="canQueryLogs" @click="router.push('/logs/query')">日志查询</el-button>
-        <el-button size="small" v-if="canViewTracing" @click="router.push('/observability/tracing')">链路追踪</el-button>
-        <el-button size="small" v-if="canViewGrafana" @click="router.push('/observability/grafana')">监控看板</el-button>
+        <el-button size="small" :icon="Refresh" :loading="loading || configLoading" @click="refreshAll">&#x5237;&#x65B0;</el-button>
       </div>
     </section>
 
-    <div class="stats-grid release-stats">
-      <div class="stat-card release-stat-card">
-        <div class="stat-value">{{ total }}</div>
-        <div class="stat-label">告警总数</div>
-      </div>
-      <div class="stat-card release-stat-card danger-card">
-        <div class="stat-value">{{ criticalCount }}</div>
-        <div class="stat-label">严重告警</div>
-      </div>
-      <div class="stat-card release-stat-card warning-card">
-        <div class="stat-value">{{ warningCount }}</div>
-        <div class="stat-label">警告告警</div>
-      </div>
-      <div class="stat-card release-stat-card success-card">
-        <div class="stat-value">{{ acknowledgedCount }}</div>
-        <div class="stat-label">已确认</div>
+    <div class="stats-grid release-stats dashboard-stats">
+      <div v-for="card in statCards" :key="card.label" class="stat-card release-stat-card" :class="card.tone">
+        <div class="stat-value">{{ card.value }}</div>
+        <div class="stat-label">{{ card.label }}</div>
       </div>
     </div>
 
-    <section class="panel">
-      <div class="filter-bar">
-        <el-input
-          v-model="search"
-          size="small"
-          placeholder="搜索告警标题 / 来源"
-          clearable
-          style="width: 280px"
-          :prefix-icon="Search"
-          @input="handleFilterChange"
-        />
-        <el-select v-model="levelFilter" size="small" placeholder="级别" clearable style="width: 112px" @change="handleFilterChange">
-          <el-option label="严重" value="critical" />
-          <el-option label="警告" value="warning" />
-          <el-option label="信息" value="info" />
-        </el-select>
-        <el-select v-model="ackFilter" size="small" placeholder="状态" clearable style="width: 112px" @change="handleFilterChange">
-          <el-option label="未确认" :value="false" />
-          <el-option label="已确认" :value="true" />
-        </el-select>
-      </div>
+    <div class="neo-tabs theme-blue alert-center-tabs">
+      <button v-if="canViewAlerts" class="neo-tab-btn" :class="{ active: activeTab === 'events' }" @click="switchTab('events')">
+        <el-icon style="margin-right: 4px;"><Bell /></el-icon>&#x544A;&#x8B66;&#x4E8B;&#x4EF6;
+      </button>
+      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'policies' }" @click="switchTab('policies')">
+        <el-icon style="margin-right: 4px;"><Operation /></el-icon>&#x7B56;&#x7565;&#x7F16;&#x6392;
+      </button>
+      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'notify' }" @click="switchTab('notify')">
+        <el-icon style="margin-right: 4px;"><Setting /></el-icon>&#x901A;&#x77E5;&#x914D;&#x7F6E;
+      </button>
+      <button v-if="canViewAlerts" class="neo-tab-btn" :class="{ active: activeTab === 'logs' }" @click="switchTab('logs')">
+        <el-icon style="margin-right: 4px;"><Document /></el-icon>&#x901A;&#x77E5;&#x8BB0;&#x5F55;
+      </button>
+      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'integrations' }" @click="switchTab('integrations')">
+        <el-icon style="margin-right: 4px;"><Connection /></el-icon>&#x544A;&#x8B66;&#x63A5;&#x5165;&#x6E90;
+      </button>
+    </div>
 
-      <el-table :data="alerts" stripe size="small" v-loading="loading" style="width: 100%">
-        <el-table-column prop="title" label="告警标题" min-width="220" />
-        <el-table-column prop="level" label="级别" width="100">
-          <template #default="{ row }">
-            <el-tag :type="levelType(row.level)" size="small">{{ row.level_display }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="source" label="来源" width="140" />
-        <el-table-column prop="host_name" label="主机" width="150" />
-        <el-table-column label="状态" width="110">
-          <template #default="{ row }">
-            <el-tag :type="row.is_acknowledged ? 'success' : 'danger'" size="small">
-              {{ row.is_acknowledged ? '已确认' : '未确认' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="created_at" label="时间" width="180">
-          <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
-          <template #default="{ row }">
-            <div class="row-actions">
-              <el-button v-if="canQueryLogs" link type="primary" size="small" @click="openAlertLogs(row)">日志</el-button>
-              <el-button v-if="canViewTracing" link type="warning" size="small" @click="openAlertTrace(row)">链路</el-button>
-              <el-button v-if="canViewGrafana" link type="success" size="small" @click="openAlertDashboard(row)">大屏</el-button>
-              <el-button v-if="canManageAlerts && !row.is_acknowledged" link type="primary" size="small" @click="handleAck(row)">确认</el-button>
-              <el-popconfirm v-if="canManageAlerts" title="确认删除该告警吗？" @confirm="handleDelete(row.id)">
-                <template #reference>
-                  <el-button link type="danger" size="small">删除</el-button>
-                </template>
-              </el-popconfirm>
+    <template v-if="activeTab === 'events' && canViewAlerts">
+      <section class="panel">
+        <div class="toolbar">
+          <el-input
+            v-model="filters.search"
+            size="small"
+            clearable
+            placeholder="&#x641C;&#x7D22;&#x6807;&#x9898; / &#x6765;&#x6E90; / &#x670D;&#x52A1; / &#x8D44;&#x6E90;"
+            :prefix-icon="Search"
+            @input="handleFilterChange"
+          />
+          <el-select v-model="filters.level" size="small" clearable placeholder="&#x7EA7;&#x522B;" @change="handleFilterChange">
+            <el-option label="&#x4E25;&#x91CD;" value="critical" />
+            <el-option label="&#x8B66;&#x544A;" value="warning" />
+            <el-option label="&#x4FE1;&#x606F;" value="info" />
+          </el-select>
+          <el-select v-model="filters.status" size="small" clearable placeholder="&#x72B6;&#x6001;" @change="handleFilterChange">
+            <el-option label="&#x6D3B;&#x8DC3;" value="active" />
+            <el-option label="&#x5DF2;&#x6062;&#x590D;" value="resolved" />
+            <el-option label="&#x5DF2;&#x5C4F;&#x853D;" value="muted" />
+            <el-option label="&#x5DF2;&#x5173;&#x95ED;" value="closed" />
+          </el-select>
+          <el-select v-model="filters.source_type" size="small" clearable placeholder="&#x6765;&#x6E90;" @change="handleFilterChange">
+            <el-option v-for="item in providerOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="filters.is_acknowledged" size="small" clearable placeholder="&#x786E;&#x8BA4;&#x72B6;&#x6001;" @change="handleFilterChange">
+            <el-option label="&#x672A;&#x786E;&#x8BA4;" :value="false" />
+            <el-option label="&#x5DF2;&#x786E;&#x8BA4;" :value="true" />
+          </el-select>
+          <el-segmented v-model="eventMode" size="small" :options="eventModeOptions" @change="refreshEvents" />
+        </div>
+
+        <div v-if="eventMode === 'group'" class="group-toolbar">
+          <span class="toolbar-label">&#x5206;&#x7EC4;&#x7EF4;&#x5EA6;</span>
+          <el-select v-model="groupBy" size="small" multiple collapse-tags collapse-tags-tooltip @change="fetchGroups">
+            <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </div>
+
+        <el-table v-if="eventMode === 'list'" :data="alerts" stripe size="small" v-loading="loading" class="data-table">
+          <el-table-column prop="title" label="&#x544A;&#x8B66;&#x6807;&#x9898;" min-width="240">
+            <template #default="{ row }">
+              <button class="link-title" type="button" @click="openDetail(row)">{{ row.title }}</button>
+              <div class="sub-line">{{ row.service || row.resource || row.source }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="level" label="&#x7EA7;&#x522B;" width="100">
+            <template #default="{ row }">
+              <el-tag :type="levelType(row.level)" size="small">{{ row.level_display || levelText(row.level) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="status" label="&#x72B6;&#x6001;" width="110">
+            <template #default="{ row }">
+              <el-tag :type="statusType(row.status)" size="small">{{ row.status_display || statusText(row.status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="source_type" label="&#x63A5;&#x5165;" width="120">
+            <template #default="{ row }">{{ providerText(row.source_type) }}</template>
+          </el-table-column>
+          <el-table-column prop="resource" label="&#x8D44;&#x6E90;" min-width="150">
+            <template #default="{ row }">{{ row.resource || row.host_name || '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="environment" label="&#x73AF;&#x5883;" width="100" />
+          <el-table-column prop="claimed_by" label="&#x5904;&#x7406;&#x4EBA;" width="120">
+            <template #default="{ row }">{{ row.claimed_by || '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="occurrence_count" label="&#x6B21;&#x6570;" width="80" />
+          <el-table-column prop="last_received_at" label="&#x6700;&#x8FD1;&#x63A5;&#x6536;" width="180">
+            <template #default="{ row }">{{ formatTime(row.last_received_at || row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="&#x64CD;&#x4F5C;" width="320" fixed="right">
+            <template #default="{ row }">
+              <div class="row-actions">
+                <el-button v-if="canQueryLogs" link type="primary" size="small" @click="openAlertLogs(row)">&#x65E5;&#x5FD7;</el-button>
+                <el-button v-if="canViewTracing" link type="warning" size="small" @click="openAlertTrace(row)">&#x94FE;&#x8DEF;</el-button>
+                <el-button v-if="canManageAlerts && !row.is_acknowledged" link type="primary" size="small" @click="runAlertAction(row, 'ack')">&#x786E;&#x8BA4;</el-button>
+                <el-button v-if="canManageAlerts && !row.claimed_by" link type="success" size="small" @click="runAlertAction(row, 'claim')">&#x8BA4;&#x9886;</el-button>
+                <el-dropdown v-if="canManageAlerts" trigger="click" @command="(cmd) => handleRowCommand(cmd, row)">
+                  <el-button link size="small">&#x66F4;&#x591A;</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="mute">&#x5C4F;&#x853D; 1 &#x5C0F;&#x65F6;</el-dropdown-item>
+                      <el-dropdown-item command="escalate">&#x5347;&#x7EA7;</el-dropdown-item>
+                      <el-dropdown-item command="resolve">&#x6062;&#x590D;</el-dropdown-item>
+                      <el-dropdown-item command="close">&#x5173;&#x95ED;</el-dropdown-item>
+                      <el-dropdown-item v-if="row.claimed_by" command="unclaim">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-dropdown-item>
+                      <el-dropdown-item v-if="canNotifyAlerts" command="notify">&#x53D1;&#x9001;&#x901A;&#x77E5;</el-dropdown-item>
+                      <el-dropdown-item divided command="delete">&#x5220;&#x9664;</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-table v-else :data="groups" stripe size="small" v-loading="loading" class="data-table">
+          <el-table-column label="&#x5206;&#x7EC4;" min-width="280">
+            <template #default="{ row }">
+              <div class="group-key">{{ row.key }}</div>
+              <div class="sub-line">{{ row.sample_title }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="total" label="&#x603B;&#x6570;" width="80" />
+          <el-table-column prop="critical" label="&#x4E25;&#x91CD;" width="80" />
+          <el-table-column prop="warning" label="&#x8B66;&#x544A;" width="80" />
+          <el-table-column prop="unacknowledged" label="&#x672A;&#x786E;&#x8BA4;" width="90" />
+          <el-table-column prop="suppressed" label="&#x6291;&#x5236;" width="100" />
+          <el-table-column prop="latest_at" label="&#x6700;&#x65B0;&#x65F6;&#x95F4;" width="170">
+            <template #default="{ row }">{{ formatTime(row.latest_at) }}</template>
+          </el-table-column>
+          <el-table-column label="&#x64CD;&#x4F5C;" width="120">
+            <template #default="{ row }">
+              <el-button link size="small" type="primary" @click="openGroup(row)">&#x67E5;&#x770B;&#x660E;&#x7EC6;</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div class="pager" v-if="eventMode === 'list'">
+          <el-pagination
+            small
+            v-model:current-page="page"
+            :page-size="20"
+            :total="total"
+            layout="total, prev, pager, next"
+            @current-change="refreshEvents"
+          />
+        </div>
+      </section>
+    </template>
+
+    <template v-if="activeTab === 'notify' && canViewConfig">
+      <section class="panel">
+        <div class="neo-sub-tabs theme-blue alert-sub-tabs">
+          <button class="neo-sub-tab-btn" :class="{ active: notifyTab === 'rules' }" @click="changeNotifyTab('rules')">&#x901A;&#x77E5;&#x89C4;&#x5219;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: notifyTab === 'channels' }" @click="changeNotifyTab('channels')">&#x901A;&#x77E5;&#x6E20;&#x9053;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: notifyTab === 'recipients' }" @click="changeNotifyTab('recipients')">&#x63A5;&#x6536;&#x5BF9;&#x8C61;</button>
+        </div>
+
+        <div v-show="notifyTab === 'rules'">
+          <div class="section-head">
+            <h3>&#x901A;&#x77E5;&#x89C4;&#x5219;</h3>
+            <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openNotificationRule()">&#x65B0;&#x589E;&#x89C4;&#x5219;</el-button>
+          </div>
+          <el-table :data="notificationRules" stripe size="small" v-loading="configLoading">
+            <el-table-column prop="name" label="&#x89C4;&#x5219;&#x540D;&#x79F0;" min-width="180" />
+            <el-table-column prop="min_level" label="&#x6700;&#x4F4E;&#x7EA7;&#x522B;" width="110">
+              <template #default="{ row }">{{ levelText(row.min_level) || '&#x5168;&#x90E8;' }}</template>
+            </el-table-column>
+            <el-table-column label="&#x6E20;&#x9053;" min-width="180">
+              <template #default="{ row }">
+                <el-tag v-for="item in row.channels" :key="item.id" size="small" class="mini-tag">{{ item.channel_type_display || channelText(item.channel_type) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="&#x63A5;&#x6536;&#x7EC4;" min-width="180">
+              <template #default="{ row }">{{ (row.recipient_groups || []).map((item) => item.name).join(', ') || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="&#x72B6;&#x6001;" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '&#x542F;&#x7528;' : '&#x505C;&#x7528;' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="&#x64CD;&#x4F5C;" width="150" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="canManageConfig" link size="small" @click="openNotificationRule(row)">&#x7F16;&#x8F91;</el-button>
+                <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x89C4;&#x5219;&#xFF1F;" @confirm="removeNotificationRule(row.id)">
+                  <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+                </el-popconfirm>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div v-show="notifyTab === 'channels'">
+          <div class="section-head">
+            <h3>&#x901A;&#x77E5;&#x6E20;&#x9053;</h3>
+            <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openChannel()">&#x65B0;&#x589E;&#x6E20;&#x9053;</el-button>
+          </div>
+          <el-table :data="channels" stripe size="small" v-loading="configLoading">
+            <el-table-column prop="name" label="&#x6E20;&#x9053;&#x540D;&#x79F0;" min-width="180" />
+            <el-table-column prop="channel_type" label="&#x7C7B;&#x578B;" width="100">
+              <template #default="{ row }">{{ row.channel_type_display || channelText(row.channel_type) }}</template>
+            </el-table-column>
+            <el-table-column prop="send_resolved" label="&#x6062;&#x590D;&#x901A;&#x77E5;" width="100">
+              <template #default="{ row }">{{ row.send_resolved ? '&#x53D1;&#x9001;' : '&#x4E0D;&#x53D1;&#x9001;' }}</template>
+            </el-table-column>
+            <el-table-column prop="updated_at" label="&#x66F4;&#x65B0;&#x65F6;&#x95F4;" width="170">
+              <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
+            </el-table-column>
+            <el-table-column label="&#x72B6;&#x6001;" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '&#x542F;&#x7528;' : '&#x505C;&#x7528;' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="&#x64CD;&#x4F5C;" width="190" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="canNotifyAlerts" link type="success" size="small" @click="testChannel(row)">&#x6D4B;&#x8BD5;</el-button>
+                <el-button v-if="canManageConfig" link size="small" @click="openChannel(row)">&#x7F16;&#x8F91;</el-button>
+                <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x6E20;&#x9053;&#xFF1F;" @confirm="removeChannel(row.id)">
+                  <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+                </el-popconfirm>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div v-show="notifyTab === 'recipients'">
+          <div class="split-grid">
+            <div class="split-panel">
+              <div class="section-head">
+                <h3>&#x63A5;&#x6536;&#x4EBA;</h3>
+                <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openRecipient()">&#x65B0;&#x589E;&#x63A5;&#x6536;&#x4EBA;</el-button>
+              </div>
+              <el-table :data="recipients" stripe size="small" v-loading="configLoading">
+                <el-table-column prop="name" label="&#x59D3;&#x540D;" min-width="120" />
+                <el-table-column prop="phone" label="&#x624B;&#x673A;" min-width="130" />
+                <el-table-column prop="email" label="&#x90AE;&#x7BB1;" min-width="170" />
+                <el-table-column label="&#x64CD;&#x4F5C;" width="120">
+                  <template #default="{ row }">
+                    <el-button v-if="canManageConfig" link size="small" @click="openRecipient(row)">&#x7F16;&#x8F91;</el-button>
+                    <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x63A5;&#x6536;&#x4EBA;&#xFF1F;" @confirm="removeRecipient(row.id)">
+                      <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+                    </el-popconfirm>
+                  </template>
+                </el-table-column>
+              </el-table>
             </div>
-          </template>
-        </el-table-column>
-      </el-table>
 
-      <div class="pager">
-        <el-pagination
-          small
-          v-model:current-page="page"
-          :page-size="20"
-          :total="total"
-          layout="total, prev, pager, next"
-          @current-change="fetchData"
-        />
-      </div>
-    </section>
+            <div class="split-panel">
+              <div class="section-head">
+                <h3>&#x63A5;&#x6536;&#x7EC4;</h3>
+                <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openRecipientGroup()">&#x65B0;&#x589E;&#x63A5;&#x6536;&#x7EC4;</el-button>
+              </div>
+              <el-table :data="recipientGroups" stripe size="small" v-loading="configLoading">
+                <el-table-column prop="name" label="&#x7EC4;&#x540D;" min-width="130" />
+                <el-table-column label="&#x6210;&#x5458;" min-width="220">
+                  <template #default="{ row }">{{ groupMembers(row) }}</template>
+                </el-table-column>
+                <el-table-column label="&#x64CD;&#x4F5C;" width="120">
+                  <template #default="{ row }">
+                    <el-button v-if="canManageConfig" link size="small" @click="openRecipientGroup(row)">&#x7F16;&#x8F91;</el-button>
+                    <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x63A5;&#x6536;&#x7EC4;&#xFF1F;" @confirm="removeRecipientGroup(row.id)">
+                      <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+                    </el-popconfirm>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </template>
+
+    <template v-if="activeTab === 'policies' && canViewConfig">
+      <section class="panel">
+        <div class="neo-sub-tabs theme-blue alert-sub-tabs">
+          <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'aggregation' }" @click="changePolicyTab('aggregation')">&#x805A;&#x5408;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'inhibition' }" @click="changePolicyTab('inhibition')">&#x6291;&#x5236;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'mute' }" @click="changePolicyTab('mute')">&#x5C4F;&#x853D;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'escalation' }" @click="changePolicyTab('escalation')">&#x5347;&#x7EA7;</button>
+        </div>
+
+        <div v-show="policyTab === 'aggregation'">
+          <PolicyTable title="&#x805A;&#x5408;&#x89C4;&#x5219;" :data="aggregationRules" :loading="configLoading" :can-manage="canManageConfig" @create="openAggregationRule()" @edit="openAggregationRule" @remove="removeAggregationRule" />
+        </div>
+        <div v-show="policyTab === 'inhibition'">
+          <PolicyTable title="&#x6291;&#x5236;&#x89C4;&#x5219;" :data="inhibitionRules" :loading="configLoading" :can-manage="canManageConfig" @create="openInhibitionRule()" @edit="openInhibitionRule" @remove="removeInhibitionRule" />
+        </div>
+        <div v-show="policyTab === 'mute'">
+          <PolicyTable title="&#x5C4F;&#x853D;&#x89C4;&#x5219;" :data="muteRules" :loading="configLoading" :can-manage="canManageConfig" @create="openMuteRule()" @edit="openMuteRule" @remove="removeMuteRule" />
+        </div>
+        <div v-show="policyTab === 'escalation'">
+          <PolicyTable title="&#x5347;&#x7EA7;&#x7B56;&#x7565;" :data="escalationPolicies" :loading="configLoading" :can-manage="canManageConfig" @create="openEscalationPolicy()" @edit="openEscalationPolicy" @remove="removeEscalationPolicy" />
+        </div>
+      </section>
+    </template>
+
+    <template v-if="activeTab === 'integrations' && canViewConfig">
+      <section class="panel">
+        <div class="section-head">
+          <h3>Webhook &#x63A5;&#x5165;&#x6E90;</h3>
+          <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openIntegration()">&#x65B0;&#x589E;&#x63A5;&#x5165;&#x6E90;</el-button>
+        </div>
+        <el-table :data="integrations" stripe size="small" v-loading="configLoading">
+          <el-table-column prop="name" label="&#x540D;&#x79F0;" min-width="150" />
+          <el-table-column prop="provider" label="&#x7C7B;&#x578B;" width="130">
+            <template #default="{ row }">{{ providerText(row.provider) }}</template>
+          </el-table-column>
+          <el-table-column prop="webhook_url" label="Webhook &#x5730;&#x5740;" min-width="520">
+            <template #default="{ row }">
+              <div class="webhook-url-cell" :title="displayIntegrationWebhook(row.webhook_url).full">
+                <div class="mono webhook-url-line webhook-url-host">{{ displayIntegrationWebhook(row.webhook_url).host }}</div>
+                <div class="mono webhook-url-line webhook-url-path">{{ displayIntegrationWebhook(row.webhook_url).path }}</div>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="last_received_at" label="&#x6700;&#x8FD1;&#x63A5;&#x6536;" width="150">
+            <template #default="{ row }">{{ formatTime(row.last_received_at) }}</template>
+          </el-table-column>
+          <el-table-column label="&#x72B6;&#x6001;" width="80">
+            <template #default="{ row }">
+              <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '&#x542F;&#x7528;' : '&#x505C;&#x7528;' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="&#x64CD;&#x4F5C;" width="120" fixed="right">
+            <template #default="{ row }">
+              <el-button v-if="canManageConfig" link size="small" @click="openIntegration(row)">&#x7F16;&#x8F91;</el-button>
+              <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x63A5;&#x5165;&#x6E90;&#xFF1F;" @confirm="removeIntegration(row.id)">
+                <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+        </el-table>
+      </section>
+    </template>
+
+    <template v-if="activeTab === 'logs' && canViewAlerts">
+      <section class="panel">
+        <div class="section-head">
+          <h3>&#x901A;&#x77E5;&#x8BB0;&#x5F55;</h3>
+          <el-button size="small" :icon="Refresh" @click="fetchNotificationLogs">&#x5237;&#x65B0;</el-button>
+        </div>
+        <el-table :data="notificationLogs" stripe size="small" v-loading="configLoading">
+          <el-table-column prop="created_at" label="&#x65F6;&#x95F4;" width="170">
+            <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column prop="action" label="&#x52A8;&#x4F5C;" width="90" />
+          <el-table-column prop="channel_name" label="&#x6E20;&#x9053;" width="140" />
+          <el-table-column prop="rule_name" label="&#x89C4;&#x5219;" min-width="150" />
+          <el-table-column prop="recipient_summary" label="&#x63A5;&#x6536;&#x5BF9;&#x8C61;" min-width="180" />
+          <el-table-column prop="status" label="&#x72B6;&#x6001;" width="90">
+            <template #default="{ row }">
+              <el-tag :type="notifyStatusType(row.status)" size="small">{{ row.status_display || row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="error_message" label="&#x9519;&#x8BEF;&#x4FE1;&#x606F;" min-width="220" show-overflow-tooltip />
+        </el-table>
+      </section>
+    </template>
+
+    <el-drawer v-model="detailVisible" size="520px" title="&#x544A;&#x8B66;&#x8BE6;&#x60C5;">
+      <template v-if="selectedAlert">
+        <div class="detail-head">
+          <el-tag :type="levelType(selectedAlert.level)">{{ selectedAlert.level_display || levelText(selectedAlert.level) }}</el-tag>
+          <el-tag :type="statusType(selectedAlert.status)">{{ selectedAlert.status_display || statusText(selectedAlert.status) }}</el-tag>
+          <span class="detail-title">{{ selectedAlert.title }}</span>
+        </div>
+        <el-descriptions :column="1" size="small" border>
+          <el-descriptions-item label="&#x6765;&#x6E90;">{{ providerText(selectedAlert.source_type) }} / {{ selectedAlert.source }}</el-descriptions-item>
+          <el-descriptions-item label="&#x8D44;&#x6E90;">{{ selectedAlert.resource || selectedAlert.host_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="&#x73AF;&#x5883;">{{ selectedAlert.environment || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="&#x805A;&#x5408;&#x952E;">{{ selectedAlert.group_key || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
+        </el-descriptions>
+        <div v-if="canManageAlerts" class="detail-actions">
+          <el-button size="small" type="primary" @click="runAlertAction(selectedAlert, 'ack')">&#x786E;&#x8BA4;</el-button>
+          <el-button size="small" type="success" @click="runAlertAction(selectedAlert, 'claim')">&#x8BA4;&#x9886;</el-button>
+          <el-button size="small" type="warning" @click="runAlertAction(selectedAlert, 'mute')">&#x5C4F;&#x853D;</el-button>
+          <el-button size="small" type="danger" @click="runAlertAction(selectedAlert, 'escalate')">&#x5347;&#x7EA7;</el-button>
+        </div>
+        <h4>&#x6807;&#x7B7E;</h4>
+        <div class="kv-list">
+          <el-tag v-for="(value, key) in selectedAlert.labels" :key="key" size="small">{{ key }}={{ value }}</el-tag>
+        </div>
+        <h4>&#x5904;&#x7406;&#x8BB0;&#x5F55;</h4>
+        <el-timeline>
+          <el-timeline-item v-for="item in selectedAlert.actions || []" :key="item.id" :timestamp="formatTime(item.created_at)">
+            {{ item.actor || '\u7CFB\u7EDF' }} / {{ item.action_display || item.action }} / {{ item.note || '-' }}
+          </el-timeline-item>
+        </el-timeline>
+      </template>
+    </el-drawer>
+
+    <el-dialog v-model="integrationDialog.visible" title="&#x63A5;&#x5165;&#x6E90;" width="620px">
+      <el-form :model="integrationDialog.form" label-width="120px">
+        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="integrationDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x7C7B;&#x578B;">
+          <el-select v-model="integrationDialog.form.provider">
+            <el-option v-for="item in providerOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x9ED8;&#x8BA4;&#x6807;&#x7B7E;">
+          <MatcherEditor v-model="integrationDialog.form.default_label_rows" mode="equals" />
+        </el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="integrationDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="integrationDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="integrationDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveIntegration">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="channelDialog.visible" title="&#x901A;&#x77E5;&#x6E20;&#x9053;" width="700px">
+      <el-form :model="channelDialog.form" label-width="130px">
+        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="channelDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x7C7B;&#x578B;">
+          <el-select v-model="channelDialog.form.channel_type">
+            <el-option v-for="item in channelOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="Webhook &#x5730;&#x5740;"><el-input v-model="channelDialog.form.webhook_url" /></el-form-item>
+        <el-form-item label="&#x8BBF;&#x95EE;&#x4EE4;&#x724C;"><el-input v-model="channelDialog.form.access_token" show-password /></el-form-item>
+        <el-form-item label="&#x9ED8;&#x8BA4;&#x63A5;&#x6536;&#x5730;&#x5740;"><el-input v-model="channelDialog.form.to" placeholder="&#x591A;&#x4E2A;&#x63A5;&#x6536;&#x5730;&#x5740;&#x6216;&#x624B;&#x673A;&#x53F7;&#xFF0C;&#x4F7F;&#x7528;&#x82F1;&#x6587;&#x9017;&#x53F7;&#x5206;&#x9694;" /></el-form-item>
+        <el-form-item label="&#x6807;&#x9898;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_title" /></el-form-item>
+        <el-form-item label="&#x5185;&#x5BB9;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_body" type="textarea" :rows="4" /></el-form-item>
+        <el-form-item label="&#x6062;&#x590D;&#x901A;&#x77E5;"><el-switch v-model="channelDialog.form.send_resolved" /></el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="channelDialog.form.is_enabled" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="channelDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveChannel">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="recipientDialog.visible" title="&#x63A5;&#x6536;&#x4EBA;" width="620px">
+      <el-form :model="recipientDialog.form" label-width="120px">
+        <el-form-item label="&#x59D3;&#x540D;"><el-input v-model="recipientDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x624B;&#x673A;&#x53F7;"><el-input v-model="recipientDialog.form.phone" /></el-form-item>
+        <el-form-item label="&#x90AE;&#x7BB1;"><el-input v-model="recipientDialog.form.email" /></el-form-item>
+        <el-form-item label="&#x9489;&#x9489; ID"><el-input v-model="recipientDialog.form.dingtalk_user_id" /></el-form-item>
+        <el-form-item label="&#x98DE;&#x4E66; ID"><el-input v-model="recipientDialog.form.feishu_user_id" /></el-form-item>
+        <el-form-item label="&#x4F01;&#x5FAE; ID"><el-input v-model="recipientDialog.form.wecom_user_id" /></el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="recipientDialog.form.is_enabled" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="recipientDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveRecipient">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="recipientGroupDialog.visible" title="&#x63A5;&#x6536;&#x7EC4;" width="620px">
+      <el-form :model="recipientGroupDialog.form" label-width="120px">
+        <el-form-item label="&#x7EC4;&#x540D;"><el-input v-model="recipientGroupDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x63A5;&#x6536;&#x4EBA;">
+          <el-select v-model="recipientGroupDialog.form.recipient_ids" multiple filterable>
+            <el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x5E73;&#x53F0;&#x7528;&#x6237;">
+          <el-select v-model="recipientGroupDialog.form.user_ids" multiple filterable>
+            <el-option v-for="item in users" :key="item.id" :label="item.display_name || item.username" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="recipientGroupDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="recipientGroupDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="recipientGroupDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveRecipientGroup">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="notificationRuleDialog.visible" title="&#x901A;&#x77E5;&#x89C4;&#x5219;" width="760px">
+      <el-form :model="notificationRuleDialog.form" label-width="130px">
+        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="notificationRuleDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x5339;&#x914D;&#x6761;&#x4EF6;"><MatcherEditor v-model="notificationRuleDialog.form.matchers" /></el-form-item>
+        <el-form-item label="&#x6700;&#x4F4E;&#x7EA7;&#x522B;">
+          <el-select v-model="notificationRuleDialog.form.min_level" clearable>
+            <el-option label="&#x4E25;&#x91CD;" value="critical" />
+            <el-option label="&#x8B66;&#x544A;" value="warning" />
+            <el-option label="&#x4FE1;&#x606F;" value="info" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x901A;&#x77E5;&#x6E20;&#x9053;">
+          <el-select v-model="notificationRuleDialog.form.channel_ids" multiple>
+            <el-option v-for="item in channels" :key="item.id" :label="`${item.name} / ${channelText(item.channel_type)}`" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x63A5;&#x6536;&#x7EC4;">
+          <el-select v-model="notificationRuleDialog.form.recipient_group_ids" multiple>
+            <el-option v-for="item in recipientGroups" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x63A5;&#x6536;&#x4EBA;">
+          <el-select v-model="notificationRuleDialog.form.recipient_ids" multiple>
+            <el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x805A;&#x5408;&#x89C4;&#x5219;">
+          <el-select v-model="notificationRuleDialog.form.aggregation_rule" clearable>
+            <el-option v-for="item in aggregationRules" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x5347;&#x7EA7;&#x7B56;&#x7565;">
+          <el-select v-model="notificationRuleDialog.form.escalation_policy" clearable>
+            <el-option v-for="item in escalationPolicies" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x901A;&#x77E5;&#x65F6;&#x673A;">
+          <el-checkbox v-model="notificationRuleDialog.form.notify_on_fire">&#x89E6;&#x53D1;</el-checkbox>
+          <el-checkbox v-model="notificationRuleDialog.form.notify_on_resolved">&#x6062;&#x590D;</el-checkbox>
+          <el-checkbox v-model="notificationRuleDialog.form.notify_on_escalation">&#x5347;&#x7EA7;</el-checkbox>
+        </el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="notificationRuleDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="notificationRuleDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="notificationRuleDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveNotificationRule">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="policyDialog.visible" :title="policyDialog.title" width="760px">
+      <el-form :model="policyDialog.form" label-width="130px">
+        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="policyDialog.form.name" /></el-form-item>
+        <el-form-item v-if="policyDialog.kind !== 'inhibition'" label="&#x5339;&#x914D;&#x6761;&#x4EF6;"><MatcherEditor v-model="policyDialog.form.matchers" /></el-form-item>
+
+        <template v-if="policyDialog.kind === 'aggregation'">
+          <el-form-item label="&#x5206;&#x7EC4;&#x7EF4;&#x5EA6;">
+            <el-select v-model="policyDialog.form.group_by" multiple>
+              <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="&#x805A;&#x5408;&#x7A97;&#x53E3;"><el-input-number v-model="policyDialog.form.window_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+          <el-form-item label="&#x91CD;&#x590D;&#x95F4;&#x9694;"><el-input-number v-model="policyDialog.form.repeat_interval_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+        </template>
+
+        <template v-if="policyDialog.kind === 'inhibition'">
+          <el-form-item label="&#x6765;&#x6E90;&#x5339;&#x914D;"><MatcherEditor v-model="policyDialog.form.source_matchers" /></el-form-item>
+          <el-form-item label="&#x76EE;&#x6807;&#x5339;&#x914D;"><MatcherEditor v-model="policyDialog.form.target_matchers" /></el-form-item>
+          <el-form-item label="&#x76F8;&#x7B49;&#x6807;&#x7B7E;">
+            <el-select v-model="policyDialog.form.equal_labels" multiple allow-create filterable>
+              <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="&#x6301;&#x7EED;&#x65F6;&#x95F4;"><el-input-number v-model="policyDialog.form.duration_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+        </template>
+
+        <template v-if="policyDialog.kind === 'mute'">
+          <el-form-item label="&#x65F6;&#x95F4;&#x8303;&#x56F4;">
+            <el-date-picker
+              v-model="policyDialog.form.range"
+              type="datetimerange"
+              value-format="YYYY-MM-DDTHH:mm:ssZ"
+              start-placeholder="&#x5F00;&#x59CB;&#x65F6;&#x95F4;"
+              end-placeholder="&#x7ED3;&#x675F;&#x65F6;&#x95F4;"
+            />
+          </el-form-item>
+          <el-form-item label="&#x539F;&#x56E0;"><el-input v-model="policyDialog.form.reason" /></el-form-item>
+        </template>
+
+        <template v-if="policyDialog.kind === 'escalation'">
+          <el-form-item label="&#x91CD;&#x590D;&#x95F4;&#x9694;"><el-input-number v-model="policyDialog.form.repeat_interval_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+          <el-form-item label="&#x5347;&#x7EA7;&#x5C42;&#x7EA7;">
+            <div class="level-editor">
+              <div v-for="(item, index) in policyDialog.form.levels" :key="index" class="level-row">
+                <el-input-number v-model="item.after_minutes" :min="0" size="small" />
+                <el-input v-model="item.name" size="small" placeholder="&#x5C42;&#x7EA7;&#x540D;&#x79F0;" />
+                <el-select v-model="item.channel_ids" multiple size="small" placeholder="&#x901A;&#x77E5;&#x6E20;&#x9053;">
+                  <el-option v-for="channel in channels" :key="channel.id" :label="channel.name" :value="channel.id" />
+                </el-select>
+                <el-button link type="danger" :icon="Delete" @click="policyDialog.form.levels.splice(index, 1)" />
+              </div>
+              <el-button size="small" :icon="Plus" @click="policyDialog.form.levels.push({ name: '', after_minutes: 30, channel_ids: [] })">&#x65B0;&#x589E;&#x5C42;&#x7EA7;</el-button>
+            </div>
+          </el-form-item>
+        </template>
+
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="policyDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="policyDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="policyDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="savePolicy">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, Search } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { deleteAlert, getAlerts, updateAlert } from '@/api/modules/ops'
+import { Bell, Connection, Delete, Document, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { ElButton, ElInput, ElMessage, ElOption, ElPopconfirm, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import { openRouteInNewTab } from '@/utils/router'
+import {
+  acknowledgeAlert,
+  claimAlert,
+  closeAlert,
+  createAlertAggregationRule,
+  createAlertEscalationPolicy,
+  createAlertInhibitionRule,
+  createAlertIntegration,
+  createAlertMuteRule,
+  createAlertNotificationChannel,
+  createAlertNotificationRule,
+  createAlertRecipient,
+  createAlertRecipientGroup,
+  deleteAlert,
+  deleteAlertAggregationRule,
+  deleteAlertEscalationPolicy,
+  deleteAlertInhibitionRule,
+  deleteAlertIntegration,
+  deleteAlertMuteRule,
+  deleteAlertNotificationChannel,
+  deleteAlertNotificationRule,
+  deleteAlertRecipient,
+  deleteAlertRecipientGroup,
+  escalateAlert,
+  getAlertAggregationRules,
+  getAlertEscalationPolicies,
+  getAlertGroups,
+  getAlertInhibitionRules,
+  getAlertIntegrations,
+  getAlertMuteRules,
+  getAlertNotificationChannels,
+  getAlertNotificationLogs,
+  getAlertNotificationRules,
+  getAlertRecipientGroups,
+  getAlertRecipients,
+  getAlerts,
+  getAlertSummary,
+  getUsers,
+  muteAlert,
+  notifyAlert,
+  reopenAlert,
+  resolveAlert,
+  testAlertNotificationChannel,
+  unclaimAlert,
+  updateAlertAggregationRule,
+  updateAlertEscalationPolicy,
+  updateAlertInhibitionRule,
+  updateAlertIntegration,
+  updateAlertMuteRule,
+  updateAlertNotificationChannel,
+  updateAlertNotificationRule,
+  updateAlertRecipient,
+  updateAlertRecipientGroup,
+} from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value || []))
+}
+
+function listOf(response) {
+  return Array.isArray(response) ? response : (response?.results || [])
+}
+
+function splitText(value) {
+  return String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function matchersToObject(rows) {
+  const data = {}
+  for (const row of rows || []) {
+    if (row.key) data[row.key] = row.value
+  }
+  return data
+}
+
+function matcherRowsFromObject(obj) {
+  return Object.entries(obj || {}).map(([key, value]) => ({ key, op: '==', value }))
+}
+
+const MatcherEditor = defineComponent({
+  name: 'MatcherEditor',
+  props: {
+    modelValue: { type: Array, default: () => [] },
+    mode: { type: String, default: 'matcher' },
+  },
+  emits: ['update:modelValue'],
+  setup(props, { emit }) {
+    const ops = ['==', '!=', '=~', '!~', 'in', 'not in', 'contains']
+    function update(index, key, value) {
+      const rows = clone(props.modelValue)
+      rows[index] = { ...rows[index], [key]: value }
+      emit('update:modelValue', rows)
+    }
+    function remove(index) {
+      const rows = clone(props.modelValue)
+      rows.splice(index, 1)
+      emit('update:modelValue', rows)
+    }
+    function add() {
+      emit('update:modelValue', [...props.modelValue, { key: '', op: '==', value: '' }])
+    }
+    return () => h('div', { class: 'matcher-editor' }, [
+      ...props.modelValue.map((row, index) => h('div', { class: 'matcher-row', key: index }, [
+        h(ElInput, { modelValue: row.key, size: 'small', placeholder: '\u5B57\u6BB5\u6216\u6807\u7B7E', onInput: (value) => update(index, 'key', value) }),
+        props.mode === 'equals'
+          ? null
+          : h(ElSelect, { modelValue: row.op || '==', size: 'small', onChange: (value) => update(index, 'op', value) }, () => ops.map((op) => h(ElOption, { key: op, label: op, value: op }))),
+        h(ElInput, { modelValue: row.value, size: 'small', placeholder: '\u5339\u914D\u503C', onInput: (value) => update(index, 'value', value) }),
+        h(ElButton, { link: true, type: 'danger', icon: Delete, onClick: () => remove(index) }),
+      ])),
+      h(ElButton, { size: 'small', icon: Plus, onClick: add }, () => '\u65B0\u589E\u5339\u914D'),
+    ])
+  },
+})
+
+const PolicyTable = defineComponent({
+  name: 'PolicyTable',
+  props: {
+    title: { type: String, required: true },
+    data: { type: Array, default: () => [] },
+    loading: { type: Boolean, default: false },
+    canManage: { type: Boolean, default: false },
+  },
+  emits: ['create', 'edit', 'remove'],
+  setup(props, { emit }) {
+    return () => h('div', [
+      h('div', {
+        class: 'section-head',
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '8px',
+          marginBottom: '8px',
+          minHeight: '30px',
+          width: '100%',
+          flexWrap: 'nowrap',
+        },
+      }, [
+        h('h3', {
+          style: {
+            margin: '0',
+            fontSize: '15px',
+            fontWeight: '700',
+            lineHeight: '1.3',
+            flex: '0 1 auto',
+          },
+        }, props.title),
+        props.canManage ? h(ElButton, {
+          size: 'small',
+          type: 'primary',
+          icon: Plus,
+          onClick: () => emit('create'),
+          style: {
+            marginLeft: 'auto',
+            flex: '0 0 auto',
+          },
+        }, () => '\u65B0\u589E\u7B56\u7565') : null,
+      ]),
+      h(ElTable, { data: props.data, stripe: true, size: 'small', loading: props.loading }, () => [
+        h(ElTableColumn, { prop: 'name', label: '\u540D\u79F0', minWidth: 180 }),
+        h(ElTableColumn, { prop: 'description', label: '\u8BF4\u660E', minWidth: 220, showOverflowTooltip: true }),
+        h(ElTableColumn, { label: '\u72B6\u6001', width: 90 }, {
+          default: ({ row }) => h(ElTag, { type: row.is_enabled ? 'success' : 'info', size: 'small' }, () => (row.is_enabled ? '\u542F\u7528' : '\u505C\u7528')),
+        }),
+        h(ElTableColumn, { prop: 'updated_at', label: '\u66F4\u65B0\u65F6\u95F4', width: 170 }, {
+          default: ({ row }) => formatTime(row.updated_at),
+        }),
+        h(ElTableColumn, { label: '\u64CD\u4F5C', width: 140, fixed: 'right' }, {
+          default: ({ row }) => h('div', { class: 'row-actions' }, [
+            props.canManage ? h(ElButton, { link: true, size: 'small', onClick: () => emit('edit', row) }, () => '\u7F16\u8F91') : null,
+            props.canManage ? h(ElPopconfirm, { title: '\u786E\u8BA4\u5220\u9664\u8BE5\u7B56\u7565\uFF1F', onConfirm: () => emit('remove', row.id) }, {
+              reference: () => h(ElButton, { link: true, type: 'danger', size: 'small' }, () => '\u5220\u9664'),
+            }) : null,
+          ]),
+        }),
+      ]),
+    ])
+  },
+})
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
-const alerts = ref([])
-const loading = ref(false)
-const search = ref('')
-const levelFilter = ref('')
-const ackFilter = ref('')
-const page = ref(1)
-const total = ref(0)
 
+const activeTab = ref('events')
+const notifyTab = ref('rules')
+const policyTab = ref('aggregation')
+const eventMode = ref('list')
+const eventModeOptions = [
+  { label: '\u5217\u8868', value: 'list' },
+  { label: '\u5206\u7EC4', value: 'group' },
+]
+
+const providerOptions = [
+  { label: 'Alertmanager', value: 'prometheus' },
+  { label: 'Zabbix', value: 'zabbix' },
+  { label: 'Nightingale', value: 'nightingale' },
+  { label: '\u963F\u91CC\u4E91\u76D1\u63A7', value: 'aliyun' },
+  { label: '\u901A\u7528 Webhook', value: 'generic' },
+]
+
+const channelOptions = [
+  { label: '\u77ED\u4FE1', value: 'sms' },
+  { label: '\u8BED\u97F3', value: 'voice' },
+  { label: '\u90AE\u4EF6', value: 'email' },
+  { label: '\u9489\u9489', value: 'dingtalk' },
+  { label: '\u98DE\u4E66', value: 'feishu' },
+  { label: '\u4F01\u5FAE', value: 'wecom' },
+]
+
+const dimensionOptions = [
+  { label: '\u6765\u6E90\u7C7B\u578B', value: 'source_type' },
+  { label: '\u73AF\u5883', value: 'environment' },
+  { label: '\u670D\u52A1', value: 'service' },
+  { label: '\u96C6\u7FA4', value: 'cluster' },
+  { label: '\u547D\u540D\u7A7A\u95F4', value: 'namespace' },
+  { label: '\u4E1A\u52A1\u7EBF', value: 'business_line' },
+  { label: '\u8D44\u6E90\u7C7B\u578B', value: 'resource_type' },
+  { label: '\u8D44\u6E90', value: 'resource' },
+  { label: '\u7EA7\u522B', value: 'level' },
+  { label: '\u5730\u57DF', value: 'region' },
+  { label: '\u6807\u7B7E alertname', value: 'label.alertname' },
+  { label: '\u6807\u7B7E team', value: 'label.team' },
+]
+
+const filters = reactive({
+  search: '',
+  level: '',
+  status: 'active',
+  source_type: '',
+  is_acknowledged: '',
+})
+
+const loading = ref(false)
+const configLoading = ref(false)
+const alerts = ref([])
+const groups = ref([])
+const summary = ref({})
+const total = ref(0)
+const page = ref(1)
+const groupBy = ref(['source_type', 'environment', 'service'])
+const integrations = ref([])
+const channels = ref([])
+const recipients = ref([])
+const recipientGroups = ref([])
+const users = ref([])
+const notificationRules = ref([])
+const aggregationRules = ref([])
+const inhibitionRules = ref([])
+const muteRules = ref([])
+const escalationPolicies = ref([])
+const notificationLogs = ref([])
+const selectedAlert = ref(null)
+const detailVisible = ref(false)
+
+const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
 const canManageAlerts = computed(() => authStore.hasPermission('ops.alert.manage'))
+const canNotifyAlerts = computed(() => authStore.hasPermission('ops.alert.notify'))
+const canViewConfig = computed(() => authStore.hasPermission('ops.alert.config.view'))
+const canManageConfig = computed(() => authStore.hasPermission('ops.alert.config.manage'))
 const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
 const canViewTracing = computed(() => authStore.hasPermission('ops.trace.view'))
 const canViewGrafana = computed(() => authStore.hasPermission('ops.grafana.view'))
-const criticalCount = computed(() => alerts.value.filter((item) => item.level === 'critical').length)
-const warningCount = computed(() => alerts.value.filter((item) => item.level === 'warning').length)
-const acknowledgedCount = computed(() => alerts.value.filter((item) => item.is_acknowledged).length)
+
+const statCards = computed(() => [
+  { label: '\u6D3B\u8DC3\u544A\u8B66', value: summary.value.active || 0, tone: '' },
+  { label: '\u4E25\u91CD\u544A\u8B66', value: summary.value.critical || 0, tone: 'danger-card' },
+  { label: '\u5DF2\u5C4F\u853D\u544A\u8B66', value: summary.value.muted || 0, tone: 'warning-card' },
+  { label: '\u5DF2\u8BA4\u9886\u544A\u8B66', value: summary.value.claimed || 0, tone: 'success-card' },
+])
+
+const integrationDialog = reactive({ visible: false, form: emptyIntegration() })
+const channelDialog = reactive({ visible: false, form: emptyChannel() })
+const recipientDialog = reactive({ visible: false, form: emptyRecipient() })
+const recipientGroupDialog = reactive({ visible: false, form: emptyRecipientGroup() })
+const notificationRuleDialog = reactive({ visible: false, form: emptyNotificationRule() })
+const policyDialog = reactive({ visible: false, kind: 'aggregation', title: '', form: emptyAggregationRule() })
 
 function levelType(level) {
   return { critical: 'danger', warning: 'warning', info: 'info' }[level] || 'info'
 }
 
-function formatTime(value) {
-  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '--'
+function levelText(level) {
+  return { critical: '\u4E25\u91CD', warning: '\u8B66\u544A', info: '\u4FE1\u606F' }[level] || ''
 }
 
-function applyRouteFilters() {
-  search.value = typeof route.query.search === 'string' ? route.query.search.trim() : ''
-  levelFilter.value = typeof route.query.level === 'string' ? route.query.level.trim() : ''
-  if (route.query.ack === '0') {
-    ackFilter.value = false
-  } else if (route.query.ack === '1') {
-    ackFilter.value = true
-  } else {
-    ackFilter.value = ''
+function statusType(status) {
+  return { active: 'danger', resolved: 'success', muted: 'warning', closed: 'info' }[status] || 'info'
+}
+
+function statusText(status) {
+  return { active: '\u6D3B\u8DC3', resolved: '\u5DF2\u6062\u590D', muted: '\u5DF2\u5C4F\u853D', closed: '\u5DF2\u5173\u95ED' }[status] || status
+}
+
+function providerText(value) {
+  return providerOptions.find((item) => item.value === value)?.label || value || '-'
+}
+
+function channelText(value) {
+  return channelOptions.find((item) => item.value === value)?.label || value || '-'
+}
+
+function notifyStatusType(value) {
+  return { success: 'success', skipped: 'info', error: 'danger' }[value] || 'info'
+}
+
+function formatTime(value) {
+  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+}
+
+function displayIntegrationWebhook(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return { host: '-', path: '', full: '-' }
+  const placeholderHost = '<\u544A\u8B66\u4E2D\u5FC3IP:PORT>'
+  if (raw.startsWith('/')) {
+    return {
+      host: `http://${placeholderHost}`,
+      path: raw,
+      full: `http://${placeholderHost}${raw}`,
+    }
+  }
+  try {
+    const parsed = new URL(raw)
+    const host = `${parsed.protocol}//${placeholderHost}`
+    const path = `${parsed.pathname}${parsed.search}${parsed.hash}` || '/'
+    return { host, path, full: `${host}${path}` }
+  } catch {
+    const masked = raw.replace(/^https?:\/\/[^/]+/i, `http://${placeholderHost}`)
+    const matched = masked.match(/^(https?:\/\/[^/]+)(.*)$/i)
+    if (matched) {
+      return {
+        host: matched[1],
+        path: matched[2] || '/',
+        full: masked,
+      }
+    }
+    return { host: `http://${placeholderHost}`, path: masked, full: masked }
   }
 }
 
-function alertText(row) {
-  return [row?.title, row?.source, row?.message, row?.host_name].filter(Boolean).join(' ').toLowerCase()
+function groupMembers(row) {
+  const names = (row.recipients || []).map((item) => item.name)
+  const platformUsers = (row.users || []).map((item) => item.display_name || item.username)
+  return [...names, ...platformUsers].join('\u3001') || '-'
+}
+
+function buildAlertParams() {
+  const params = { page: page.value }
+  if (filters.search) params.search = filters.search
+  if (filters.level) params.level = filters.level
+  if (filters.status) params.status = filters.status
+  if (filters.source_type) params.source_type = filters.source_type
+  if (filters.is_acknowledged !== '') params.is_acknowledged = filters.is_acknowledged
+  return params
+}
+
+async function fetchAlerts() {
+  loading.value = true
+  try {
+    const response = await getAlerts(buildAlertParams())
+    alerts.value = listOf(response)
+    total.value = response?.count || alerts.value.length
+  } finally {
+    loading.value = false
+  }
+}
+
+async function fetchSummary() {
+  summary.value = await getAlertSummary(buildAlertParams())
+}
+
+async function fetchGroups() {
+  if (eventMode.value !== 'group') return
+  loading.value = true
+  try {
+    groups.value = await getAlertGroups({ ...buildAlertParams(), group_by: groupBy.value.join(',') })
+  } finally {
+    loading.value = false
+  }
+}
+
+async function refreshEvents() {
+  const tasks = [fetchSummary()]
+  if (eventMode.value === 'group') tasks.push(fetchGroups())
+  else tasks.push(fetchAlerts())
+  await Promise.all(tasks)
+}
+
+function handleFilterChange() {
+  page.value = 1
+  refreshEvents()
+}
+
+function openGroup(row) {
+  eventMode.value = 'list'
+  filters.search = row.sample_title || ''
+  page.value = 1
+  refreshEvents()
+}
+
+function openDetail(row) {
+  selectedAlert.value = row
+  detailVisible.value = true
 }
 
 function resolveAlertKeyword(row) {
-  return [row?.title, row?.source, row?.host_name].find((item) => typeof item === 'string' && item.trim()) || ''
+  return [row?.title, row?.source, row?.resource, row?.host_name, row?.service].find((item) => typeof item === 'string' && item.trim()) || ''
 }
 
 function inferAlertService(row) {
-  const candidate = [row?.source, row?.host_name, row?.title, row?.message]
-    .find((item) => typeof item === 'string' && item.trim()) || ''
+  const candidate = [row?.service, row?.source, row?.host_name, row?.title, row?.message].find((item) => typeof item === 'string' && item.trim()) || ''
   const matched = candidate.match(/([a-z0-9-]+(?:service|gateway|nginx|member|payment|order))/i)
-  return matched?.[1] || ''
-}
-
-function inferDashboardKey(row) {
-  const text = alertText(row)
-  if (/(nginx|ingress|gateway|slb|load.?balanc)/.test(text)) return 'ingress-slo'
-  if (/(log|loki|sls|elk|audit)/.test(text)) return 'log-drilldown'
-  if (/(cpu|memory|disk|node|host|pod|k8s|network)/.test(text)) return 'infra-overview'
-  return 'apm-overview'
+  return matched?.[1] || row?.service || ''
 }
 
 function openAlertLogs(row) {
-  const keyword = resolveAlertKeyword(row)
-  router.push({
-    path: '/logs',
+  openRouteInNewTab(router, {
+    path: '/logs/query',
     query: {
-      keyword: keyword || undefined,
-      title: row?.title ? `告警 ${row.title}` : undefined,
+      keyword: resolveAlertKeyword(row) || undefined,
+      title: row?.title ? `\u544A\u8B66 ${row.title}` : undefined,
       autoRun: '1',
       window: '60',
     },
@@ -193,57 +1047,422 @@ function openAlertLogs(row) {
 }
 
 function openAlertTrace(row) {
-  const keyword = resolveAlertKeyword(row)
-  const service = inferAlertService(row)
-  router.push({
+  openRouteInNewTab(router, {
     path: '/observability/tracing',
     query: {
-      keyword: keyword || undefined,
-      service: service || undefined,
+      keyword: resolveAlertKeyword(row) || undefined,
+      service: inferAlertService(row) || undefined,
       window: '60',
     },
   })
 }
 
-function openAlertDashboard(row) {
-  router.push({
-    path: '/observability/grafana',
-    query: {
-      dashboard: inferDashboardKey(row),
-    },
-  })
+async function runAlertAction(row, action) {
+  const actionMap = {
+    ack: () => acknowledgeAlert(row.id),
+    claim: () => claimAlert(row.id),
+    unclaim: () => unclaimAlert(row.id),
+    mute: () => muteAlert(row.id, { minutes: 60 }),
+    escalate: () => escalateAlert(row.id),
+    resolve: () => resolveAlert(row.id),
+    close: () => closeAlert(row.id),
+    reopen: () => reopenAlert(row.id),
+    notify: () => notifyAlert(row.id, { action: row.status === 'resolved' ? 'resolved' : 'fire' }),
+  }
+  await actionMap[action]?.()
+  ElMessage.success('\u64CD\u4F5C\u5DF2\u63D0\u4EA4')
+  detailVisible.value = false
+  await refreshAll()
 }
 
-function handleFilterChange() {
-  page.value = 1
-  fetchData()
+async function handleRowCommand(command, row) {
+  if (command === 'delete') {
+    await deleteAlert(row.id)
+    ElMessage.success('\u544A\u8B66\u5DF2\u5220\u9664')
+    await refreshAll()
+    return
+  }
+  await runAlertAction(row, command)
 }
 
-async function fetchData() {
-  loading.value = true
+function ensureTabAccess() {
+  const tabs = []
+  if (canViewAlerts.value) tabs.push('events', 'logs')
+  if (canViewConfig.value) tabs.push('notify', 'policies', 'integrations')
+  if (!tabs.includes(activeTab.value)) activeTab.value = tabs[0] || 'events'
+}
+
+async function switchTab(tab) {
+  activeTab.value = tab
+  await refreshAll()
+}
+
+async function changeNotifyTab(tab) {
+  notifyTab.value = tab
+  await loadNotifyTab()
+}
+
+async function changePolicyTab(tab) {
+  policyTab.value = tab
+  await loadPolicyTab()
+}
+
+async function loadNotifyTab() {
+  if (!canViewConfig.value) return
+  configLoading.value = true
   try {
-    const params = { page: page.value }
-    if (search.value) params.search = search.value
-    if (levelFilter.value) params.level = levelFilter.value
-    if (ackFilter.value !== '') params.is_acknowledged = ackFilter.value
-    const response = await getAlerts(params)
-    alerts.value = response.results || response || []
-    total.value = response.count || alerts.value.length
+    if (notifyTab.value === 'rules') {
+      const [rules, channelList, recipientList, groupList, aggregationList, escalationList] = await Promise.all([
+        getAlertNotificationRules(),
+        getAlertNotificationChannels(),
+        getAlertRecipients(),
+        getAlertRecipientGroups(),
+        getAlertAggregationRules(),
+        getAlertEscalationPolicies(),
+      ])
+      notificationRules.value = listOf(rules)
+      channels.value = listOf(channelList)
+      recipients.value = listOf(recipientList)
+      recipientGroups.value = listOf(groupList)
+      aggregationRules.value = listOf(aggregationList)
+      escalationPolicies.value = listOf(escalationList)
+    } else if (notifyTab.value === 'channels') {
+      channels.value = listOf(await getAlertNotificationChannels())
+    } else {
+      const [recipientList, groupList, userList] = await Promise.all([
+        getAlertRecipients(),
+        getAlertRecipientGroups(),
+        getUsers(),
+      ])
+      recipients.value = listOf(recipientList)
+      recipientGroups.value = listOf(groupList)
+      users.value = listOf(userList)
+    }
   } finally {
-    loading.value = false
+    configLoading.value = false
   }
 }
 
-async function handleAck(row) {
-  await updateAlert(row.id, { is_acknowledged: true })
-  ElMessage.success('告警已确认')
-  await fetchData()
+async function loadPolicyTab() {
+  if (!canViewConfig.value) return
+  configLoading.value = true
+  try {
+    if (policyTab.value === 'aggregation') {
+      aggregationRules.value = listOf(await getAlertAggregationRules())
+    } else if (policyTab.value === 'inhibition') {
+      inhibitionRules.value = listOf(await getAlertInhibitionRules())
+    } else if (policyTab.value === 'mute') {
+      muteRules.value = listOf(await getAlertMuteRules())
+    } else {
+      const [policyList, channelList] = await Promise.all([
+        getAlertEscalationPolicies(),
+        getAlertNotificationChannels(),
+      ])
+      escalationPolicies.value = listOf(policyList)
+      channels.value = listOf(channelList)
+    }
+  } finally {
+    configLoading.value = false
+  }
 }
 
-async function handleDelete(id) {
-  await deleteAlert(id)
-  ElMessage.success('告警已删除')
-  await fetchData()
+async function fetchIntegrations() {
+  configLoading.value = true
+  try {
+    integrations.value = listOf(await getAlertIntegrations())
+  } finally {
+    configLoading.value = false
+  }
+}
+
+async function fetchNotificationLogs() {
+  configLoading.value = true
+  try {
+    notificationLogs.value = listOf(await getAlertNotificationLogs())
+  } finally {
+    configLoading.value = false
+  }
+}
+
+async function refreshAll() {
+  ensureTabAccess()
+  if (activeTab.value === 'events' && canViewAlerts.value) await refreshEvents()
+  if (activeTab.value === 'notify' && canViewConfig.value) await loadNotifyTab()
+  if (activeTab.value === 'policies' && canViewConfig.value) await loadPolicyTab()
+  if (activeTab.value === 'integrations' && canViewConfig.value) await fetchIntegrations()
+  if (activeTab.value === 'logs' && canViewAlerts.value) await fetchNotificationLogs()
+}
+
+function emptyIntegration() {
+  return { id: null, name: '', provider: 'prometheus', default_label_rows: [], is_enabled: true, description: '' }
+}
+
+function openIntegration(row = null) {
+  integrationDialog.form = row ? { ...row, default_label_rows: matcherRowsFromObject(row.default_labels) } : emptyIntegration()
+  integrationDialog.visible = true
+}
+
+async function saveIntegration() {
+  const data = { ...integrationDialog.form, default_labels: matchersToObject(integrationDialog.form.default_label_rows) }
+  if (data.id) await updateAlertIntegration(data.id, data)
+  else await createAlertIntegration(data)
+  integrationDialog.visible = false
+  ElMessage.success('\u63A5\u5165\u6E90\u5DF2\u4FDD\u5B58')
+  await fetchIntegrations()
+}
+
+async function removeIntegration(id) {
+  await deleteAlertIntegration(id)
+  ElMessage.success('\u63A5\u5165\u6E90\u5DF2\u5220\u9664')
+  await fetchIntegrations()
+}
+
+function emptyChannel() {
+  return { id: null, name: '', channel_type: 'dingtalk', webhook_url: '', access_token: '', to: '', template_title: '', template_body: '', send_resolved: true, is_enabled: true, timeout_seconds: 8 }
+}
+
+function openChannel(row = null) {
+  if (row) {
+    const config = row.config || {}
+    const configTo = config.to || config.phones || []
+    channelDialog.form = {
+      ...emptyChannel(),
+      ...row,
+      webhook_url: config.webhook_url || config.url || '',
+      access_token: config.access_token || config.token || '',
+      to: Array.isArray(configTo) ? configTo.join(',') : String(configTo || ''),
+    }
+  } else {
+    channelDialog.form = emptyChannel()
+  }
+  channelDialog.visible = true
+}
+
+async function saveChannel() {
+  const data = { ...channelDialog.form }
+  const recipientsText = splitText(data.to)
+  data.config = {
+    ...(data.webhook_url ? { webhook_url: data.webhook_url } : {}),
+    ...(data.access_token ? { access_token: data.access_token } : {}),
+    ...(data.channel_type === 'email' ? { to: recipientsText } : {}),
+    ...((data.channel_type === 'sms' || data.channel_type === 'voice') ? { phones: recipientsText } : {}),
+  }
+  if (data.id) await updateAlertNotificationChannel(data.id, data)
+  else await createAlertNotificationChannel(data)
+  channelDialog.visible = false
+  ElMessage.success('\u901A\u77E5\u6E20\u9053\u5DF2\u4FDD\u5B58')
+  await loadNotifyTab()
+}
+
+async function removeChannel(id) {
+  await deleteAlertNotificationChannel(id)
+  ElMessage.success('\u901A\u77E5\u6E20\u9053\u5DF2\u5220\u9664')
+  await loadNotifyTab()
+}
+
+async function testChannel(row) {
+  await testAlertNotificationChannel(row.id)
+  ElMessage.success('\u6D4B\u8BD5\u8BF7\u6C42\u5DF2\u63D0\u4EA4')
+  await fetchNotificationLogs()
+}
+
+function emptyRecipient() {
+  return { id: null, name: '', phone: '', email: '', dingtalk_user_id: '', feishu_user_id: '', wecom_user_id: '', is_enabled: true }
+}
+
+function openRecipient(row = null) {
+  recipientDialog.form = row ? { ...emptyRecipient(), ...row } : emptyRecipient()
+  recipientDialog.visible = true
+}
+
+async function saveRecipient() {
+  const data = { ...recipientDialog.form }
+  if (data.id) await updateAlertRecipient(data.id, data)
+  else await createAlertRecipient(data)
+  recipientDialog.visible = false
+  ElMessage.success('\u63A5\u6536\u4EBA\u5DF2\u4FDD\u5B58')
+  await loadNotifyTab()
+}
+
+async function removeRecipient(id) {
+  await deleteAlertRecipient(id)
+  ElMessage.success('\u63A5\u6536\u4EBA\u5DF2\u5220\u9664')
+  await loadNotifyTab()
+}
+
+function emptyRecipientGroup() {
+  return { id: null, name: '', recipient_ids: [], user_ids: [], is_enabled: true, description: '' }
+}
+
+function openRecipientGroup(row = null) {
+  recipientGroupDialog.form = row
+    ? {
+        ...emptyRecipientGroup(),
+        ...row,
+        recipient_ids: (row.recipients || []).map((item) => item.id),
+        user_ids: (row.users || []).map((item) => item.id),
+      }
+    : emptyRecipientGroup()
+  recipientGroupDialog.visible = true
+}
+
+async function saveRecipientGroup() {
+  const data = { ...recipientGroupDialog.form }
+  if (data.id) await updateAlertRecipientGroup(data.id, data)
+  else await createAlertRecipientGroup(data)
+  recipientGroupDialog.visible = false
+  ElMessage.success('\u63A5\u6536\u7EC4\u5DF2\u4FDD\u5B58')
+  await loadNotifyTab()
+}
+
+async function removeRecipientGroup(id) {
+  await deleteAlertRecipientGroup(id)
+  ElMessage.success('\u63A5\u6536\u7EC4\u5DF2\u5220\u9664')
+  await loadNotifyTab()
+}
+
+function emptyNotificationRule() {
+  return {
+    id: null,
+    name: '',
+    matchers: [],
+    min_level: '',
+    channel_ids: [],
+    recipient_ids: [],
+    recipient_group_ids: [],
+    aggregation_rule: null,
+    escalation_policy: null,
+    notify_on_fire: true,
+    notify_on_resolved: true,
+    notify_on_escalation: true,
+    is_enabled: true,
+    description: '',
+  }
+}
+
+function openNotificationRule(row = null) {
+  notificationRuleDialog.form = row
+    ? {
+        ...emptyNotificationRule(),
+        ...row,
+        channel_ids: (row.channels || []).map((item) => item.id),
+        recipient_ids: (row.recipients || []).map((item) => item.id),
+        recipient_group_ids: (row.recipient_groups || []).map((item) => item.id),
+        matchers: clone(row.matchers || []),
+      }
+    : emptyNotificationRule()
+  notificationRuleDialog.visible = true
+}
+
+async function saveNotificationRule() {
+  const data = { ...notificationRuleDialog.form }
+  if (data.id) await updateAlertNotificationRule(data.id, data)
+  else await createAlertNotificationRule(data)
+  notificationRuleDialog.visible = false
+  ElMessage.success('\u901A\u77E5\u89C4\u5219\u5DF2\u4FDD\u5B58')
+  await loadNotifyTab()
+}
+
+async function removeNotificationRule(id) {
+  await deleteAlertNotificationRule(id)
+  ElMessage.success('\u901A\u77E5\u89C4\u5219\u5DF2\u5220\u9664')
+  await loadNotifyTab()
+}
+
+function emptyAggregationRule() {
+  return { id: null, name: '', matchers: [], group_by: ['source_type', 'environment', 'service'], window_minutes: 5, repeat_interval_minutes: 30, is_enabled: true, description: '' }
+}
+
+function emptyInhibitionRule() {
+  return { id: null, name: '', source_matchers: [], target_matchers: [], equal_labels: ['service', 'resource'], duration_minutes: 60, is_enabled: true, description: '' }
+}
+
+function emptyMuteRule() {
+  return { id: null, name: '', matchers: [], range: [], starts_at: null, ends_at: null, reason: '', is_enabled: true, description: '' }
+}
+
+function emptyEscalationPolicy() {
+  return { id: null, name: '', matchers: [], levels: [{ name: '\u4E00\u7EA7\u5347\u7EA7', after_minutes: 30, channel_ids: [] }], repeat_interval_minutes: 30, is_enabled: true, description: '' }
+}
+
+function openAggregationRule(row = null) {
+  policyDialog.kind = 'aggregation'
+  policyDialog.title = '\u805A\u5408\u89C4\u5219'
+  policyDialog.form = row ? { ...emptyAggregationRule(), ...row, matchers: clone(row.matchers), group_by: clone(row.group_by) } : emptyAggregationRule()
+  policyDialog.visible = true
+}
+
+function openInhibitionRule(row = null) {
+  policyDialog.kind = 'inhibition'
+  policyDialog.title = '\u6291\u5236\u89C4\u5219'
+  policyDialog.form = row ? { ...emptyInhibitionRule(), ...row, source_matchers: clone(row.source_matchers), target_matchers: clone(row.target_matchers), equal_labels: clone(row.equal_labels) } : emptyInhibitionRule()
+  policyDialog.visible = true
+}
+
+function openMuteRule(row = null) {
+  policyDialog.kind = 'mute'
+  policyDialog.title = '\u5C4F\u853D\u89C4\u5219'
+  policyDialog.form = row ? { ...emptyMuteRule(), ...row, matchers: clone(row.matchers), range: row.starts_at && row.ends_at ? [row.starts_at, row.ends_at] : [] } : emptyMuteRule()
+  policyDialog.visible = true
+}
+
+function openEscalationPolicy(row = null) {
+  policyDialog.kind = 'escalation'
+  policyDialog.title = '\u5347\u7EA7\u7B56\u7565'
+  policyDialog.form = row ? { ...emptyEscalationPolicy(), ...row, matchers: clone(row.matchers), levels: clone(row.levels || []) } : emptyEscalationPolicy()
+  policyDialog.visible = true
+}
+
+async function savePolicy() {
+  const data = { ...policyDialog.form }
+  if (policyDialog.kind === 'mute') {
+    data.starts_at = data.range?.[0] || null
+    data.ends_at = data.range?.[1] || null
+  }
+  const actionMap = {
+    aggregation: [createAlertAggregationRule, updateAlertAggregationRule, loadPolicyTab],
+    inhibition: [createAlertInhibitionRule, updateAlertInhibitionRule, loadPolicyTab],
+    mute: [createAlertMuteRule, updateAlertMuteRule, loadPolicyTab],
+    escalation: [createAlertEscalationPolicy, updateAlertEscalationPolicy, loadPolicyTab],
+  }
+  const [createFn, updateFn, refreshFn] = actionMap[policyDialog.kind]
+  if (data.id) await updateFn(data.id, data)
+  else await createFn(data)
+  policyDialog.visible = false
+  ElMessage.success('\u7B56\u7565\u5DF2\u4FDD\u5B58')
+  await refreshFn()
+}
+
+async function removeAggregationRule(id) {
+  await deleteAlertAggregationRule(id)
+  ElMessage.success('\u805A\u5408\u89C4\u5219\u5DF2\u5220\u9664')
+  await loadPolicyTab()
+}
+
+async function removeInhibitionRule(id) {
+  await deleteAlertInhibitionRule(id)
+  ElMessage.success('\u6291\u5236\u89C4\u5219\u5DF2\u5220\u9664')
+  await loadPolicyTab()
+}
+
+async function removeMuteRule(id) {
+  await deleteAlertMuteRule(id)
+  ElMessage.success('\u5C4F\u853D\u89C4\u5219\u5DF2\u5220\u9664')
+  await loadPolicyTab()
+}
+
+async function removeEscalationPolicy(id) {
+  await deleteAlertEscalationPolicy(id)
+  ElMessage.success('\u5347\u7EA7\u7B56\u7565\u5DF2\u5220\u9664')
+  await loadPolicyTab()
+}
+
+function applyRouteFilters() {
+  filters.search = typeof route.query.search === 'string' ? route.query.search.trim() : ''
+  filters.level = typeof route.query.level === 'string' ? route.query.level.trim() : ''
+  if (route.query.ack === '0') filters.is_acknowledged = false
+  else if (route.query.ack === '1') filters.is_acknowledged = true
+  else filters.is_acknowledged = ''
 }
 
 watch(
@@ -251,59 +1470,74 @@ watch(
   async () => {
     applyRouteFilters()
     page.value = 1
-    await fetchData()
-  }
+    await refreshAll()
+  },
 )
 
 onMounted(async () => {
   applyRouteFilters()
-  await fetchData()
+  users.value = listOf(await getUsers())
+  await refreshAll()
 })
 </script>
 
 <style scoped>
 .alerts-page {
+  --alert-primary: #3370ff;
+  --alert-bg: #f7f8fa;
+  --alert-panel: #ffffff;
+  --alert-border-soft: #eff0f2;
+  --alert-text: #1f2329;
+  --alert-muted: #646a73;
+  --alert-subtle: #8f959e;
+  --alert-shadow: 0 8px 24px rgba(31, 35, 41, 0.06);
+  background: linear-gradient(180deg, rgba(247, 248, 250, 0.94), rgba(255, 255, 255, 0) 180px), var(--alert-bg);
+  color: var(--alert-text);
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.panel {
-  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
-  padding: 12px 14px;
+  min-height: 100%;
 }
 
 .hero,
-.hero-copy,
 .hero-title-row,
 .hero-actions,
-.filter-bar,
-.row-actions {
+.toolbar,
+.row-actions,
+.group-toolbar,
+.section-head,
+.detail-actions,
+.matcher-row,
+.level-row {
+  align-items: center;
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
 }
 
-.hero {
-  align-items: center;
+.hero.panel {
+  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 12px;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
   justify-content: space-between;
+  padding: 12px 14px;
 }
 
 .hero-copy {
-  flex-direction: column;
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
 .hero-title-row {
   align-items: baseline;
-  gap: 12px;
+  gap: 10px;
 }
 
 .hero-title-row h2 {
+  color: #0f172a;
   font-size: 23px;
+  font-weight: 700;
   line-height: 1.1;
   margin: 0;
 }
@@ -317,39 +1551,71 @@ onMounted(async () => {
 
 .hero-icon {
   align-items: center;
-  background: linear-gradient(135deg, #dc2626, #f97316);
+  background: linear-gradient(135deg, #0f766e, #0ea5e9);
   border-radius: 16px;
   color: #fff;
   display: inline-flex;
-  height: 42px;
+  height: 40px;
   justify-content: center;
-  width: 42px;
+  width: 40px;
+}
+
+.hero-actions .el-button {
+  border-radius: 10px;
+  font-weight: 500;
+  min-height: 32px;
+  padding: 0 14px;
+}
+
+.panel {
+  background: var(--alert-panel);
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 16px;
+  box-shadow: var(--alert-shadow);
+  padding: 12px 14px;
+}
+
+.alert-center-tabs .neo-tab-btn {
+  min-height: 36px;
+  padding: 0 18px;
+}
+
+.alert-center-tabs {
+  margin: 0;
+}
+
+.alert-sub-tabs {
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.alert-sub-tabs .neo-sub-tab-btn {
+  min-height: 30px;
+  padding: 0 14px;
 }
 
 .release-stats {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.release-stats + .panel,
-.release-stats + .content-grid,
-.release-stats + .table-card {
-  margin-top: -8px;
+  margin-bottom: 0;
 }
 
 .release-stat-card {
+  background: #fff;
+  border: 1px solid var(--alert-border-soft);
   border-radius: 12px;
-  min-height: 72px;
-  padding: 10px 12px;
-}
-
-.danger-card {
-  background: linear-gradient(135deg, #fee2e2, #fca5a5);
+  box-shadow: 0 6px 18px rgba(31, 35, 41, 0.04);
+  min-height: 68px;
+  padding: 9px 11px;
 }
 
 .warning-card {
   background: linear-gradient(135deg, #fef3c7, #fdba74);
+}
+
+.danger-card {
+  background: linear-gradient(135deg, #fee2e2, #fca5a5);
 }
 
 .success-card {
@@ -367,44 +1633,276 @@ onMounted(async () => {
   margin-top: 4px;
 }
 
-.filter-bar {
+.toolbar,
+.group-toolbar {
+  background: #fbfcff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 12px;
   margin-bottom: 8px;
+  padding: 8px 10px;
+}
+
+.toolbar {
+  flex-wrap: wrap;
+}
+
+.toolbar .el-input {
+  width: 280px;
+}
+
+.toolbar .el-select {
+  width: 120px;
+}
+
+.group-toolbar .el-select {
+  min-width: 420px;
+}
+
+.toolbar-label {
+  color: var(--alert-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.data-table {
+  width: 100%;
+}
+
+.link-title {
+  background: transparent;
+  border: 0;
+  color: var(--alert-text);
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0;
+  text-align: left;
+}
+
+.link-title:hover {
+  color: var(--alert-primary);
+}
+
+.sub-line {
+  color: var(--alert-subtle);
+  margin-top: 3px;
+}
+
+.group-key {
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-weight: 600;
 }
 
 .pager {
   display: flex;
   justify-content: flex-end;
-  margin-top: 8px;
+  padding-top: 8px;
 }
 
-:deep(.el-table td.el-table__cell),
-:deep(.el-table th.el-table__cell) {
-  padding: 7px 0;
+.section-head {
+  justify-content: space-between;
+  margin-bottom: 8px;
+  min-height: 30px;
 }
 
-:deep(.el-table .cell) {
-  line-height: 1.35;
+.section-head h3 {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
 }
 
-@media (max-width: 900px) {
-  .release-stats {
+.split-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.split-panel {
+  background: #fbfcff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.mini-tag {
+  margin: 0 4px 4px 0;
+}
+
+.separator {
+  color: #cbd5e1;
+  margin: 0 6px;
+}
+
+.mono {
+  color: var(--alert-muted);
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.webhook-url-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.webhook-url-line {
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.webhook-url-host {
+  color: #334155;
+  white-space: nowrap;
+}
+
+.webhook-url-path {
+  word-break: break-all;
+}
+
+.detail-head {
+  align-items: flex-start;
+  background: #fbfcff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 12px;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+}
+
+.detail-title {
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.detail-actions {
+  margin: 8px 0;
+}
+
+.kv-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.matcher-editor,
+.level-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.matcher-row,
+.level-row {
+  flex-wrap: nowrap;
+  width: 100%;
+}
+
+.matcher-row .el-input {
+  flex: 1;
+}
+
+.matcher-row .el-select {
+  width: 110px;
+}
+
+.level-row {
+  background: #fbfcff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 12px;
+  padding: 7px 8px;
+}
+
+.level-row .el-input {
+  width: 150px;
+}
+
+.level-row .el-select {
+  min-width: 220px;
+}
+
+.alerts-page :deep(.el-input__wrapper),
+.alerts-page :deep(.el-select__wrapper) {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px var(--alert-border-soft) inset;
+}
+
+.alerts-page :deep(.el-button--primary) {
+  --el-button-bg-color: var(--alert-primary);
+  --el-button-border-color: var(--alert-primary);
+  --el-button-hover-bg-color: #2b63db;
+  --el-button-hover-border-color: #2b63db;
+  border-radius: 10px;
+}
+
+.alerts-page :deep(.el-button:not(.is-link)) {
+  border-radius: 10px;
+}
+
+.alerts-page :deep(.el-segmented) {
+  --el-segmented-item-selected-bg-color: #ffffff;
+  --el-segmented-item-selected-color: var(--alert-primary);
+  background: #f2f3f5;
+  border-radius: 10px;
+  padding: 2px;
+}
+
+.alerts-page :deep(.el-table) {
+  --el-table-border-color: var(--alert-border-soft);
+  --el-table-header-bg-color: #fbfcff;
+  --el-table-header-text-color: var(--alert-muted);
+  --el-table-row-hover-bg-color: #f7faff;
+  border-radius: 12px;
+  color: var(--alert-text);
+  overflow: hidden;
+}
+
+.alerts-page :deep(.el-tag) {
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+.alerts-page :deep(.el-dialog),
+.alerts-page :deep(.el-drawer) {
+  border-radius: 16px;
+}
+
+@media (max-width: 1100px) {
+  .release-stats,
+  .split-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 760px) {
-  .hero,
-  .filter-bar,
-  .release-stats {
-    grid-template-columns: 1fr;
-  }
-
-  .hero {
+  .hero.panel,
+  .hero-title-row,
+  .matcher-row,
+  .level-row {
     align-items: stretch;
     flex-direction: column;
   }
+
+  .page-inline-desc {
+    flex-basis: 100%;
+    padding-left: 54px;
+  }
+
+  .release-stats,
+  .split-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar .el-input,
+  .toolbar .el-select,
+  .group-toolbar .el-select,
+  .level-row .el-input,
+  .level-row .el-select,
+  .matcher-row .el-select {
+    min-width: 0;
+    width: 100%;
+  }
 }
-.hero.panel { border-radius: 20px; }
 </style>
-
-

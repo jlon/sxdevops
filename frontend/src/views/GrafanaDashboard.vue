@@ -9,7 +9,7 @@
               <span v-for="tag in selectedDashboard.tags" :key="`immersive-${selectedDashboard.key}-${tag}`" class="dashboard-chip">{{ tag }}</span>
             </div>
           </div>
-          <span>Grafana 看板展示</span>
+          <span>{{ immersiveFolderLabel }}</span>
         </div>
         <div class="immersive-toolbar__actions">
           <el-button size="small" v-if="canViewTracing" type="success" plain @click="openTraceFromDashboard(selectedDashboard)">查链路</el-button>
@@ -43,9 +43,6 @@
             <el-icon><RefreshRight /></el-icon>
             刷新
           </el-button>
-          <el-button size="small" v-if="canViewTracing" @click="router.push('/observability/tracing')">链路追踪</el-button>
-          <el-button size="small" v-if="canQueryLogs" @click="router.push('/logs/query')">日志查询</el-button>
-          <el-button size="small" v-if="canViewAlerts" @click="router.push('/alerts')">告警中心</el-button>
         </div>
       </section>
 
@@ -396,6 +393,7 @@ import { ArrowDown, ArrowRight, Delete, EditPen, Folder, FolderAdd, FolderOpened
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getGrafanaConfig, getObservabilityOverview, resolveGrafanaToLogs, resolveGrafanaToTrace, updateGrafanaConfig } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { openRouteInNewTab } from '@/utils/router'
 
 const route = useRoute()
 const router = useRouter()
@@ -719,10 +717,12 @@ const knownFolderOptions = computed(() => {
   return [...folders].sort((a, b) => a.localeCompare(b, 'zh-CN'))
 })
 
-const selectedDashboard = computed(() => {
-  return filteredDashboards.value.find((item) => item.key === selectedKey.value) || filteredDashboards.value[0] || null
-})
+const selectedDashboard = computed(() => findDashboardByIdentity(selectedKey.value) || filteredDashboards.value[0] || null)
 const selectedDashboardUrl = computed(() => appendGrafanaContext(selectedDashboard.value?.url || ''))
+const immersiveFolderLabel = computed(() => {
+  const folderPath = normalizeFolderPath(selectedDashboard.value?.folder || '')
+  return folderPath ? `目录：${folderPath}` : '目录：未分类'
+})
 
 const folderDialogPreviewPath = computed(() => {
   const parent = normalizeFolderPath(folderDialog.parentPath)
@@ -757,6 +757,18 @@ function normalizeDashboard(item = {}, index = null) {
     tags: Array.isArray(item.tags) ? [...item.tags] : [],
     panel_count: Number(item.panel_count || 0),
   }
+}
+
+function normalizeDashboardIdentity(value = '') {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '')
+}
+
+function findDashboardByIdentity(value = '') {
+  const normalized = normalizeDashboardIdentity(value)
+  if (!normalized) return null
+  return dashboards.value.find((item) => {
+    return [item.key, item.slug, item.title].some((candidate) => normalizeDashboardIdentity(candidate) === normalized)
+  }) || null
 }
 
 function buildDashboardFullUrl(item = {}, baseUrl = '') {
@@ -1332,10 +1344,47 @@ function openExternal(url) {
   }
 }
 
-function appendGrafanaContext(url) {
-  const value = appendGrafanaDisplayParams(String(url || '').trim())
+function appendGrafanaParams(url, rawParams = {}) {
+  const value = String(url || '').trim()
   if (!value) return ''
   const params = new URLSearchParams()
+  Object.entries(rawParams).forEach(([key, raw]) => {
+    const values = Array.isArray(raw) ? raw : [raw]
+    values.forEach((item) => {
+      if (item !== undefined && item !== null && String(item).trim()) {
+        params.append(key, String(item).trim())
+      }
+    })
+  })
+  const keys = [...new Set(params.keys())]
+  try {
+    const parsed = /^https?:\/\//i.test(value) ? new URL(value) : new URL(value, window.location.origin)
+    keys.forEach((key) => parsed.searchParams.delete(key))
+    params.forEach((item, key) => {
+      parsed.searchParams.append(key, item)
+    })
+    return /^https?:\/\//i.test(value)
+      ? parsed.toString()
+      : `${parsed.pathname}${parsed.search}${parsed.hash}`
+  } catch {
+    const separator = value.includes('?') ? '&' : '?'
+    return `${value}${separator}${params.toString()}`
+  }
+}
+
+function groupSearchParams(params) {
+  const grouped = {}
+  params.forEach((value, key) => {
+    if (!grouped[key]) grouped[key] = []
+    grouped[key].push(value)
+  })
+  return grouped
+}
+
+function appendGrafanaContext(url) {
+  const params = new URLSearchParams()
+  params.set('kiosk', 'true')
+  params.set('theme', 'light')
   Object.entries(route.query).forEach(([key, raw]) => {
     if (['dashboard', 'folder', 'keyword', 'tag', 'fullscreen'].includes(key)) return
     if (!['traceId', 'service', 'workload', 'namespace', 'provider', 'source', 'from', 'to'].includes(key) && !key.startsWith('var-')) return
@@ -1346,26 +1395,48 @@ function appendGrafanaContext(url) {
       }
     })
   })
-  const query = params.toString()
-  if (!query) return value
-  return `${value}${value.includes('?') ? '&' : '?'}${query}`
+  return appendGrafanaParams(url, groupSearchParams(params))
+}
+
+function applyDashboardContextValue(context, key, value) {
+  if (value === undefined || value === null) return
+  const normalizedValue = String(value).trim()
+  if (!normalizedValue) return
+  if (key.startsWith('var-') || ['traceId', 'trace_id', 'service', 'workload', 'namespace', 'from', 'to'].includes(key)) {
+    context[key] = normalizedValue
+  }
 }
 
 function dashboardContextFromRoute() {
   const context = {}
   Object.entries(route.query).forEach(([key, raw]) => {
     const values = Array.isArray(raw) ? raw : [raw]
-    const value = values.find((item) => item !== undefined && item !== null && String(item).trim())
-    if (value === undefined || value === null || !String(value).trim()) return
-    if (key.startsWith('var-') || ['traceId', 'trace_id', 'service', 'workload', 'namespace', 'from', 'to'].includes(key)) {
-      context[key] = String(value).trim()
-    }
+    values.forEach((item) => applyDashboardContextValue(context, key, item))
   })
   return context
 }
 
+function dashboardContextFromUrl(url = '') {
+  const context = {}
+  const value = String(url || '').trim()
+  if (!value) return context
+  try {
+    const parsed = new URL(value, window.location.origin)
+    parsed.searchParams.forEach((item, key) => {
+      applyDashboardContextValue(context, key, item)
+    })
+  } catch {
+    return context
+  }
+  return context
+}
+
 function dashboardJumpPayload(node) {
-  const context = dashboardContextFromRoute()
+  const url = appendGrafanaContext(node?.url || node?.full_url || selectedDashboard.value?.url || selectedDashboard.value?.full_url || '')
+  const context = {
+    ...dashboardContextFromUrl(url),
+    ...dashboardContextFromRoute(),
+  }
   return {
     dashboard_key: node?.key || selectedDashboard.value?.key || '',
     query: context,
@@ -1383,55 +1454,81 @@ function firstResolvedTag(resolved, keys = []) {
 }
 
 function jumpErrorMessage(error, fallback) {
-  return error?.response?.data?.detail || error?.response?.data?.error || error?.message || fallback
+  const detail = String(error?.response?.data?.detail || error?.response?.data?.error || '').trim()
+  const statusCode = Number(error?.response?.status || 0)
+  if (
+    statusCode === 404
+    || detail.includes('Grafana 看板到日志关联')
+    || detail.includes('Grafana 看板到链路关联')
+  ) {
+    return '当前看板未配置关联跳转'
+  }
+  return detail || error?.message || fallback
 }
 
 async function openTraceFromDashboard(node) {
   try {
-    const resolved = await resolveGrafanaToTrace(dashboardJumpPayload(node))
-    const traceId = String(resolved.trace_id || '').trim()
-    const service = String(resolved.service || firstResolvedTag(resolved, ['service.name', 'service']) || '').trim()
-    if (!traceId && !service) {
-      ElMessage.warning('当前看板缺少 workload / service 或 Trace ID，上下文不足，无法跳转链路。')
+    const context = dashboardJumpPayload(node)
+    const resolved = await resolveGrafanaToTrace(context, { skipErrorMessage: true })
+    const service = String(resolved.service || firstResolvedTag(resolved, ['service.name', 'service', 'workload']) || context['var-workload'] || context.workload || context['var-service'] || context.service || '').trim()
+    if (!service) {
+      ElMessage.warning('当前看板缺少 workload / service，上下文不足，无法跳转链路。')
       return
     }
-    router.push({
+    openRouteInNewTab(router, {
       path: '/observability/tracing',
       query: {
-        traceId: traceId || undefined,
         service: service || undefined,
-        keyword: traceId ? undefined : service || undefined,
+        keyword: service || undefined,
         provider: resolved.tracing_datasource?.provider || undefined,
         datasourceId: resolved.tracing_datasource?.id ? String(resolved.tracing_datasource.id) : undefined,
         window: resolved.window_minutes ? String(resolved.window_minutes) : undefined,
+        from: context.from || undefined,
+        to: context.to || undefined,
       },
     })
   } catch (error) {
+    const statusCode = Number(error?.response?.status || 0)
+    const detail = String(error?.response?.data?.detail || error?.response?.data?.error || '').trim()
+    if (statusCode === 404 || detail.includes('Grafana 看板到链路关联')) {
+      ElMessage.closeAll()
+      ElMessage.warning('当前看板未配置关联跳转')
+      return
+    }
     ElMessage.error(jumpErrorMessage(error, '看板跳链路失败，请检查数据源关联配置。'))
   }
 }
 
 async function openLogsFromDashboard(node) {
   try {
-    const resolved = await resolveGrafanaToLogs(dashboardJumpPayload(node))
+    const context = dashboardJumpPayload(node)
+    const resolved = await resolveGrafanaToLogs(context, { skipErrorMessage: true })
     const query = String(resolved.query || '').trim()
     if (!query) {
-      ElMessage.warning('当前看板缺少可用于日志查询的标签变量。')
+      ElMessage.warning('当前看板缺少可用于日志查询的上下文标签。')
       return
     }
-    router.push({
+    openRouteInNewTab(router, {
       path: '/logs/query',
       query: {
-        traceId: resolved.trace_id || undefined,
-        service: firstResolvedTag(resolved, ['service.name', 'service']) || undefined,
+        service: firstResolvedTag(resolved, ['service.name', 'service', 'workload']) || context['var-workload'] || context.workload || context['var-service'] || context.service || undefined,
         logProvider: resolved.log_datasource?.provider || undefined,
         logDatasourceId: resolved.log_datasource?.id ? String(resolved.log_datasource.id) : undefined,
         lokiQuery: query,
         window: resolved.window_minutes ? String(resolved.window_minutes) : '60',
+        from: context.from || undefined,
+        to: context.to || undefined,
         autoRun: '1',
       },
     })
   } catch (error) {
+    const statusCode = Number(error?.response?.status || 0)
+    const detail = String(error?.response?.data?.detail || error?.response?.data?.error || '').trim()
+    if (statusCode === 404 || detail.includes('Grafana 看板到日志关联')) {
+      ElMessage.closeAll()
+      ElMessage.warning('当前看板未配置关联跳转')
+      return
+    }
     ElMessage.error(jumpErrorMessage(error, '看板跳日志失败，请检查数据源关联配置。'))
   }
 }
@@ -1478,7 +1575,7 @@ watch(
       fullscreenVisible.value = false
       return
     }
-    if (!items.some((item) => item.key === selectedKey.value)) {
+    if (!items.some((item) => item.key === selectedKey.value) && !findDashboardByIdentity(selectedKey.value)) {
       selectedKey.value = items[0].key
     }
   },
@@ -1584,6 +1681,17 @@ onBeforeUnmount(() => {
 .hero {
   align-items: center;
   justify-content: space-between;
+}
+
+.hero-actions {
+  align-items: center;
+}
+
+.hero-actions :deep(.el-button) {
+  border-radius: 10px;
+  font-weight: 500;
+  min-height: 32px;
+  padding: 0 14px;
 }
 
 .hero-title-row {

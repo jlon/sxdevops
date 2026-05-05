@@ -323,17 +323,17 @@ const menuItems = [
     title: '可观测性',
     icon: 'DataLine',
     children: [
-      { path: '/observability/firemap', title: '灭火图', icon: 'Aim', permission: 'ops.observability.firemap.view' },
+      { path: '/observability/system-posture', title: '系统态势', icon: 'Aim', permission: 'ops.observability.firemap.view' },
       {
         path: '/observability/overview',
         title: '平台总览',
         icon: 'DataLine',
-        anyPermissions: ['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
+        anyPermissions: ['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
       },
       { path: '/observability/grafana', title: '监控看板', icon: 'Histogram', permission: 'ops.grafana.view' },
       { path: '/logs', title: '日志中心', icon: 'Search', anyPermissions: ['ops.log.query', 'ops.log.datasource.view'] },
       { path: '/observability/tracing', title: '链路追踪', icon: 'Connection', anyPermissions: ['ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
-      { path: '/alerts', title: '告警中心', icon: 'Bell', permission: 'ops.alert.view' },
+      { path: '/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
     ],
   },
   {

@@ -30,21 +30,21 @@
       </div>
 
       <div class="module-grid">
-        <article v-if="canViewFireMap" class="module-card">
+        <article v-if="canViewSystemPosture" class="module-card">
           <div class="module-head">
             <div class="module-title">
               <el-icon><Aim /></el-icon>
-              <strong>灭火图</strong>
+              <strong>系统态势</strong>
             </div>
-            <el-tag size="small" type="danger">排障入口</el-tag>
+            <el-tag size="small" type="danger">核心总览</el-tag>
           </div>
           <div class="module-meta">
-            <span>业务卡片</span>
+            <span>SLA 健康</span>
             <span>层级下钻</span>
             <span>依赖影响</span>
           </div>
           <div class="module-actions">
-            <el-button size="small" link type="primary" @click="go('/observability/firemap')">打开灭火图</el-button>
+            <el-button size="small" link type="primary" @click="go('/observability/system-posture')">打开系统态势</el-button>
           </div>
         </article>
 
@@ -157,7 +157,7 @@ const overview = ref({ modules: {}, summary: {} })
 const canViewLogDatasources = computed(() => authStore.hasPermission('ops.log.datasource.view'))
 const canViewTraceDatasources = computed(() => authStore.hasPermission('ops.trace.datasource.view'))
 const canViewLinks = computed(() => authStore.hasPermission('ops.observability.link.view'))
-const canViewFireMap = computed(() => authStore.hasPermission('ops.observability.firemap.view'))
+const canViewSystemPosture = computed(() => authStore.hasPermission('ops.observability.firemap.view'))
 
 const statCards = computed(() => [
   { label: '日志数据源', value: overview.value.summary?.datasource_count || 0, tone: '' },
@@ -232,6 +232,17 @@ onMounted(loadOverview)
 .hero {
   align-items: center;
   justify-content: space-between;
+}
+
+.hero-actions {
+  align-items: center;
+}
+
+.hero-actions :deep(.el-button) {
+  border-radius: 10px;
+  font-weight: 500;
+  min-height: 32px;
+  padding: 0 14px;
 }
 
 .hero-title-row {

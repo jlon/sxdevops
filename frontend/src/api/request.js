@@ -99,11 +99,12 @@ request.interceptors.response.use(
         const status = error.response?.status
         const requestUrl = String(error.config?.url || '')
         const isProfileRequest = requestUrl.includes('/auth/me/')
+        const skipErrorMessage = Boolean(error.config?.skipErrorMessage)
         const msg = await extractErrorMessage(error)
 
         if (status === 401 && !isProfileRequest) {
             handleSessionExpired()
-        } else if (!(status === 401 && isProfileRequest)) {
+        } else if (!(status === 401 && isProfileRequest) && !skipErrorMessage) {
             ElMessage.error(msg)
         }
 

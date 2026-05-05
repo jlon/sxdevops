@@ -4,17 +4,14 @@
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="hero-icon"><el-icon><Aim /></el-icon></span>
-          <h2>灭火图</h2>
+          <h2>系统态势</h2>
         </div>
       </div>
       <div class="hero-actions">
-        <el-button size="small" :loading="loading" @click="loadFireMap()">
+        <el-button size="small" :loading="loading" @click="loadSystemPosture()">
           <el-icon><RefreshRight /></el-icon>
           刷新
         </el-button>
-        <el-button size="small" v-if="canViewAlerts" @click="go('/alerts')">告警中心</el-button>
-        <el-button size="small" v-if="canViewTrace" @click="go('/observability/tracing')">链路追踪</el-button>
-        <el-button size="small" v-if="canQueryLogs" @click="go('/logs/query')">日志查询</el-button>
       </div>
     </section>
 
@@ -25,7 +22,7 @@
       </div>
       <div class="stat-card release-stat-card danger-card">
         <div class="stat-value">{{ summary.critical_systems || 0 }}</div>
-        <div class="stat-label">红色焦点</div>
+        <div class="stat-label">高风险系统</div>
       </div>
       <div class="stat-card release-stat-card warning-card">
         <div class="stat-value">{{ summary.impact_nodes || 0 }}</div>
@@ -38,7 +35,7 @@
     </div>
 
     <div class="runtime-strip">
-      <span class="runtime-strip__label">当前焦点</span>
+      <span class="runtime-strip__label">当前系统</span>
       <span>{{ selectedSystem.name || '未选择系统' }} · {{ statusLabel(selectedSystem.status) }} · 健康分 {{ selectedSystem.health_score ?? '--' }}</span>
       <span v-for="source in dataSources.slice(0, 5)" :key="source.id" class="source-pill" :class="`is-${source.status}`">
         {{ source.name }} {{ source.count }}
@@ -76,7 +73,7 @@
             </div>
             <div class="overview-toolbar__actions">
               <el-button v-if="drillPath.length" size="small" @click="drillUp">返回上层</el-button>
-              <el-button v-if="canManageFireMap && !drillPath.length" size="small" type="primary" @click="openCreateSystem">
+              <el-button v-if="canManageSystemPosture && !drillPath.length" size="small" type="primary" @click="openCreateSystem">
                 <el-icon><Plus /></el-icon>
                 新增卡片
               </el-button>
@@ -98,7 +95,7 @@
                   <strong>{{ item.name }}</strong>
                 </div>
                 <div class="system-card__ops">
-                  <template v-if="canManageFireMap && !drillPath.length && item.editable">
+                  <template v-if="canManageSystemPosture && !drillPath.length && item.editable">
                     <el-button size="small" text :icon="Edit" @click.stop="openEditSystem(item)" />
                     <el-button size="small" text :icon="Delete" @click.stop="removeSystem(item)" />
                   </template>
@@ -350,14 +347,14 @@
 
     <el-dialog
       v-model="systemDialogVisible"
-      :title="editingSystem ? '编辑业务卡片' : '新增业务卡片'"
+      :title="editingSystem ? '编辑系统卡片' : '新增系统卡片'"
       width="880px"
       destroy-on-close
       class="firemap-dialog"
     >
       <el-form label-position="top" class="firemap-form">
         <div class="form-grid">
-          <el-form-item label="业务系统">
+          <el-form-item label="系统名称">
             <el-input v-model="systemForm.name" maxlength="128" show-word-limit />
           </el-form-item>
           <el-form-item label="负责人">
@@ -454,8 +451,9 @@ import {
   Share,
 } from '@element-plus/icons-vue'
 import echarts from '@/lib/echarts'
-import { createFireMapSystem, deleteFireMapSystem, getObservabilityFireMap, updateFireMapSystem } from '@/api/modules/ops'
+import { createSystemPostureSystem, deleteSystemPostureSystem, getObservabilitySystemPosture, updateSystemPostureSystem } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { openRouteInNewTab } from '@/utils/router'
 
 const route = useRoute()
 const router = useRouter()
@@ -464,7 +462,7 @@ const loading = ref(false)
 const systemSubmitting = ref(false)
 const systemDialogVisible = ref(false)
 const editingSystem = ref(null)
-const fireMap = ref({ summary: {}, systems: [], data_sources: [], selected_system: {}, topology: {}, timeline: [], quick_actions: [] })
+const systemPosture = ref({ summary: {}, systems: [], data_sources: [], selected_system: {}, topology: {}, timeline: [], quick_actions: [] })
 const selectedSystemId = ref(typeof route.query.system === 'string' ? route.query.system : '')
 const selectedNodeId = ref('')
 const activeTab = ref(['overview', 'drilldown', 'dependencies', 'timeline'].includes(route.query.tab) ? route.query.tab : 'overview')
@@ -503,12 +501,12 @@ const mainTabs = [
   { key: 'timeline', label: '变更证据', icon: Link },
 ]
 
-const summary = computed(() => fireMap.value.summary || {})
-const systems = computed(() => fireMap.value.systems || [])
-const dataSources = computed(() => fireMap.value.data_sources || [])
-const topology = computed(() => selectedSystem.value.topology || fireMap.value.topology || {})
+const summary = computed(() => systemPosture.value.summary || {})
+const systems = computed(() => systemPosture.value.systems || [])
+const dataSources = computed(() => systemPosture.value.data_sources || [])
+const topology = computed(() => selectedSystem.value.topology || systemPosture.value.topology || {})
 const selectedSystem = computed(() => {
-  const selected = fireMap.value.selected_system || {}
+  const selected = systemPosture.value.selected_system || {}
   if (selectedSystemId.value && selected.id !== selectedSystemId.value) {
     return systems.value.find(item => item.id === selectedSystemId.value) || selected
   }
@@ -576,15 +574,15 @@ const selectedNode = computed(() => {
     || drilldownRows.value[0]
 })
 
-const timelineItems = computed(() => fireMap.value.timeline || selectedSystem.value.timeline || [])
-const allowedQuickActions = computed(() => (fireMap.value.quick_actions || selectedSystem.value.actions || []).filter(actionAllowed))
+const timelineItems = computed(() => systemPosture.value.timeline || selectedSystem.value.timeline || [])
+const allowedQuickActions = computed(() => (systemPosture.value.quick_actions || selectedSystem.value.actions || []).filter(actionAllowed))
 
 const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
 const canViewTrace = computed(() => authStore.hasPermission('ops.trace.view'))
 const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
 const canViewGrafana = computed(() => authStore.hasPermission('ops.grafana.view'))
 const canViewEvents = computed(() => authStore.hasPermission('eventwall.view'))
-const canManageFireMap = computed(() => authStore.hasPermission('ops.observability.firemap.manage') || Boolean(fireMap.value.context?.can_manage))
+const canManageSystemPosture = computed(() => authStore.hasPermission('ops.observability.firemap.manage') || Boolean(systemPosture.value.context?.can_manage))
 
 function flattenNodes(nodes = [], level = 0) {
   return nodes.flatMap((node) => [
@@ -892,7 +890,7 @@ function formToPayload(sourceForm = systemForm.value, sourceSystem = editingSyst
       kind: '网关',
       base_status: form.base_status === 'critical' ? 'warning' : 'healthy',
       metrics: [{ label: '可用率', value: 99.9, target: 99.5, unit: '%', direction: 'higher' }],
-      impact: '入口侧稳定性会影响该业务卡片的外部可用性。',
+      impact: '入口侧稳定性会影响该系统的外部可用性。',
     })
   }
   if (form.downstream_name.trim()) {
@@ -949,17 +947,17 @@ async function saveSystem() {
     return
   }
   if (!payload.name) {
-    ElMessage.warning('请填写业务系统名称')
+    ElMessage.warning('请填写系统名称')
     return
   }
   systemSubmitting.value = true
   try {
     const saved = editingSystem.value?.source_id
-      ? await updateFireMapSystem(editingSystem.value.source_id, payload)
-      : await createFireMapSystem(payload)
+      ? await updateSystemPostureSystem(editingSystem.value.source_id, payload)
+      : await createSystemPostureSystem(payload)
     systemDialogVisible.value = false
-    ElMessage.success(editingSystem.value ? '业务卡片已更新' : '业务卡片已新增')
-    await loadFireMap(saved?.id ? `custom-${saved.id}` : selectedSystemId.value)
+    ElMessage.success(editingSystem.value ? '系统卡片已更新' : '系统卡片已新增')
+    await loadSystemPosture(saved?.id ? `custom-${saved.id}` : selectedSystemId.value)
   } finally {
     systemSubmitting.value = false
   }
@@ -967,7 +965,7 @@ async function saveSystem() {
 
 async function removeSystem(system) {
   try {
-    await ElMessageBox.confirm(`确认删除「${system.name}」业务卡片？`, '删除业务卡片', {
+    await ElMessageBox.confirm(`确认删除「${system.name}」系统卡片？`, '删除系统卡片', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消',
@@ -976,18 +974,18 @@ async function removeSystem(system) {
     return
   }
   if (system.source_id && system.builtin_backed) {
-    await updateFireMapSystem(system.source_id, { ...formToPayload(systemToForm(system), system), is_enabled: false })
+    await updateSystemPostureSystem(system.source_id, { ...formToPayload(systemToForm(system), system), is_enabled: false })
   } else if (system.source_id) {
-    await deleteFireMapSystem(system.source_id)
+    await deleteSystemPostureSystem(system.source_id)
   } else {
-    await createFireMapSystem({ ...formToPayload(systemToForm(system), system), is_enabled: false })
+    await createSystemPostureSystem({ ...formToPayload(systemToForm(system), system), is_enabled: false })
   }
-  ElMessage.success('业务卡片已删除')
+  ElMessage.success('系统卡片已删除')
   if (selectedSystemId.value === system.id) {
     selectedSystemId.value = ''
     selectedNodeId.value = ''
   }
-  await loadFireMap(selectedSystemId.value)
+  await loadSystemPosture(selectedSystemId.value)
 }
 
 function formatTime(value) {
@@ -1008,7 +1006,7 @@ function actionAllowed(action) {
 
 function go(path, query = {}) {
   if (!path) return
-  router.push({ path, query })
+  openRouteInNewTab(router, { path, query })
 }
 
 function goAction(action) {
@@ -1035,18 +1033,18 @@ async function selectSystem(system) {
   selectedSystemId.value = system.id
   selectedNodeId.value = system.focus?.interface_id || system.focus?.service_id || system.id
   router.replace({ query: { ...route.query, system: system.id, tab: activeTab.value } })
-  await loadFireMap(system.id)
+  await loadSystemPosture(system.id)
 }
 
 function selectNode(node) {
   selectedNodeId.value = node?.id || ''
 }
 
-async function loadFireMap(systemId = selectedSystemId.value) {
+async function loadSystemPosture(systemId = selectedSystemId.value) {
   loading.value = true
   try {
-    const response = await getObservabilityFireMap({ system: systemId || undefined })
-    fireMap.value = response
+    const response = await getObservabilitySystemPosture({ system: systemId || undefined })
+    systemPosture.value = response
     selectedSystemId.value = response.selected_system_id || response.selected_system?.id || systemId || ''
     selectedNodeId.value = response.selected_system?.focus?.interface_id
       || response.selected_system?.focus?.service_id
@@ -1179,7 +1177,7 @@ watch(selectedNode, (node) => {
 })
 
 onMounted(async () => {
-  await loadFireMap()
+  await loadSystemPosture()
   window.addEventListener('resize', handleResize)
 })
 
@@ -1269,9 +1267,9 @@ onUnmounted(() => {
 }
 
 .hero-actions :deep(.el-button) {
-  border-radius: 6px;
+  border-radius: 10px;
   font-weight: 500;
-  min-height: 34px;
+  min-height: 32px;
   padding: 0 14px;
 }
 

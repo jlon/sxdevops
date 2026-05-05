@@ -24,16 +24,23 @@
             <div class="sub-text">{{ row.description || '未填写描述' }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="数据源关系" min-width="320">
+        <el-table-column label="数据源关系" min-width="250">
           <template #default="{ row }">
-            <div class="link-flow">
-              <el-tag type="success">Loki</el-tag>
-              <strong>{{ row.log_datasource_name }}</strong>
-              <span>↔</span>
-              <el-tag type="warning">Tempo</el-tag>
-              <strong>{{ row.tracing_datasource_name }}</strong>
+            <div class="link-flow link-flow--stacked">
+              <div class="link-node">
+                <el-tag size="small" type="success">Loki</el-tag>
+                <strong>{{ row.log_datasource_name }}</strong>
+              </div>
+              <span class="link-flow__arrow">↔</span>
+              <div class="link-node">
+                <el-tag size="small" type="warning">Tempo</el-tag>
+                <strong>{{ row.tracing_datasource_name }}</strong>
+              </div>
             </div>
           </template>
+        </el-table-column>
+        <el-table-column label="关联看板" min-width="180">
+          <template #default="{ row }">{{ dashboardTitle(row.grafana_dashboard_key) }}</template>
         </el-table-column>
         <el-table-column label="跳转能力" width="180">
           <template #default="{ row }">
@@ -44,12 +51,6 @@
             <el-tag size="small" :type="row.grafana_to_trace_enabled ? 'success' : 'info'">看板→链路</el-tag>
             <el-tag size="small" :type="row.grafana_to_log_enabled ? 'success' : 'info'">看板→日志</el-tag>
           </template>
-        </el-table-column>
-        <el-table-column label="关联看板" min-width="180">
-          <template #default="{ row }">{{ dashboardTitle(row.grafana_dashboard_key) }}</template>
-        </el-table-column>
-        <el-table-column label="查询模板" min-width="300" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.log_query_template || '--' }}</template>
         </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
@@ -71,6 +72,7 @@
 
     <el-dialog
       v-model="dialogVisible"
+      class="datasource-link-dialog"
       :title="editingId ? '编辑数据源关联' : '新增数据源关联'"
       width="980px"
       top="4vh"
@@ -306,10 +308,12 @@ const WORKLOAD_DASHBOARD_KEY = 'kubernetes-compute-resources-workload'
 const WORKLOAD_GRAFANA_MAPPINGS = [
   { trace_tag: 'service.name', variable: 'workload' },
   { trace_tag: 'service.namespace', variable: 'namespace' },
+  { trace_tag: 'workload.type', variable: 'workload_type' },
 ]
 const WORKLOAD_LOG_MAPPINGS = [
   { trace_tag: 'service.name', log_label: 'container' },
   { trace_tag: 'service.namespace', log_label: 'namespace' },
+  { trace_tag: 'workload.type', log_label: 'workload_type' },
 ]
 const form = ref(createEmptyForm())
 
@@ -489,7 +493,6 @@ onMounted(fetchAll)
 .table-head,
 .filter-bar,
 .name-cell,
-.link-flow,
 .mapping-row {
   align-items: center;
   display: flex;
@@ -504,6 +507,33 @@ onMounted(fetchAll)
 .name-text,
 .link-flow strong {
   color: #0f172a;
+  font-weight: 700;
+}
+
+.link-flow {
+  display: flex;
+}
+
+.link-flow--stacked {
+  align-items: center;
+  gap: 10px;
+}
+
+.link-node {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.link-node strong {
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.link-flow__arrow {
+  color: #94a3b8;
+  flex: 0 0 auto;
   font-weight: 700;
 }
 
@@ -528,9 +558,26 @@ onMounted(fetchAll)
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: 72vh;
-  overflow-y: auto;
+  min-height: 0;
   padding-right: 4px;
+}
+
+.datasource-link-dialog :deep(.el-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 92vh;
+}
+
+.datasource-link-dialog :deep(.el-dialog__body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 16px;
+}
+
+.datasource-link-dialog :deep(.el-dialog__footer) {
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
+  padding-top: 12px;
 }
 
 .dialog-summary {

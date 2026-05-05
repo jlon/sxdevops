@@ -1,7 +1,15 @@
+import uuid
+
+from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.text import slugify
+
+
+def generate_alert_token():
+    return uuid.uuid4().hex
 
 
 class Host(models.Model):
@@ -588,27 +596,398 @@ class DeploymentApprovalStep(models.Model):
 
 
 class Alert(models.Model):
+    SOURCE_PROMETHEUS = 'prometheus'
+    SOURCE_ZABBIX = 'zabbix'
+    SOURCE_NIGHTINGALE = 'nightingale'
+    SOURCE_ALIYUN = 'aliyun'
+    SOURCE_GENERIC = 'generic'
+    SOURCE_TYPE_CHOICES = [
+        (SOURCE_PROMETHEUS, 'Prometheus Alertmanager'),
+        (SOURCE_ZABBIX, 'Zabbix'),
+        (SOURCE_NIGHTINGALE, '夜莺'),
+        (SOURCE_ALIYUN, '阿里云监控'),
+        (SOURCE_GENERIC, '通用 Webhook'),
+    ]
+
+    STATUS_ACTIVE = 'active'
+    STATUS_RESOLVED = 'resolved'
+    STATUS_CLOSED = 'closed'
+    STATUS_MUTED = 'muted'
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, '活跃'),
+        (STATUS_RESOLVED, '已恢复'),
+        (STATUS_CLOSED, '已关闭'),
+        (STATUS_MUTED, '已屏蔽'),
+    ]
+
     LEVEL_CHOICES = [
         ('critical', '严重'),
         ('warning', '警告'),
         ('info', '信息'),
     ]
 
+    integration = models.ForeignKey('AlertIntegration', on_delete=models.SET_NULL, null=True, blank=True, related_name='alerts', verbose_name='接入源')
     title = models.CharField('告警标题', max_length=256)
     level = models.CharField('级别', max_length=16, choices=LEVEL_CHOICES, default='info')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
     source = models.CharField('来源', max_length=128)
+    source_type = models.CharField('来源类型', max_length=32, choices=SOURCE_TYPE_CHOICES, default=SOURCE_GENERIC)
+    external_id = models.CharField('外部事件 ID', max_length=128, blank=True, default='')
+    fingerprint = models.CharField('指纹', max_length=128, blank=True, default='', db_index=True)
+    group_key = models.CharField('聚合键', max_length=256, blank=True, default='', db_index=True)
     message = models.TextField('详情')
     is_acknowledged = models.BooleanField('已确认', default=False)
+    acknowledged_by = models.CharField('确认人', max_length=64, blank=True, default='')
+    acknowledged_at = models.DateTimeField('确认时间', null=True, blank=True)
+    claimed_by = models.CharField('认领人', max_length=64, blank=True, default='')
+    claimed_at = models.DateTimeField('认领时间', null=True, blank=True)
     host = models.ForeignKey(Host, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='关联主机')
+    service = models.CharField('服务', max_length=128, blank=True, default='')
+    environment = models.CharField('环境', max_length=64, blank=True, default='')
+    cluster = models.CharField('集群', max_length=128, blank=True, default='')
+    namespace = models.CharField('命名空间', max_length=128, blank=True, default='')
+    region = models.CharField('地域', max_length=128, blank=True, default='')
+    business_line = models.CharField('业务线', max_length=128, blank=True, default='')
+    resource_type = models.CharField('资源类型', max_length=64, blank=True, default='')
+    resource = models.CharField('资源标识', max_length=256, blank=True, default='')
+    metric_name = models.CharField('指标名', max_length=128, blank=True, default='')
+    runbook_url = models.URLField('Runbook', max_length=500, blank=True, default='')
+    labels = models.JSONField('标签', default=dict, blank=True)
+    annotations = models.JSONField('注解', default=dict, blank=True)
+    raw_payload = models.JSONField('原始载荷', default=dict, blank=True)
+    starts_at = models.DateTimeField('触发时间', null=True, blank=True)
+    ends_at = models.DateTimeField('恢复时间', null=True, blank=True)
+    last_received_at = models.DateTimeField('最近接收时间', default=timezone.now)
+    occurrence_count = models.PositiveIntegerField('出现次数', default=1)
+    is_suppressed = models.BooleanField('已被抑制', default=False)
+    suppressed_by = models.CharField('抑制来源', max_length=128, blank=True, default='')
+    suppressed_until = models.DateTimeField('抑制截止时间', null=True, blank=True)
+    mute_until = models.DateTimeField('屏蔽截止时间', null=True, blank=True)
+    muted_by = models.CharField('屏蔽人', max_length=64, blank=True, default='')
+    muted_reason = models.CharField('屏蔽原因', max_length=255, blank=True, default='')
+    escalation_level = models.PositiveIntegerField('升级级别', default=0)
+    escalated_at = models.DateTimeField('升级时间', null=True, blank=True)
+    closed_at = models.DateTimeField('关闭时间', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '告警'
         verbose_name_plural = '告警'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status', 'level']),
+            models.Index(fields=['source_type', 'source']),
+            models.Index(fields=['service', 'environment']),
+            models.Index(fields=['cluster', 'namespace']),
+            models.Index(fields=['resource_type', 'resource']),
+            models.Index(fields=['is_acknowledged', 'created_at']),
+        ]
 
     def __str__(self):
         return f'[{self.level}] {self.title}'
+
+
+class AlertIntegration(models.Model):
+    PROVIDER_CHOICES = Alert.SOURCE_TYPE_CHOICES
+
+    name = models.CharField('接入源名称', max_length=128)
+    provider = models.CharField('接入类型', max_length=32, choices=PROVIDER_CHOICES)
+    token = models.CharField('接入令牌', max_length=64, unique=True, default=generate_alert_token)
+    secret = models.CharField('签名密钥', max_length=255, blank=True, default='')
+    is_enabled = models.BooleanField('启用', default=True)
+    default_labels = models.JSONField('默认标签', default=dict, blank=True)
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    last_received_at = models.DateTimeField('最近接收时间', null=True, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警接入源'
+        verbose_name_plural = '告警接入源'
+        ordering = ['provider', 'name']
+
+    def __str__(self):
+        return f'{self.name} ({self.provider})'
+
+
+class AlertRecipient(models.Model):
+    name = models.CharField('姓名', max_length=64)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='alert_recipients', verbose_name='平台用户')
+    phone = models.CharField('手机号', max_length=32, blank=True, default='')
+    email = models.EmailField('邮箱', blank=True, default='')
+    dingtalk_user_id = models.CharField('钉钉用户 ID', max_length=128, blank=True, default='')
+    feishu_user_id = models.CharField('飞书用户 ID', max_length=128, blank=True, default='')
+    wecom_user_id = models.CharField('企微用户 ID', max_length=128, blank=True, default='')
+    is_enabled = models.BooleanField('启用', default=True)
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警接收人'
+        verbose_name_plural = '告警接收人'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class AlertRecipientGroup(models.Model):
+    name = models.CharField('接收组名称', max_length=128, unique=True)
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    recipients = models.ManyToManyField(AlertRecipient, blank=True, related_name='groups', verbose_name='接收人')
+    users = models.ManyToManyField(settings.AUTH_USER_MODEL, blank=True, related_name='alert_recipient_groups', verbose_name='平台用户')
+    is_enabled = models.BooleanField('启用', default=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警接收组'
+        verbose_name_plural = '告警接收组'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class AlertNotificationChannel(models.Model):
+    CHANNEL_SMS = 'sms'
+    CHANNEL_VOICE = 'voice'
+    CHANNEL_EMAIL = 'email'
+    CHANNEL_DINGTALK = 'dingtalk'
+    CHANNEL_FEISHU = 'feishu'
+    CHANNEL_WECOM = 'wecom'
+    CHANNEL_CHOICES = [
+        (CHANNEL_SMS, '短信'),
+        (CHANNEL_VOICE, '语音'),
+        (CHANNEL_EMAIL, '邮件'),
+        (CHANNEL_DINGTALK, '钉钉'),
+        (CHANNEL_FEISHU, '飞书'),
+        (CHANNEL_WECOM, '企微'),
+    ]
+
+    name = models.CharField('渠道名称', max_length=128)
+    channel_type = models.CharField('渠道类型', max_length=32, choices=CHANNEL_CHOICES)
+    is_enabled = models.BooleanField('启用', default=True)
+    send_resolved = models.BooleanField('发送恢复通知', default=True)
+    timeout_seconds = models.PositiveIntegerField('超时时间', default=8)
+    config = models.JSONField('渠道配置', default=dict, blank=True)
+    template_title = models.CharField('标题模板', max_length=255, blank=True, default='')
+    template_body = models.TextField('内容模板', blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警通知渠道'
+        verbose_name_plural = '告警通知渠道'
+        ordering = ['channel_type', 'name']
+
+    def __str__(self):
+        return f'{self.name} ({self.channel_type})'
+
+
+class AlertAggregationRule(models.Model):
+    name = models.CharField('聚合规则名称', max_length=128)
+    is_enabled = models.BooleanField('启用', default=True)
+    matchers = models.JSONField('匹配条件', default=list, blank=True)
+    group_by = models.JSONField('聚合维度', default=list, blank=True)
+    window_minutes = models.PositiveIntegerField('聚合窗口分钟', default=5)
+    repeat_interval_minutes = models.PositiveIntegerField('重复通知间隔分钟', default=30)
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警聚合规则'
+        verbose_name_plural = '告警聚合规则'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class AlertInhibitionRule(models.Model):
+    name = models.CharField('抑制规则名称', max_length=128)
+    is_enabled = models.BooleanField('启用', default=True)
+    source_matchers = models.JSONField('源告警匹配', default=list, blank=True)
+    target_matchers = models.JSONField('目标告警匹配', default=list, blank=True)
+    equal_labels = models.JSONField('相同标签', default=list, blank=True)
+    duration_minutes = models.PositiveIntegerField('抑制时长分钟', default=60)
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警抑制规则'
+        verbose_name_plural = '告警抑制规则'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class AlertMuteRule(models.Model):
+    name = models.CharField('屏蔽规则名称', max_length=128)
+    is_enabled = models.BooleanField('启用', default=True)
+    matchers = models.JSONField('匹配条件', default=list, blank=True)
+    starts_at = models.DateTimeField('开始时间', null=True, blank=True)
+    ends_at = models.DateTimeField('结束时间', null=True, blank=True)
+    reason = models.CharField('原因', max_length=255, blank=True, default='')
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警屏蔽规则'
+        verbose_name_plural = '告警屏蔽规则'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.name
+
+
+class AlertEscalationPolicy(models.Model):
+    name = models.CharField('升级策略名称', max_length=128)
+    is_enabled = models.BooleanField('启用', default=True)
+    matchers = models.JSONField('匹配条件', default=list, blank=True)
+    levels = models.JSONField('升级层级', default=list, blank=True)
+    repeat_interval_minutes = models.PositiveIntegerField('升级间隔分钟', default=30)
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警升级策略'
+        verbose_name_plural = '告警升级策略'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class AlertNotificationRule(models.Model):
+    LEVEL_CHOICES = Alert.LEVEL_CHOICES
+
+    name = models.CharField('通知规则名称', max_length=128)
+    is_enabled = models.BooleanField('启用', default=True)
+    matchers = models.JSONField('匹配条件', default=list, blank=True)
+    min_level = models.CharField('最低级别', max_length=16, choices=LEVEL_CHOICES, blank=True, default='')
+    aggregation_rule = models.ForeignKey(AlertAggregationRule, on_delete=models.SET_NULL, null=True, blank=True, related_name='notification_rules', verbose_name='聚合规则')
+    escalation_policy = models.ForeignKey(AlertEscalationPolicy, on_delete=models.SET_NULL, null=True, blank=True, related_name='notification_rules', verbose_name='升级策略')
+    channels = models.ManyToManyField(AlertNotificationChannel, blank=True, related_name='notification_rules', verbose_name='通知渠道')
+    recipients = models.ManyToManyField(AlertRecipient, blank=True, related_name='notification_rules', verbose_name='接收人')
+    recipient_groups = models.ManyToManyField(AlertRecipientGroup, blank=True, related_name='notification_rules', verbose_name='接收组')
+    notify_on_fire = models.BooleanField('触发时通知', default=True)
+    notify_on_resolved = models.BooleanField('恢复时通知', default=True)
+    notify_on_escalation = models.BooleanField('升级时通知', default=True)
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警通知规则'
+        verbose_name_plural = '告警通知规则'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class AlertNotificationLog(models.Model):
+    STATUS_SUCCESS = 'success'
+    STATUS_SKIPPED = 'skipped'
+    STATUS_ERROR = 'error'
+    STATUS_CHOICES = [
+        (STATUS_SUCCESS, '成功'),
+        (STATUS_SKIPPED, '跳过'),
+        (STATUS_ERROR, '失败'),
+    ]
+
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name='notification_logs', verbose_name='告警')
+    rule = models.ForeignKey(AlertNotificationRule, on_delete=models.SET_NULL, null=True, blank=True, related_name='notification_logs', verbose_name='通知规则')
+    channel = models.ForeignKey(AlertNotificationChannel, on_delete=models.SET_NULL, null=True, blank=True, related_name='notification_logs', verbose_name='通知渠道')
+    action = models.CharField('通知动作', max_length=32, default='fire')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_SUCCESS)
+    recipient_summary = models.CharField('接收人', max_length=255, blank=True, default='')
+    request_payload = models.JSONField('请求载荷', default=dict, blank=True)
+    response_body = models.TextField('响应内容', blank=True, default='')
+    error_message = models.TextField('错误信息', blank=True, default='')
+    sent_at = models.DateTimeField('发送时间', null=True, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '告警通知记录'
+        verbose_name_plural = '告警通知记录'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.alert_id} {self.action} {self.status}'
+
+
+class AlertAction(models.Model):
+    ACTION_WEBHOOK = 'webhook'
+    ACTION_NOTIFY = 'notify'
+    ACTION_ACKNOWLEDGE = 'acknowledge'
+    ACTION_CLAIM = 'claim'
+    ACTION_UNCLAIM = 'unclaim'
+    ACTION_MUTE = 'mute'
+    ACTION_ESCALATE = 'escalate'
+    ACTION_RESOLVE = 'resolve'
+    ACTION_CLOSE = 'close'
+    ACTION_REOPEN = 'reopen'
+    ACTION_COMMENT = 'comment'
+    ACTION_CHOICES = [
+        (ACTION_WEBHOOK, 'Webhook 接入'),
+        (ACTION_NOTIFY, '发送通知'),
+        (ACTION_ACKNOWLEDGE, '确认'),
+        (ACTION_CLAIM, '认领'),
+        (ACTION_UNCLAIM, '取消认领'),
+        (ACTION_MUTE, '屏蔽'),
+        (ACTION_ESCALATE, '升级'),
+        (ACTION_RESOLVE, '恢复'),
+        (ACTION_CLOSE, '关闭'),
+        (ACTION_REOPEN, '重新打开'),
+        (ACTION_COMMENT, '备注'),
+    ]
+
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name='actions', verbose_name='告警')
+    action = models.CharField('动作', max_length=32, choices=ACTION_CHOICES)
+    actor = models.CharField('操作人', max_length=128, blank=True, default='')
+    note = models.CharField('说明', max_length=255, blank=True, default='')
+    metadata = models.JSONField('元数据', default=dict, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '告警动作'
+        verbose_name_plural = '告警动作'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.alert_id} {self.action}'
+
+
+class AlertInteractionToken(models.Model):
+    token = models.UUIDField('交互令牌', primary_key=True, default=uuid.uuid4, editable=False)
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name='interaction_tokens', verbose_name='告警')
+    action = models.CharField('动作', max_length=32, choices=AlertAction.ACTION_CHOICES)
+    provider = models.CharField('来源渠道', max_length=32, blank=True, default='')
+    expires_at = models.DateTimeField('过期时间')
+    used_at = models.DateTimeField('使用时间', null=True, blank=True)
+    metadata = models.JSONField('元数据', default=dict, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '告警卡片交互令牌'
+        verbose_name_plural = '告警卡片交互令牌'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.alert_id} {self.action}'
+
+    @property
+    def is_available(self):
+        return self.used_at is None and self.expires_at > timezone.now()
 
 
 class LogEntry(models.Model):
@@ -634,7 +1013,7 @@ class LogEntry(models.Model):
         return f'[{self.level}] {self.service}: {self.message[:50]}'
 
 
-class FireMapSystem(models.Model):
+class SystemPostureSystem(models.Model):
     STATUS_HEALTHY = 'healthy'
     STATUS_WARNING = 'warning'
     STATUS_CRITICAL = 'critical'
@@ -663,7 +1042,7 @@ class FireMapSystem(models.Model):
     metrics = models.JSONField('核心指标', default=list, blank=True)
     service_specs = models.JSONField('服务分解', default=list, blank=True)
     dependencies = models.JSONField('依赖关系', default=list, blank=True)
-    rule_config = models.JSONField('灭火图规则配置', default=dict, blank=True)
+    rule_config = models.JSONField('系统态势规则配置', default=dict, blank=True)
     playbook = models.JSONField('处置步骤', default=list, blank=True)
     focus_service_id = models.CharField('默认服务节点', max_length=128, blank=True, default='')
     focus_interface_id = models.CharField('默认接口节点', max_length=128, blank=True, default='')
@@ -676,12 +1055,16 @@ class FireMapSystem(models.Model):
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
-        verbose_name = '灭火图业务系统'
-        verbose_name_plural = '灭火图业务系统'
+        db_table = 'ops_firemapsystem'
+        verbose_name = '系统态势业务系统'
+        verbose_name_plural = '系统态势业务系统'
         ordering = ['sort_order', 'name', '-id']
 
     def __str__(self):
         return self.name
+
+
+FireMapSystem = SystemPostureSystem
 
 
 class LogDataSource(models.Model):
