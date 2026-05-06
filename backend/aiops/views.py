@@ -47,6 +47,7 @@ from .services import (
     test_model_provider_connection,
     test_mcp_server_connection,
 )
+from .knowledge_graph import build_knowledge_graph
 
 
 DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
@@ -330,6 +331,12 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewS
 @permission_classes([IsAuthenticated, build_rbac_permission('aiops.chat.view')])
 def bootstrap(request):
     return Response(bootstrap_payload_for_user(request.user))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('aiops.knowledge.view')])
+def knowledge_graph(request):
+    return Response(build_knowledge_graph(request.query_params))
 
 
 @api_view(['GET', 'PUT'])

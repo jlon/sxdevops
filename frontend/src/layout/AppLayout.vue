@@ -355,6 +355,7 @@ const menuItems = [
     icon: 'ChatDotSquare',
     children: [
       { path: '/aiops/chat', title: '智能助手', icon: 'Service', permission: 'aiops.chat.view' },
+      { path: '/aiops/knowledge', title: '知识图谱', icon: 'Share', permission: 'aiops.knowledge.view' },
       { path: '/aiops/config', title: '智能体配置', icon: 'Tools', permission: 'aiops.config.view' },
     ],
   },

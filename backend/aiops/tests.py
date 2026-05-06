@@ -6,7 +6,8 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from cmdb.models import CIType, ConfigItem
-from ops.models import Alert, Deployment, Host, HostTask, K8sCluster, TracingDataSource, TransactionTicket
+from eventwall.models import EventRecord
+from ops.models import Alert, Deployment, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, ObservabilityDataSourceLink, TracingDataSource, TransactionTicket
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -73,6 +74,59 @@ class AIOpsApiTests(TestCase):
         }.issubset(active_mcp_names))
         self.assertTrue(any(item['name'] == 'N9E 监控 MCP' for item in response.data['active_mcp_servers']))
         self.assertIn('回答整形器', active_skill_names)
+
+    def test_knowledge_graph_links_observability_and_business_context(self):
+        log_source = LogDataSource.objects.create(name='prod-loki', provider='loki', is_enabled=True)
+        trace_source = TracingDataSource.objects.create(name='prod-tempo', provider='tempo', is_enabled=True)
+        GrafanaSetting.objects.create(
+            name='default',
+            enabled=True,
+            dashboards=[{'key': 'checkout-overview', 'title': 'Checkout Overview'}],
+        )
+        ObservabilityDataSourceLink.objects.create(
+            name='prod-log-trace',
+            log_datasource=log_source,
+            tracing_datasource=trace_source,
+            grafana_dashboard_key='checkout-overview',
+        )
+        TransactionTicket.objects.create(
+            title='checkout-change',
+            business_line='电商',
+            environment='prod',
+            applicant='admin',
+        )
+        Alert.objects.create(
+            title='checkout latency',
+            level='critical',
+            status='active',
+            source='prometheus',
+            source_type='prometheus',
+            message='latency high',
+            service='checkout',
+            business_line='电商',
+            environment='prod',
+        )
+        EventRecord.objects.create(
+            module='external',
+            category='deploy',
+            action='sync',
+            title='Jenkins checkout deploy',
+            source_type=EventRecord.SOURCE_EXTERNAL,
+            business_line='电商',
+            environment='prod',
+            application='checkout',
+        )
+
+        response = self.client.get('/api/aiops/knowledge-graph/')
+
+        self.assertEqual(response.status_code, 200)
+        node_ids = {node['id'] for node in response.data['nodes']}
+        relation_types = {edge['relation'] for edge in response.data['edges']}
+        self.assertIn('capability:alerts', node_ids)
+        self.assertIn('business:电商', node_ids)
+        self.assertIn('observability_link', relation_types)
+        self.assertIn('service_capability', relation_types)
+        self.assertGreaterEqual(response.data['summary']['datasource_count'], 2)
 
     def test_get_agent_config_creates_n9e_mcp_preset(self):
         get_agent_config()

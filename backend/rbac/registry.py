@@ -1,4 +1,5 @@
 PERMISSION_DEFINITIONS = [
+    ('aiops.knowledge.view', '查看 AIOps 知识图谱', 'aiops', '查看工单、日志、链路、看板、告警、系统态势和事件源之间的业务关联'),
     ('ops.dashboard.view', '查看运维仪表盘', 'ops', '访问首页运维统计与最近动态'),
     ('ops.host.view', '查看主机', 'ops', '查看主机列表与详情'),
     ('ops.host.manage', '管理主机', 'ops', '新增、编辑、删除、测试、刷新主机'),
@@ -100,6 +101,7 @@ BUILTIN_ROLES = [
         'name': '运维管理员',
         'description': '负责主机、部署、容器、Nginx、日志与 CMDB 维护。',
         'permissions': [
+            'aiops.knowledge.view',
             'ops.dashboard.view', 'ops.host.view', 'ops.host.manage', 'ops.host.terminal', 'ops.host.execute',
             'ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute',
             'ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve',
@@ -126,6 +128,7 @@ BUILTIN_ROLES = [
         'name': '研发工程师',
         'description': '可查看环境信息、日志并提交 SQL 与资源申请。',
         'permissions': [
+            'aiops.knowledge.view',
             'ops.dashboard.view', 'ops.host.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
             'ops.log.query', 'ops.log.datasource.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.system_posture.view', 'ops.observability.link.view', 'ops.grafana.view', 'ops.middleware.view',
             'ops.iac.view', 'ops.iac.manage', 'ops.iac.execute', 'ops.multicloud.view', 'eventwall.view', 'eventwall.source.view',
@@ -141,6 +144,7 @@ BUILTIN_ROLES = [
         'name': '审计员',
         'description': '查看日志、安全告警并审核 SQL 工单。',
         'permissions': [
+            'aiops.knowledge.view',
             'ops.dashboard.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.log.datasource.view', 'ops.log.query', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.system_posture.view', 'ops.observability.link.view', 'ops.grafana.view',
             'ops.multicloud.view', 'eventwall.view', 'eventwall.source.view', 'rbac.audit.view', 'aiops.chat.view', 'aiops.chat.analyze',
             'cmdb.dashboard.view', 'cmdb.topology.view', 'cmdb.cost.view', 'sqlaudit.datasource.view',
@@ -158,7 +162,7 @@ BUILTIN_ROLES = [
             'cmdb.dashboard.view', 'cmdb.ci.view', 'cmdb.topology.view',
             'cmdb.cost.view', 'marketplace.template.view', 'marketplace.deployment.view',
             'sqlaudit.datasource.view', 'sqlaudit.order.view', 'sqlaudit.query.view',
-            'eventwall.view', 'eventwall.source.view', 'aiops.chat.view', 'aiops.config.view',
+            'eventwall.view', 'eventwall.source.view', 'aiops.chat.view', 'aiops.knowledge.view', 'aiops.config.view',
             'rbac.user.view', 'rbac.role.view', 'rbac.group.view', 'rbac.permission.view', 'rbac.audit.view',
         ],
     },

@@ -383,6 +383,16 @@ const routes = [
         },
       },
       {
+        path: 'aiops/knowledge',
+        name: 'AIOpsKnowledgeGraph',
+        component: () => import('@/views/AIOpsKnowledgeGraph.vue'),
+        meta: {
+          title: '知识图谱',
+          icon: 'Share',
+          permission: 'aiops.knowledge.view',
+        },
+      },
+      {
         path: 'aiops/config',
         name: 'AIOpsConfig',
         component: () => import('@/views/AIOpsConfig.vue'),
