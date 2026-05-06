@@ -1,3 +1,6 @@
+import re
+import uuid
+
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
@@ -24,6 +27,7 @@ from .models import (
     DeploymentApprovalNode,
     DeploymentApprovalStep,
     DockerHost,
+    SystemPostureEnvironment,
     SystemPostureSystem,
     GrafanaSetting,
     Host,
@@ -1175,6 +1179,32 @@ class LogEntrySerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class SystemPostureEnvironmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SystemPostureEnvironment
+        fields = '__all__'
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'key': {'required': False, 'allow_blank': True},
+        }
+
+    def validate_name(self, value):
+        name = str(value or '').strip()
+        if not name:
+            raise serializers.ValidationError('请填写环境名称')
+        return name
+
+    def validate_key(self, value):
+        return str(value or '').strip()[:64]
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if not attrs.get('key') and not getattr(self.instance, 'key', ''):
+            base = re.sub(r'[^a-zA-Z0-9_-]+', '-', str(attrs.get('name') or '').strip().lower()).strip('-')[:64]
+            attrs['key'] = base or f'env-{uuid.uuid4().hex[:8]}'
+        return attrs
+
+
 class SystemPostureSystemSerializer(serializers.ModelSerializer):
     class Meta:
         model = SystemPostureSystem
@@ -1200,6 +1230,9 @@ class SystemPostureSystemSerializer(serializers.ModelSerializer):
         if not name:
             raise serializers.ValidationError('请填写业务系统名称')
         return name
+
+    def validate_environment(self, value):
+        return str(value or 'prod').strip() or 'prod'
 
     def validate_domain(self, value):
         return str(value or '').strip()
@@ -1258,10 +1291,6 @@ class SystemPostureSystemSerializer(serializers.ModelSerializer):
         if attrs.get('health_score') is not None:
             attrs['health_score'] = max(0, min(100, int(attrs['health_score'])))
         return attrs
-
-
-FireMapSystemSerializer = SystemPostureSystemSerializer
-
 
 class LogDataSourceSerializer(serializers.ModelSerializer):
     provider_display = serializers.CharField(source='get_provider_display', read_only=True)

@@ -1046,6 +1046,7 @@ class SystemPostureSystem(models.Model):
     ]
 
     name = models.CharField('业务系统名称', max_length=128, unique=True)
+    environment = models.CharField('环境', max_length=32, blank=True, default='prod')
     domain = models.CharField('业务域', max_length=64, blank=True, default='')
     tier = models.CharField('分层', max_length=64, blank=True, default='')
     owner = models.CharField('负责人', max_length=64, blank=True, default='')
@@ -1075,7 +1076,7 @@ class SystemPostureSystem(models.Model):
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
-        db_table = 'ops_firemapsystem'
+        db_table = 'ops_system_posturesystem'
         verbose_name = '系统态势业务系统'
         verbose_name_plural = '系统态势业务系统'
         ordering = ['sort_order', 'name', '-id']
@@ -1083,8 +1084,24 @@ class SystemPostureSystem(models.Model):
     def __str__(self):
         return self.name
 
+class SystemPostureEnvironment(models.Model):
+    key = models.CharField('环境标识', max_length=64, unique=True)
+    name = models.CharField('环境名称', max_length=64)
+    sort_order = models.PositiveIntegerField('排序', default=100)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='system')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
-FireMapSystem = SystemPostureSystem
+    class Meta:
+        db_table = 'ops_systempostureenvironment'
+        verbose_name = '系统态势环境'
+        verbose_name_plural = '系统态势环境'
+        ordering = ['sort_order', 'id']
+
+    def __str__(self):
+        return self.name
 
 
 class LogDataSource(models.Model):

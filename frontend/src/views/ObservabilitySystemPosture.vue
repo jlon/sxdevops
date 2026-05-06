@@ -1,5 +1,5 @@
 <template>
-  <div class="firemap-page">
+  <div class="system-posture-page">
     <section class="hero panel">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
@@ -42,7 +42,7 @@
       </span>
     </div>
 
-    <div class="neo-tabs theme-blue firemap-tabs">
+    <div class="neo-tabs theme-blue system-posture-tabs">
       <button
         v-for="tab in mainTabs"
         :key="tab.key"
@@ -56,7 +56,7 @@
     </div>
 
     <template v-if="activeTab === 'overview'">
-      <div class="overview-layout" :class="{ 'is-root': !drillPath.length }">
+      <div class="overview-layout" :class="{ 'is-root': !showFocusPanel }">
         <section class="panel overview-systems-panel" v-loading="loading">
           <div class="overview-toolbar">
             <div>
@@ -73,13 +73,12 @@
             </div>
             <div class="overview-toolbar__actions">
               <el-button v-if="drillPath.length" size="small" @click="drillUp">返回上层</el-button>
-              <el-button v-if="canManageSystemPosture && !drillPath.length" size="small" type="primary" @click="openCreateSystem">
-                <el-icon><Plus /></el-icon>
-                新增卡片
+              <el-button v-if="canManageSystemPosture && !drillPath.length" size="small" @click="openCreateEnvironment">
+                新增环境
               </el-button>
             </div>
           </div>
-          <div class="system-grid">
+          <div v-if="drillPath.length" class="system-grid">
             <article
               v-for="item in drillCards"
               :key="item.id"
@@ -87,18 +86,12 @@
               tabindex="0"
               class="system-card"
               :class="[`is-${cardStatus(item)}`, { active: isDrillCardActive(item), 'is-leaf': !hasChildren(item) }]"
-              @click="openDrillCard(item)"
-              @keydown.enter.prevent="openDrillCard(item)"
+              @click="selectOverviewCard(item)"
+              @keydown.enter.prevent="selectOverviewCard(item)"
             >
               <div class="system-card__head">
                 <div class="system-card__title">
                   <strong>{{ item.name }}</strong>
-                </div>
-                <div class="system-card__ops">
-                  <template v-if="canManageSystemPosture && !drillPath.length && item.editable">
-                    <el-button size="small" text :icon="Edit" @click.stop="openEditSystem(item)" />
-                    <el-button size="small" text :icon="Delete" @click.stop="removeSystem(item)" />
-                  </template>
                 </div>
               </div>
               <div v-if="cardMeta(item)" class="system-card__meta">
@@ -114,16 +107,104 @@
                 <span>{{ hasChildren(item) ? `下级 ${item.children.length}` : '叶子节点' }}</span>
               </div>
               <div class="score-row">
-                <span>{{ drillPath.length ? '状态' : '健康分' }}</span>
-                <strong>{{ drillPath.length ? statusLabel(cardStatus(item)) : item.health_score ?? '--' }}</strong>
-                <em :class="`is-${cardStatus(item)}`">{{ hasChildren(item) ? '下钻' : statusLabel(cardStatus(item)) }}</em>
+                <span>状态</span>
+                <strong>{{ statusLabel(cardStatus(item)) }}</strong>
+                <button
+                  v-if="hasChildren(item)"
+                  type="button"
+                  class="drill-action"
+                  :class="`is-${cardStatus(item)}`"
+                  @click.stop="drillIntoCard(item)"
+                >
+                  下钻
+                </button>
+                <em v-else :class="`is-${cardStatus(item)}`">{{ statusLabel(cardStatus(item)) }}</em>
               </div>
             </article>
             <el-empty v-if="!drillCards.length && !loading" description="当前层级暂无节点" :image-size="72" />
           </div>
+          <div v-else class="environment-groups">
+            <section
+              v-for="group in environmentGroups"
+              :key="group.key"
+              class="environment-group"
+              :class="`is-${group.status}`"
+            >
+              <div class="environment-group__head">
+                <div class="environment-title">
+                  <span class="environment-dot" :class="`is-${group.status}`"></span>
+                  <strong>{{ group.label }}</strong>
+                  <em>{{ group.items.length }} 个系统</em>
+                </div>
+                <div class="environment-summary">
+                  <span v-if="group.counts.critical">故障 {{ group.counts.critical }}</span>
+                  <span v-if="group.counts.warning">告警 {{ group.counts.warning }}</span>
+                  <span>健康 {{ group.counts.healthy }}</span>
+                </div>
+                <div v-if="canManageSystemPosture" class="environment-actions">
+                  <el-button size="small" text @click="renameEnvironment(group)">重命名</el-button>
+                  <el-button size="small" type="primary" plain @click="openCreateSystem(group.key)">
+                    <el-icon><Plus /></el-icon>
+                    新增卡片
+                  </el-button>
+                </div>
+              </div>
+              <div class="system-grid">
+                <article
+                  v-for="item in group.items"
+                  :key="item.id"
+                  role="button"
+                  tabindex="0"
+                  class="system-card"
+                  :class="[`is-${cardStatus(item)}`, { active: isDrillCardActive(item), 'is-leaf': !hasChildren(item) }]"
+                  @click="selectOverviewCard(item)"
+                  @keydown.enter.prevent="selectOverviewCard(item)"
+                >
+                  <div class="system-card__head">
+                    <div class="system-card__title">
+                      <strong>{{ item.name }}</strong>
+                    </div>
+                    <div class="system-card__ops">
+                      <template v-if="canManageSystemPosture && item.editable">
+                        <el-button size="small" text :icon="Edit" @click.stop="openEditSystem(item)" />
+                        <el-button size="small" text :icon="Delete" @click.stop="removeSystem(item)" />
+                      </template>
+                    </div>
+                  </div>
+                  <div v-if="cardMeta(item)" class="system-card__meta">
+                    <span>{{ cardMeta(item) }}</span>
+                  </div>
+                  <div class="north-star">
+                    <span>{{ cardSlo(item).label || 'SLI' }}</span>
+                    <strong>{{ formatMetric(cardSlo(item)) }}</strong>
+                    <em>{{ cardSlo(item).target !== undefined ? `SLO${targetText(cardSlo(item))}` : kindLabel(item.kind) }}</em>
+                  </div>
+                  <div class="system-card__signals">
+                    <span>异常 {{ abnormalCount(item) }}</span>
+                    <span>{{ hasChildren(item) ? `下级 ${item.children.length}` : '叶子节点' }}</span>
+                  </div>
+                  <div class="score-row">
+                    <span>健康分</span>
+                    <strong>{{ item.health_score ?? '--' }}</strong>
+                    <button
+                      v-if="hasChildren(item)"
+                      type="button"
+                      class="drill-action"
+                      :class="`is-${cardStatus(item)}`"
+                      @click.stop="drillIntoCard(item)"
+                    >
+                      下钻
+                    </button>
+                    <em v-else :class="`is-${cardStatus(item)}`">{{ statusLabel(cardStatus(item)) }}</em>
+                  </div>
+                </article>
+              </div>
+            </section>
+            <el-empty v-if="!environmentGroups.length && !loading" description="当前层级暂无节点" :image-size="72" />
+          </div>
         </section>
 
-        <section v-if="drillPath.length" class="panel focus-panel">
+        <section v-if="showFocusPanel" class="panel focus-panel">
           <div class="section-head">
             <h3>{{ focusTarget.name || '节点详情' }}</h3>
             <el-tag size="small" :type="tagType(cardStatus(focusTarget))">{{ statusLabel(cardStatus(focusTarget)) }}</el-tag>
@@ -150,15 +231,6 @@
               </div>
             </div>
           </div>
-          <div v-if="focusRuleCards.length" class="focus-block">
-            <div class="focus-block__title">规则摘要</div>
-            <div class="compact-rule-list">
-              <article v-for="item in focusRuleCards" :key="item.key" class="compact-rule">
-                <span>{{ item.title }}</span>
-                <strong>{{ item.value }}</strong>
-              </article>
-            </div>
-          </div>
           <div v-if="focusActions.length" class="action-row compact-actions">
             <el-button
               v-for="action in focusActions"
@@ -169,15 +241,6 @@
             >
               {{ action.title }}
             </el-button>
-          </div>
-          <div v-if="focusPlaybook.length" class="focus-block">
-            <div class="focus-block__title">下一步</div>
-            <div class="compact-playbook-list">
-              <div v-for="(item, index) in focusPlaybook" :key="item" class="compact-playbook-step">
-                <span>{{ index + 1 }}</span>
-                <strong>{{ item }}</strong>
-              </div>
-            </div>
           </div>
         </section>
       </div>
@@ -350,9 +413,9 @@
       :title="editingSystem ? '编辑系统卡片' : '新增系统卡片'"
       width="880px"
       destroy-on-close
-      class="firemap-dialog"
+      class="system-posture-dialog"
     >
-      <el-form label-position="top" class="firemap-form">
+      <el-form label-position="top" class="system-posture-form">
         <div class="form-grid">
           <el-form-item label="系统名称">
             <el-input v-model="systemForm.name" maxlength="128" show-word-limit />
@@ -451,7 +514,14 @@ import {
   Share,
 } from '@element-plus/icons-vue'
 import echarts from '@/lib/echarts'
-import { createSystemPostureSystem, deleteSystemPostureSystem, getObservabilitySystemPosture, updateSystemPostureSystem } from '@/api/modules/ops'
+import {
+  createSystemPostureEnvironment,
+  createSystemPostureSystem,
+  deleteSystemPostureSystem,
+  getObservabilitySystemPosture,
+  updateSystemPostureEnvironment,
+  updateSystemPostureSystem,
+} from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import { openRouteInNewTab } from '@/utils/router'
 
@@ -472,6 +542,7 @@ let topologyChart = null
 function defaultSystemForm() {
   return {
     name: '',
+    environment: 'prod',
     domain: '核心业务',
     tier: '业务系统',
     owner: '',
@@ -514,11 +585,18 @@ const selectedSystem = computed(() => {
 })
 
 const selectedMetrics = computed(() => selectedSystem.value.metrics || [])
-const ruleContext = computed(() => selectedSystem.value.rule_config || {})
-const ruleCards = computed(() => buildRuleCards(ruleContext.value, selectedSystem.value.live || {}))
 const drillPath = ref([])
+const detailPanelOpen = ref(false)
+const postureEnvironments = computed(() => systemPosture.value.environments || [])
+const environmentNameByKey = computed(() => postureEnvironments.value.reduce((acc, item) => {
+  const key = normalizeEnvironmentKey(item.key || item.name)
+  acc[key] = item.name || item.label || key
+  return acc
+}, {}))
 const currentDrillParent = computed(() => drillPath.value[drillPath.value.length - 1] || null)
 const drillCards = computed(() => (currentDrillParent.value ? currentDrillParent.value.children || [] : systems.value))
+const environmentGroups = computed(() => groupSystemsByEnvironment(systems.value, postureEnvironments.value))
+const showFocusPanel = computed(() => detailPanelOpen.value || drillPath.value.length > 0)
 const focusTarget = computed(() => {
   if (drillPath.value.length) {
     return selectedNode.value || currentDrillParent.value || selectedSystem.value || {}
@@ -532,22 +610,14 @@ const focusMetrics = computed(() => {
   const metrics = sourceMetrics.filter(metric => metric.label && metric.label !== sloLabel)
   return (metrics.length ? metrics : sourceMetrics).slice(0, 4)
 })
-const focusRuleCards = computed(() => {
-  if ((focusTarget.value?.kind || 'system') !== 'system') return []
-  const priority = ['window', 'status', 'root-cause']
-  return priority
-    .map(key => ruleCards.value.find(item => item.key === key))
-    .filter(Boolean)
-})
 const focusActions = computed(() => allowedQuickActions.value.slice(0, 3))
-const focusPlaybook = computed(() => ((focusTarget.value?.kind || 'system') === 'system' ? (selectedSystem.value.playbook || []) : []).slice(0, 3))
 const drillToolbarText = computed(() => {
   if (!drillPath.value.length) {
-    return `系统 ${systems.value.length} 个 · 点击卡片继续下钻到子系统、模块和接口`
+    return `系统 ${systems.value.length} 个 · 点击卡片查看详情，点下钻进入子系统、模块和接口`
   }
   const parent = currentDrillParent.value
   const childCount = parent?.children?.length || 0
-  return `${parent?.name || '当前层级'} · 下级 ${childCount} 个 · 点击卡片继续下钻`
+  return `${parent?.name || '当前层级'} · 下级 ${childCount} 个 · 点击卡片查看详情，点下钻进入下一层`
 })
 const drilldownRows = computed(() => {
   if (!selectedSystem.value.id) return []
@@ -582,7 +652,7 @@ const canViewTrace = computed(() => authStore.hasPermission('ops.trace.view'))
 const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
 const canViewGrafana = computed(() => authStore.hasPermission('ops.grafana.view'))
 const canViewEvents = computed(() => authStore.hasPermission('eventwall.view'))
-const canManageSystemPosture = computed(() => authStore.hasPermission('ops.observability.firemap.manage') || Boolean(systemPosture.value.context?.can_manage))
+const canManageSystemPosture = computed(() => authStore.hasPermission('ops.observability.system_posture.manage') || Boolean(systemPosture.value.context?.can_manage))
 
 function flattenNodes(nodes = [], level = 0) {
   return nodes.flatMap((node) => [
@@ -639,6 +709,7 @@ function drillPathToIndex(id) {
 
 function resetDrill() {
   drillPath.value = []
+  detailPanelOpen.value = false
   selectedNodeId.value = selectedSystem.value.id || ''
 }
 
@@ -647,6 +718,7 @@ function drillUp() {
   drillPath.value = drillPath.value.slice(0, -1)
   const last = drillPath.value[drillPath.value.length - 1]
   selectedNodeId.value = last?.id || selectedSystem.value.id || ''
+  detailPanelOpen.value = true
 }
 
 function jumpDrill(item = {}) {
@@ -654,9 +726,21 @@ function jumpDrill(item = {}) {
   if (index < 0) return
   drillPath.value = drillPath.value.slice(0, index + 1)
   selectedNodeId.value = item.id
+  detailPanelOpen.value = true
 }
 
-async function openDrillCard(item = {}) {
+async function selectOverviewCard(item = {}) {
+  if (!item?.id) return
+  if (!drillPath.value.length) {
+    await selectSystem(item)
+    selectedNodeId.value = selectedSystem.value?.id || item.id
+  } else {
+    selectedNodeId.value = item.id
+  }
+  detailPanelOpen.value = true
+}
+
+async function drillIntoCard(item = {}) {
   if (!item?.id) return
   if (!drillPath.value.length) {
     await selectSystem(item)
@@ -665,6 +749,7 @@ async function openDrillCard(item = {}) {
       kind: 'system',
     }]
     selectedNodeId.value = selectedSystem.value?.id || item.id
+    detailPanelOpen.value = true
     return
   }
   selectedNodeId.value = item.id
@@ -676,10 +761,11 @@ async function openDrillCard(item = {}) {
       drillPath.value = [...drillPath.value, item]
     }
   }
+  detailPanelOpen.value = true
 }
 
 function isDrillCardActive(item = {}) {
-  return (drillPath.value.length ? selectedNodeId.value === item.id : selectedSystem.value.id === item.id)
+  return (drillPath.value.length ? selectedNodeId.value === item.id : detailPanelOpen.value && selectedSystem.value.id === item.id)
 }
 
 function tagType(status) {
@@ -737,68 +823,6 @@ function parseRuleConfig(text) {
   return parsed
 }
 
-function metricRule(config = {}, key = '') {
-  return config.prometheus?.scalars?.[key] || {}
-}
-
-function ruleThresholdText(rules = {}) {
-  const parts = []
-  if (rules.health_score_lt !== undefined) parts.push(`健康分 < ${rules.health_score_lt}`)
-  if (rules.success_rate_lt !== undefined) parts.push(`成功率 < ${rules.success_rate_lt}%`)
-  if (rules.checkout_conflict_rate_gte !== undefined) parts.push(`409 >= ${rules.checkout_conflict_rate_gte}%`)
-  if (rules.checkout_5xx_rate_gte !== undefined) parts.push(`5xx >= ${rules.checkout_5xx_rate_gte}%`)
-  if (rules.checkout_p95_ms_gt !== undefined) parts.push(`P95 > ${rules.checkout_p95_ms_gt}ms`)
-  return parts.join(' / ') || '--'
-}
-
-function weightText(weights = {}) {
-  return Object.entries(weights)
-    .map(([key, value]) => `${key} ${Math.round(Number(value || 0) * 100)}%`)
-    .join(' / ')
-}
-
-function buildRuleCards(config = {}, live = {}) {
-  if (!config || !Object.keys(config).length) return []
-  const northStar = config.north_star || {}
-  const northMetricKey = northStar.metric || live.north_star_metric || 'checkout_success_rate'
-  const northMetric = metricRule(config, northMetricKey)
-  const health = config.health_score || {}
-  const statusRules = config.status_rules || {}
-  const rootRule = Array.isArray(config.root_cause_rules) ? config.root_cause_rules[0] || {} : {}
-  return [
-    {
-      key: 'window',
-      title: '统计范围',
-      value: `${live.window || config.window || '--'} · ${config.namespace || '--'}`,
-      detail: config.service_pattern || '--',
-    },
-    {
-      key: 'north-star',
-      title: 'SLO',
-      value: northStar.label || northMetric.label || northMetricKey,
-      detail: `${northMetricKey}，目标 ${northStar.target ?? northMetric.target ?? '--'}${northStar.unit || northMetric.unit || ''}`,
-    },
-    {
-      key: 'health-score',
-      title: '健康分公式',
-      value: health.formula || live.health_formula || '--',
-      detail: weightText(health.weights || {}),
-    },
-    {
-      key: 'status',
-      title: '状态阈值',
-      value: `故障：${ruleThresholdText(statusRules.critical || {})}`,
-      detail: `告警：${ruleThresholdText(statusRules.warning || {})}`,
-    },
-    {
-      key: 'root-cause',
-      title: '根因规则',
-      value: rootRule.label || rootRule.id || '--',
-      detail: `${rootRule.metric || '--'} >= ${rootRule.min_rate ?? '--'}%，定位 ${rootRule.target_service_id || '--'} / ${rootRule.target_interface_id || '--'}`,
-    },
-  ]
-}
-
 function splitText(value) {
   return String(value || '')
     .split(/[\n,，]/)
@@ -815,6 +839,82 @@ function compactId(value, fallback = 'node') {
     .slice(0, 48) || fallback
 }
 
+function normalizeEnvironmentKey(value = '') {
+  const raw = String(value || '').trim()
+  return raw || 'prod'
+}
+
+function environmentKey(system = {}) {
+  return normalizeEnvironmentKey(system.environment || system.env || system.form?.environment || system.rule_config?.environment || 'prod')
+}
+
+function environmentLabel(key = '') {
+  const normalized = normalizeEnvironmentKey(key)
+  if (environmentNameByKey.value[normalized]) return environmentNameByKey.value[normalized]
+  return {
+    prod: '生产环境',
+    production: '生产环境',
+    staging: '预发环境',
+    stage: '预发环境',
+    pre: '预发环境',
+    test: '测试环境',
+    testing: '测试环境',
+    dev: '开发环境',
+    development: '开发环境',
+    default: '默认环境',
+  }[String(normalized).toLowerCase()] || normalized
+}
+
+function environmentOrder(key = '') {
+  const order = { prod: 1, production: 1, staging: 2, stage: 2, pre: 2, test: 3, testing: 3, dev: 4, development: 4, default: 9 }
+  return order[String(key).toLowerCase()] || 8
+}
+
+function environmentCounts(items = []) {
+  return items.reduce((acc, item) => {
+    const status = cardStatus(item)
+    acc[status] = (acc[status] || 0) + 1
+    return acc
+  }, { critical: 0, warning: 0, healthy: 0, offline: 0 })
+}
+
+function environmentStatus(items = []) {
+  if (items.some(item => cardStatus(item) === 'critical')) return 'critical'
+  if (items.some(item => cardStatus(item) === 'warning')) return 'warning'
+  if (items.length && items.every(item => cardStatus(item) === 'offline')) return 'offline'
+  return 'healthy'
+}
+
+function groupSystemsByEnvironment(items = [], environmentDefs = []) {
+  const groups = new Map()
+  environmentDefs.forEach((environment) => {
+    const key = normalizeEnvironmentKey(environment.key || environment.name)
+    if (!key) return
+    groups.set(key, {
+      id: environment.id,
+      key,
+      label: environment.name || environment.label || environmentLabel(key),
+      sort_order: Number(environment.sort_order ?? environmentOrder(key)),
+      source: environment.source || (environment.id ? 'configured' : 'derived'),
+      items: [],
+    })
+  })
+  items.forEach((item) => {
+    const key = environmentKey(item)
+    if (!groups.has(key)) {
+      groups.set(key, { id: null, key, label: environmentLabel(key), sort_order: environmentOrder(key), source: 'derived', items: [] })
+    }
+    groups.get(key).items.push(item)
+  })
+  return Array.from(groups.values())
+    .map(group => ({
+      ...group,
+      counts: environmentCounts(group.items),
+      status: environmentStatus(group.items),
+    }))
+    .sort((a, b) => (a.sort_order ?? environmentOrder(a.key)) - (b.sort_order ?? environmentOrder(b.key)) || a.label.localeCompare(b.label, 'zh-Hans-CN'))
+}
+
 function systemToForm(system = {}) {
   const form = system.form || {}
   const northStar = form.north_star || system.north_star || {}
@@ -827,6 +927,7 @@ function systemToForm(system = {}) {
   return {
     ...defaultSystemForm(),
     name: form.name || system.name || '',
+    environment: form.environment || system.environment || 'prod',
     domain: form.domain || system.domain || '核心业务',
     tier: form.tier || system.tier || '业务系统',
     owner: form.owner || system.owner || '',
@@ -906,6 +1007,7 @@ function formToPayload(sourceForm = systemForm.value, sourceSystem = editingSyst
   }
   return {
     name,
+    environment: form.environment.trim() || 'prod',
     domain: form.domain.trim(),
     tier: form.tier.trim(),
     owner: form.owner.trim(),
@@ -926,9 +1028,10 @@ function formToPayload(sourceForm = systemForm.value, sourceSystem = editingSyst
   }
 }
 
-function openCreateSystem() {
+function openCreateSystem(environment = 'prod') {
   editingSystem.value = null
-  systemForm.value = defaultSystemForm()
+  const targetEnvironment = normalizeEnvironmentKey(environment)
+  systemForm.value = { ...defaultSystemForm(), environment: targetEnvironment }
   systemDialogVisible.value = true
 }
 
@@ -936,6 +1039,62 @@ function openEditSystem(system) {
   editingSystem.value = system
   systemForm.value = systemToForm(system)
   systemDialogVisible.value = true
+}
+
+async function openCreateEnvironment() {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入环境名称', '新增环境', {
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputPlaceholder: '例如：生产环境 / 华东生产 / 灰度环境',
+      inputPattern: /\S+/,
+      inputErrorMessage: '环境名称不能为空',
+    })
+    const saved = await createSystemPostureEnvironment({
+      name: normalizeEnvironmentKey(value),
+      sort_order: (postureEnvironments.value.length + 1) * 10,
+    })
+    const environment = saved?.key || normalizeEnvironmentKey(value)
+    ElMessage.success('环境已添加，可在该环境下新增卡片')
+    await loadSystemPosture(selectedSystemId.value)
+    await nextTick()
+    openCreateSystem(environment)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error('新增环境失败')
+    }
+  }
+}
+
+async function renameEnvironment(group = {}) {
+  const oldKey = group.key
+  if (!oldKey) return
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新的环境名称', '重命名环境', {
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValue: group.label,
+      inputPattern: /\S+/,
+      inputErrorMessage: '环境名称不能为空',
+    })
+    const newLabel = normalizeEnvironmentKey(value)
+    if (newLabel === group.label) return
+    if (group.id) {
+      await updateSystemPostureEnvironment(group.id, { name: newLabel })
+    } else {
+      await createSystemPostureEnvironment({
+        key: oldKey,
+        name: newLabel,
+        sort_order: group.sort_order ?? environmentOrder(oldKey),
+      })
+    }
+    ElMessage.success('环境名称已更新')
+    await loadSystemPosture(selectedSystemId.value)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error('重命名环境失败')
+    }
+  }
 }
 
 async function saveSystem() {
@@ -1189,7 +1348,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.firemap-page {
+.system-posture-page {
   --fm-bg: #f7f8fa;
   --fm-panel: #ffffff;
   --fm-text: #1f2329;
@@ -1384,7 +1543,7 @@ onUnmounted(() => {
   color: var(--fm-green);
 }
 
-.firemap-tabs {
+.system-posture-tabs {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 8px;
@@ -1395,7 +1554,7 @@ onUnmounted(() => {
   padding: 4px;
 }
 
-.firemap-tabs .neo-tab-btn {
+.system-posture-tabs .neo-tab-btn {
   align-items: center;
   background: transparent;
   border: 0;
@@ -1412,12 +1571,12 @@ onUnmounted(() => {
   transition: background 0.16s ease, color 0.16s ease;
 }
 
-.firemap-tabs .neo-tab-btn:hover {
+.system-posture-tabs .neo-tab-btn:hover {
   background: #f4f6f8;
   color: var(--fm-text);
 }
 
-.firemap-tabs .neo-tab-btn.active {
+.system-posture-tabs .neo-tab-btn.active {
   background: #eef4ff;
   box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.08);
   color: #245bdb;
@@ -1439,6 +1598,104 @@ onUnmounted(() => {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+}
+
+.environment-groups {
+  display: grid;
+  gap: 14px;
+}
+
+.environment-group {
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.environment-group:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.environment-group__head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 28px;
+}
+
+.environment-title,
+.environment-summary,
+.environment-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.environment-title {
+  flex: 1 1 auto;
+}
+
+.environment-actions {
+  flex: 0 0 auto;
+}
+
+.environment-title strong {
+  color: var(--fm-text);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.environment-title em,
+.environment-summary span {
+  border-radius: 999px;
+  color: var(--fm-muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.environment-title em {
+  background: #f5f6f8;
+  padding: 2px 8px;
+}
+
+.environment-summary span {
+  background: rgba(247, 249, 252, 0.9);
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  padding: 2px 7px;
+}
+
+.environment-actions :deep(.el-button) {
+  border-radius: 6px;
+  font-weight: 500;
+  min-height: 28px;
+}
+
+.environment-dot {
+  background: var(--fm-subtle);
+  border-radius: 999px;
+  height: 8px;
+  width: 8px;
+}
+
+.environment-dot.is-critical {
+  background: #d83931;
+  box-shadow: 0 0 0 3px rgba(245, 74, 69, 0.08);
+}
+
+.environment-dot.is-warning {
+  background: #c26300;
+  box-shadow: 0 0 0 3px rgba(255, 136, 0, 0.08);
+}
+
+.environment-dot.is-healthy {
+  background: #087a55;
+  box-shadow: 0 0 0 3px rgba(0, 168, 112, 0.08);
 }
 
 .overview-systems-panel {
@@ -1637,7 +1894,9 @@ onUnmounted(() => {
   font-weight: 650;
 }
 
-.score-row em {
+.score-row em,
+.drill-action {
+  border: 0;
   border-radius: 6px;
   font-size: 12px;
   font-style: normal;
@@ -1646,22 +1905,36 @@ onUnmounted(() => {
   padding: 2px 7px;
 }
 
-.score-row em.is-critical {
+.drill-action {
+  cursor: pointer;
+  line-height: 1.45;
+  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.drill-action:hover {
+  box-shadow: inset 0 0 0 1px rgba(31, 35, 41, 0.08);
+}
+
+.score-row em.is-critical,
+.drill-action.is-critical {
   background: #fff1f0;
   color: #d83931;
 }
 
-.score-row em.is-warning {
+.score-row em.is-warning,
+.drill-action.is-warning {
   background: #fff7e6;
   color: #c26300;
 }
 
-.score-row em.is-healthy {
+.score-row em.is-healthy,
+.drill-action.is-healthy {
   background: #edf8f3;
   color: #087a55;
 }
 
-.score-row em.is-offline {
+.score-row em.is-offline,
+.drill-action.is-offline {
   background: #f2f3f5;
   color: var(--fm-muted);
 }
@@ -1777,8 +2050,7 @@ onUnmounted(() => {
 .focus-kpi em,
 .focus-block__title,
 .compact-metric span,
-.compact-metric em,
-.compact-rule span {
+.compact-metric em {
   color: var(--fm-muted);
   font-size: 12px;
   font-style: normal;
@@ -1803,16 +2075,12 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 
-.compact-metric-list,
-.compact-rule-list,
-.compact-playbook-list {
+.compact-metric-list {
   display: grid;
   gap: 5px;
 }
 
-.compact-metric,
-.compact-rule,
-.compact-playbook-step {
+.compact-metric {
   align-items: center;
   background: #ffffff;
   border: 1px solid rgba(226, 232, 240, 0.78);
@@ -1827,9 +2095,7 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
-.compact-metric strong,
-.compact-rule strong,
-.compact-playbook-step strong {
+.compact-metric strong {
   color: var(--fm-text);
   font-size: 12px;
   font-weight: 600;
@@ -1844,30 +2110,6 @@ onUnmounted(() => {
 
 .compact-metric.is-warning strong {
   color: #c26300;
-}
-
-.compact-rule {
-  grid-template-columns: 72px minmax(0, 1fr);
-}
-
-.compact-playbook-step {
-  align-items: flex-start;
-  grid-template-columns: 18px minmax(0, 1fr);
-}
-
-.compact-playbook-step span {
-  align-items: center;
-  background: #f4f6f8;
-  border-radius: 5px;
-  color: var(--fm-muted);
-  display: inline-flex;
-  font-size: 11px;
-  font-weight: 600;
-  height: 18px;
-  justify-content: center;
-  line-height: 1;
-  margin-top: 1px;
-  width: 18px;
 }
 
 .metric-grid {
@@ -1995,43 +2237,6 @@ onUnmounted(() => {
   border-color: rgba(226, 232, 240, 0.95);
   color: var(--fm-muted);
   font-weight: 500;
-}
-
-.playbook-list {
-  display: grid;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.playbook-step {
-  align-items: flex-start;
-  background: rgba(247, 249, 252, 0.78);
-  border: 1px solid rgba(226, 232, 240, 0.82);
-  border-radius: 8px;
-  display: flex;
-  gap: 8px;
-  padding: 9px 10px;
-}
-
-.playbook-step span {
-  align-items: center;
-  background: var(--fm-blue-soft);
-  border-radius: 6px;
-  color: var(--fm-blue);
-  display: inline-flex;
-  flex-shrink: 0;
-  font-size: 12px;
-  font-weight: 600;
-  height: 22px;
-  justify-content: center;
-  width: 22px;
-}
-
-.playbook-step strong {
-  color: var(--fm-muted);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.5;
 }
 
 .drill-tree {
@@ -2321,36 +2526,36 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.firemap-dialog :deep(.el-dialog) {
+.system-posture-dialog :deep(.el-dialog) {
   border-radius: 8px;
 }
 
-.firemap-dialog :deep(.el-dialog__header) {
+.system-posture-dialog :deep(.el-dialog__header) {
   border-bottom: 1px solid var(--fm-border-soft);
   margin-right: 0;
   padding: 18px 20px 14px;
 }
 
-.firemap-dialog :deep(.el-dialog__title) {
+.system-posture-dialog :deep(.el-dialog__title) {
   color: var(--fm-text);
   font-size: 16px;
   font-weight: 600;
 }
 
-.firemap-dialog :deep(.el-dialog__body) {
+.system-posture-dialog :deep(.el-dialog__body) {
   padding: 16px 20px 4px;
 }
 
-.firemap-dialog :deep(.el-dialog__footer) {
+.system-posture-dialog :deep(.el-dialog__footer) {
   border-top: 1px solid var(--fm-border-soft);
   padding: 12px 20px 16px;
 }
 
-.firemap-form :deep(.el-form-item) {
+.system-posture-form :deep(.el-form-item) {
   margin-bottom: 14px;
 }
 
-.firemap-form :deep(.el-form-item__label) {
+.system-posture-form :deep(.el-form-item__label) {
   color: var(--fm-muted);
   font-size: 12px;
   font-weight: 500;
@@ -2358,10 +2563,10 @@ onUnmounted(() => {
   margin-bottom: 7px;
 }
 
-.firemap-form :deep(.el-input__wrapper),
-.firemap-form :deep(.el-textarea__inner),
-.firemap-form :deep(.el-select__wrapper),
-.firemap-form :deep(.el-input-number) {
+.system-posture-form :deep(.el-input__wrapper),
+.system-posture-form :deep(.el-textarea__inner),
+.system-posture-form :deep(.el-select__wrapper),
+.system-posture-form :deep(.el-input-number) {
   border-radius: 6px;
 }
 

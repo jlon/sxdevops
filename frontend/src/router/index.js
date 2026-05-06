@@ -1,4 +1,4 @@
-﻿import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import AppLayout from '@/layout/AppLayout.vue'
 import { pinia } from '@/stores'
@@ -271,7 +271,7 @@ const routes = [
         path: 'observability',
         redirect: () => {
           const authStore = useAuthStore(pinia)
-          if (authStore.hasPermission('ops.observability.firemap.view')) {
+          if (authStore.hasPermission('ops.observability.system_posture.view')) {
             return '/observability/system-posture'
           }
           if (authStore.hasAnyPermission(['ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'])) {
@@ -285,12 +285,7 @@ const routes = [
         path: 'observability/system-posture',
         name: 'ObservabilitySystemPosture',
         component: () => import('@/views/ObservabilitySystemPosture.vue'),
-        meta: { title: '系统态势', icon: 'Aim', permission: 'ops.observability.firemap.view' },
-      },
-      {
-        path: 'observability/firemap',
-        redirect: '/observability/system-posture',
-        meta: { hidden: true },
+        meta: { title: '系统态势', icon: 'Aim', permission: 'ops.observability.system_posture.view' },
       },
       {
         path: 'observability/overview',

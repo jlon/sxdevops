@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="app-layout">
     <aside class="sidebar" :class="{ collapsed: appStore.sidebarCollapsed }">
       <div class="sidebar-logo">
@@ -323,7 +323,7 @@ const menuItems = [
     title: '可观测性',
     icon: 'DataLine',
     children: [
-      { path: '/observability/system-posture', title: '系统态势', icon: 'Aim', permission: 'ops.observability.firemap.view' },
+      { path: '/observability/system-posture', title: '系统态势', icon: 'Aim', permission: 'ops.observability.system_posture.view' },
       {
         path: '/observability/overview',
         title: '平台总览',

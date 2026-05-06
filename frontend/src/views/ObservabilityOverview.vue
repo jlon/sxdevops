@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="observability-page">
     <section class="hero panel">
       <div class="hero-copy">
@@ -157,7 +157,7 @@ const overview = ref({ modules: {}, summary: {} })
 const canViewLogDatasources = computed(() => authStore.hasPermission('ops.log.datasource.view'))
 const canViewTraceDatasources = computed(() => authStore.hasPermission('ops.trace.datasource.view'))
 const canViewLinks = computed(() => authStore.hasPermission('ops.observability.link.view'))
-const canViewSystemPosture = computed(() => authStore.hasPermission('ops.observability.firemap.view'))
+const canViewSystemPosture = computed(() => authStore.hasPermission('ops.observability.system_posture.view'))
 
 const statCards = computed(() => [
   { label: '日志数据源', value: overview.value.summary?.datasource_count || 0, tone: '' },

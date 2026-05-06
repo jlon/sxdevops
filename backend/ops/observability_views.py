@@ -1,4 +1,4 @@
-﻿from urllib.parse import quote
+from urllib.parse import quote
 
 import json
 import copy
@@ -21,9 +21,10 @@ from eventwall.services import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
 from .alerting import _has_claimants
-from .models import Alert, Deployment, GrafanaSetting, LogDataSource, LogEntry, ObservabilityDataSourceLink, SystemPostureSystem, TracingDataSource
+from .models import Alert, Deployment, GrafanaSetting, LogDataSource, LogEntry, ObservabilityDataSourceLink, SystemPostureEnvironment, SystemPostureSystem, TracingDataSource
 from .serializers import (
     AlertSerializer,
+    SystemPostureEnvironmentSerializer,
     SystemPostureSystemSerializer,
     GrafanaSettingSerializer,
     ObservabilityDataSourceLinkSerializer,
@@ -61,8 +62,8 @@ def _has_permission(request, code):
 
 def _observability_access(request):
     return {
-        'firemap': _has_permission(request, 'ops.observability.firemap.view'),
-        'firemap_manage': _has_permission(request, 'ops.observability.firemap.manage'),
+        'system_posture': _has_permission(request, 'ops.observability.system_posture.view'),
+        'system_posture_manage': _has_permission(request, 'ops.observability.system_posture.manage'),
         'log_query': _has_permission(request, 'ops.log.query'),
         'log_entry': _has_permission(request, 'ops.log.entry.view'),
         'log_datasource': _has_permission(request, 'ops.log.datasource.view'),
@@ -842,12 +843,65 @@ FIREMAP_SYSTEM_TEMPLATES = [
 ]
 
 
-def _firemap_slug(value, fallback='node'):
+def _system_posture_slug(value, fallback='node'):
     text = re.sub(r'[^a-zA-Z0-9]+', '-', str(value or '').strip().lower()).strip('-')
     return text[:48] or fallback
 
 
-def _firemap_default_metric(system):
+def _system_posture_environment_label(key):
+    normalized = str(key or '').strip() or 'prod'
+    labels = {
+        'prod': '生产环境',
+        'production': '生产环境',
+        'staging': '预发环境',
+        'stage': '预发环境',
+        'pre': '预发环境',
+        'test': '测试环境',
+        'testing': '测试环境',
+        'dev': '开发环境',
+        'development': '开发环境',
+        'default': '默认环境',
+    }
+    return labels.get(normalized.lower()) or normalized
+
+
+def _system_posture_environments(templates):
+    configured = list(SystemPostureEnvironment.objects.filter(is_enabled=True).order_by('sort_order', 'id'))
+    configured_keys = {item.key for item in configured}
+    used_keys = {
+        str(template.get('environment') or 'prod').strip() or 'prod'
+        for template in templates
+    }
+    items = [
+        {
+            'id': item.id,
+            'key': item.key,
+            'name': item.name,
+            'sort_order': item.sort_order,
+            'source': 'configured',
+        }
+        for item in configured
+    ]
+    for key in sorted(used_keys - configured_keys):
+        items.append({
+            'id': None,
+            'key': key,
+            'name': _system_posture_environment_label(key),
+            'sort_order': 1000,
+            'source': 'derived',
+        })
+    if not items:
+        items.append({
+            'id': None,
+            'key': 'prod',
+            'name': '生产环境',
+            'sort_order': 1000,
+            'source': 'derived',
+        })
+    return items
+
+
+def _system_posture_default_metric(system):
     north_star = system.north_star if isinstance(system.north_star, dict) else {}
     return {
         'label': north_star.get('label') or '可用率',
@@ -858,10 +912,11 @@ def _firemap_default_metric(system):
     }
 
 
-def _firemap_builtin_form(template):
+def _system_posture_builtin_form(template):
     return {
         'id': '',
         'name': template.get('name') or '',
+        'environment': template.get('environment') or 'prod',
         'domain': template.get('domain') or '',
         'tier': template.get('tier') or '',
         'owner': template.get('owner') or '',
@@ -873,7 +928,7 @@ def _firemap_builtin_form(template):
         'metrics': template.get('metrics') or [],
         'service_specs': template.get('service_specs') or [],
         'dependencies': template.get('dependencies') or [],
-        'rule_config': _firemap_rule_config(template),
+        'rule_config': _system_posture_rule_config(template),
         'playbook': template.get('playbook') or [],
         'focus_service_id': template.get('focus_service_id') or '',
         'focus_interface_id': template.get('focus_interface_id') or '',
@@ -883,10 +938,10 @@ def _firemap_builtin_form(template):
     }
 
 
-def _firemap_system_to_template(system, builtin_backed=False):
+def _system_posture_system_to_template(system, builtin_backed=False):
     system_id = f'custom-{system.id}'
-    slug = _firemap_slug(system.name, f'custom-{system.id}')
-    north_star = _firemap_default_metric(system)
+    slug = _system_posture_slug(system.name, f'custom-{system.id}')
+    north_star = _system_posture_default_metric(system)
     service_specs = system.service_specs if isinstance(system.service_specs, list) else []
     dependencies = system.dependencies if isinstance(system.dependencies, list) else []
     metrics = system.metrics if isinstance(system.metrics, list) else []
@@ -941,6 +996,7 @@ def _firemap_system_to_template(system, builtin_backed=False):
     form_payload = {
         'id': system.id,
         'name': system.name,
+        'environment': system.environment or 'prod',
         'domain': system.domain,
         'tier': system.tier,
         'owner': system.owner,
@@ -968,6 +1024,7 @@ def _firemap_system_to_template(system, builtin_backed=False):
         'editable': True,
         'builtin_backed': builtin_backed,
         'name': system.name,
+        'environment': system.environment or 'prod',
         'domain': system.domain or '未分组',
         'tier': system.tier or '业务系统',
         'owner': system.owner or '未设置',
@@ -988,7 +1045,7 @@ def _firemap_system_to_template(system, builtin_backed=False):
     }
 
 
-def _firemap_templates():
+def _system_posture_templates():
     systems = list(SystemPostureSystem.objects.all())
     custom_by_name = {system.name: system for system in systems}
     builtin_names = {item['name'] for item in FIREMAP_SYSTEM_TEMPLATES}
@@ -998,7 +1055,7 @@ def _firemap_templates():
         override = custom_by_name.get(item['name'])
         if override:
             if override.is_enabled:
-                templates.append(_firemap_system_to_template(override, builtin_backed=True))
+                templates.append(_system_posture_system_to_template(override, builtin_backed=True))
             continue
         templates.append({
             **item,
@@ -1006,13 +1063,13 @@ def _firemap_templates():
             'source_id': '',
             'editable': True,
             'builtin_backed': True,
-            'form': _firemap_builtin_form(item),
+            'form': _system_posture_builtin_form(item),
         })
 
     for system in systems:
         if system.name in builtin_names or not system.is_enabled:
             continue
-        templates.append(_firemap_system_to_template(system))
+        templates.append(_system_posture_system_to_template(system))
     return templates
 
 
@@ -1339,9 +1396,9 @@ def _deep_merge_dict(base, override):
     return merged
 
 
-def _firemap_rule_config(template):
+def _system_posture_rule_config(template):
     configured = template.get('rule_config') if isinstance(template.get('rule_config'), dict) else {}
-    if _is_ecommerce_firemap_template(template):
+    if _is_ecommerce_system_posture_template(template):
         return _deep_merge_dict(ECOMMERCE_FIREMAP_RULE_CONFIG, configured)
     return configured
 
@@ -1358,7 +1415,7 @@ def _rule_service_pattern(rule_config):
     return str(rule_config.get('service_pattern') or ECOMMERCE_SERVICE_PATTERN).strip() or ECOMMERCE_SERVICE_PATTERN
 
 
-def _render_firemap_promql(query, rule_config):
+def _render_system_posture_promql(query, rule_config):
     return (
         str(query or '')
         .replace('{namespace}', _rule_namespace(rule_config))
@@ -1367,7 +1424,7 @@ def _render_firemap_promql(query, rule_config):
     )
 
 
-def _is_ecommerce_firemap_template(template):
+def _is_ecommerce_system_posture_template(template):
     name = str(template.get('name') or '').strip()
     return name == ECOMMERCE_FIREMAP_NAME or template.get('id') == 'commerce-core'
 
@@ -1385,7 +1442,7 @@ def _prometheus_value(result):
     return _safe_float(value)
 
 
-def _round_firemap_value(value, digits=1):
+def _round_system_posture_value(value, digits=1):
     number = _safe_float(value)
     if number is None:
         return ''
@@ -1399,7 +1456,7 @@ def _round_firemap_value(value, digits=1):
 def _metric(label, value, target, unit='', direction='higher', digits=1, base_status='healthy'):
     item = {
         'label': label,
-        'value': _round_firemap_value(value, digits=digits),
+        'value': _round_system_posture_value(value, digits=digits),
         'target': target,
         'unit': unit,
         'direction': direction,
@@ -1595,9 +1652,9 @@ def _ecommerce_prometheus_snapshot(client, rule_config):
     for key, item in scalar_rules.items():
         if not isinstance(item, dict) or not item.get('query'):
             continue
-        value = _safe_prometheus_scalar(client, _render_firemap_promql(item.get('query'), rule_config), warnings)
+        value = _safe_prometheus_scalar(client, _render_system_posture_promql(item.get('query'), rule_config), warnings)
         if value is None and item.get('fallback_query'):
-            value = _safe_prometheus_scalar(client, _render_firemap_promql(item.get('fallback_query'), rule_config), warnings)
+            value = _safe_prometheus_scalar(client, _render_system_posture_promql(item.get('fallback_query'), rule_config), warnings)
         scale = _safe_float(item.get('scale')) or 1
         snapshot[key] = value * scale if value is not None else None
 
@@ -1606,7 +1663,7 @@ def _ecommerce_prometheus_snapshot(client, rule_config):
         if not isinstance(item, dict) or not item.get('query'):
             continue
         labels = item.get('labels') if isinstance(item.get('labels'), list) else []
-        values = _safe_prometheus_series_map(client, _render_firemap_promql(item.get('query'), rule_config), labels, warnings)
+        values = _safe_prometheus_series_map(client, _render_system_posture_promql(item.get('query'), rule_config), labels, warnings)
         scale = _safe_float(item.get('scale')) or 1
         snapshot[key] = {series_key: value * scale for series_key, value in values.items()} if scale != 1 else values
 
@@ -1860,7 +1917,7 @@ def _build_ecommerce_live_service_specs(snapshot, rule_config):
                 if _status_rank(conflict_status) > _status_rank(interface_status):
                     interface_status = conflict_status
             interfaces.append({
-                'id': path.get('id') or f'{service_id}-{_firemap_slug(path.get("path"), "path")}',
+                'id': path.get('id') or f'{service_id}-{_system_posture_slug(path.get("path"), "path")}',
                 'name': path.get('name') or path.get('path') or '接口',
                 'base_status': interface_status,
                 'hint': interface_hint,
@@ -1957,9 +2014,9 @@ def _load_ecommerce_recent_tempo_traces(access, rule_config):
 
 
 def _apply_ecommerce_live_template(template, access):
-    if not _is_ecommerce_firemap_template(template):
+    if not _is_ecommerce_system_posture_template(template):
         return template
-    rule_config = _firemap_rule_config(template)
+    rule_config = _system_posture_rule_config(template)
     if not rule_config.get('enabled', True):
         return {**template, 'rule_config': rule_config}
     client = _resolve_prometheus_client()
@@ -1986,10 +2043,10 @@ def _apply_ecommerce_live_template(template, access):
     recent_traces, trace_context = _load_ecommerce_recent_tempo_traces(access, rule_config)
     source_text = 'Grafana 代理 Prometheus' if snapshot.get('source') == 'grafana' else 'Prometheus'
     summary_parts = [
-        f'过去 {snapshot.get("window") or ECOMMERCE_PROMQL_WINDOW} {north_star_config.get("label") or north_metric_rule.get("label") or "北极星指标"} {_round_firemap_value(north_value)}{north_star_config.get("unit") or north_metric_rule.get("unit") or ""}',
-        f'Checkout 409 占比 {_round_firemap_value(conflict_rate)}%' if conflict_rate is not None and conflict_rate >= 1 else '',
-        f'网关 P95 {_round_firemap_value(p95_ms, digits=0)}ms' if p95_ms is not None else '',
-        f'Checkout RPS {_round_firemap_value(rps, digits=3)}' if rps is not None else '',
+        f'过去 {snapshot.get("window") or ECOMMERCE_PROMQL_WINDOW} {north_star_config.get("label") or north_metric_rule.get("label") or "北极星指标"} {_round_system_posture_value(north_value)}{north_star_config.get("unit") or north_metric_rule.get("unit") or ""}',
+        f'Checkout 409 占比 {_round_system_posture_value(conflict_rate)}%' if conflict_rate is not None and conflict_rate >= 1 else '',
+        f'网关 P95 {_round_system_posture_value(p95_ms, digits=0)}ms' if p95_ms is not None else '',
+        f'Checkout RPS {_round_system_posture_value(rps, digits=3)}' if rps is not None else '',
     ]
     live_summary = '，'.join([part for part in summary_parts if part]) + f'，数据来自 {source_text}。'
     if conflict_hint:
@@ -2021,7 +2078,7 @@ def _apply_ecommerce_live_template(template, access):
         ])),
         'north_star': {
             'label': north_star_config.get('label') or north_metric_rule.get('label') or '下单成功率',
-            'value': _round_firemap_value(north_value),
+            'value': _round_system_posture_value(north_value),
             'target': north_star_config.get('target') if north_star_config.get('target') is not None else north_metric_rule.get('target', 99),
             'unit': north_star_config.get('unit') or north_metric_rule.get('unit') or '%',
             'direction': north_star_config.get('direction') or north_metric_rule.get('direction') or 'higher',
@@ -2050,12 +2107,12 @@ def _apply_ecommerce_live_template(template, access):
     }
 
 
-def _build_firemap_system_payload(template, access, catalog=None):
-    if _is_ecommerce_firemap_template(template):
+def _build_system_posture_system_payload(template, access, catalog=None):
+    if _is_ecommerce_system_posture_template(template):
         live_template = _apply_ecommerce_live_template(template, access)
         if live_template:
             template = live_template
-    rule_config = _firemap_rule_config(template)
+    rule_config = _system_posture_rule_config(template)
     trace_catalog = catalog or {}
     traces = trace_catalog.get('recent_traces') or []
     keywords = template.get('keywords') or []
@@ -2358,6 +2415,7 @@ def _build_firemap_system_payload(template, access, catalog=None):
     return {
         'id': template['id'],
         'name': template['name'],
+        'environment': template.get('environment') or 'prod',
         'domain': template['domain'],
         'owner': template['owner'],
         'tier': template['tier'],
@@ -2406,7 +2464,7 @@ def _build_firemap_system_payload(template, access, catalog=None):
     }
 
 
-def _firemap_data_sources(access, catalog=None, grafana=None, logs=None, alerts=None, system_count=None):
+def _system_posture_data_sources(access, catalog=None, grafana=None, logs=None, alerts=None, system_count=None):
     sources = []
     if access.get('trace') and catalog:
         tracing = catalog.get('tracing') or {}
@@ -2475,7 +2533,7 @@ def _firemap_data_sources(access, catalog=None, grafana=None, logs=None, alerts=
     return sources
 
 
-def _firemap_quick_actions(system, access=None):
+def _system_posture_quick_actions(system, access=None):
     access = access or {}
     actions = []
     trace_context = system.get('trace_context') or {}
@@ -2522,7 +2580,7 @@ def _firemap_quick_actions(system, access=None):
     return actions
 
 
-def _firemap_summary(systems, access, catalog=None, grafana=None, logs=None, alerts=None):
+def _system_posture_summary(systems, access, catalog=None, grafana=None, logs=None, alerts=None):
     alert_total = sum(len(system.get('recent_alerts') or []) for system in systems)
     critical_count = sum(1 for system in systems if system['status'] == 'critical')
     warning_count = sum(1 for system in systems if system['status'] == 'warning')
@@ -2542,7 +2600,7 @@ def _firemap_summary(systems, access, catalog=None, grafana=None, logs=None, ale
     }
 
 
-def _firemap_timeline(template):
+def _system_posture_timeline(template):
     keywords = template.get('keywords') or []
     items = []
 
@@ -2605,6 +2663,39 @@ def _firemap_timeline(template):
     return items[:8]
 
 
+class SystemPostureEnvironmentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = SystemPostureEnvironment.objects.all()
+    serializer_class = SystemPostureEnvironmentSerializer
+    pagination_class = None
+    event_module = 'ops'
+    event_resource_type = 'system_posture_environment'
+    event_resource_label = '系统态势环境'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.observability.system_posture.view'],
+        'retrieve': ['ops.observability.system_posture.view'],
+        'create': ['ops.observability.system_posture.manage'],
+        'update': ['ops.observability.system_posture.manage'],
+        'partial_update': ['ops.observability.system_posture.manage'],
+        'destroy': ['ops.observability.system_posture.manage'],
+    }
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        is_enabled = self.request.query_params.get('is_enabled')
+        if is_enabled in ('true', 'false'):
+            queryset = queryset.filter(is_enabled=is_enabled == 'true')
+        return queryset.order_by('sort_order', 'id')
+
+    def perform_create(self, serializer):
+        username = getattr(self.request.user, 'username', '') or 'system'
+        serializer.save(created_by=username, updated_by=username)
+
+    def perform_update(self, serializer):
+        username = getattr(self.request.user, 'username', '') or 'system'
+        serializer.save(updated_by=username)
+
+
 class SystemPostureSystemViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = SystemPostureSystem.objects.all()
     serializer_class = SystemPostureSystemSerializer
@@ -2614,12 +2705,12 @@ class SystemPostureSystemViewSet(EventWallModelViewSetMixin, RBACPermissionMixin
     event_resource_label = '系统态势卡片'
     event_resource_name_fields = ('name',)
     rbac_permissions = {
-        'list': ['ops.observability.firemap.view'],
-        'retrieve': ['ops.observability.firemap.view'],
-        'create': ['ops.observability.firemap.manage'],
-        'update': ['ops.observability.firemap.manage'],
-        'partial_update': ['ops.observability.firemap.manage'],
-        'destroy': ['ops.observability.firemap.manage'],
+        'list': ['ops.observability.system_posture.view'],
+        'retrieve': ['ops.observability.system_posture.view'],
+        'create': ['ops.observability.system_posture.manage'],
+        'update': ['ops.observability.system_posture.manage'],
+        'partial_update': ['ops.observability.system_posture.manage'],
+        'destroy': ['ops.observability.system_posture.manage'],
     }
 
     def get_queryset(self):
@@ -2641,7 +2732,7 @@ class SystemPostureSystemViewSet(EventWallModelViewSetMixin, RBACPermissionMixin
         serializer.save(updated_by=username)
 
 
-FireMapSystemViewSet = SystemPostureSystemViewSet
+SystemPostureSystemViewSet = SystemPostureSystemViewSet
 
 
 class ObservabilityDataSourceLinkViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
@@ -2974,7 +3065,7 @@ def grafana_setting_view(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, build_rbac_permission('ops.observability.firemap.view')])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.observability.system_posture.view')])
 def observability_system_posture(request):
     access = _observability_access(request)
     provider = request.query_params.get('provider', '')
@@ -2996,8 +3087,8 @@ def observability_system_posture(request):
     logs = _log_module_summary() if (access.get('log_query') or access.get('log_datasource') or access.get('log_entry')) else None
     alerts = _alert_module_summary() if access.get('alerts') else None
 
-    templates = _firemap_templates()
-    systems = [_build_firemap_system_payload(template, access, catalog if isinstance(catalog, dict) else None) for template in templates]
+    templates = _system_posture_templates()
+    systems = [_build_system_posture_system_payload(template, access, catalog if isinstance(catalog, dict) else None) for template in templates]
     selected_system = None
     if selected_key:
         selected_system = next(
@@ -3012,8 +3103,8 @@ def observability_system_posture(request):
         selected_system = next((item for item in systems if item['status'] == 'critical'), None) or next((item for item in systems if item['status'] == 'warning'), None) or systems[0]
 
     selected_template = next((item for item in templates if item['id'] == selected_system['id']), templates[0])
-    selected_system['actions'] = _firemap_quick_actions(selected_system, access)
-    selected_system['timeline'] = _firemap_timeline(selected_template)
+    selected_system['actions'] = _system_posture_quick_actions(selected_system, access)
+    selected_system['timeline'] = _system_posture_timeline(selected_template)
     selected_system['signals'] = {
         'alerts': len(selected_system.get('recent_alerts') or []),
         'logs': len(selected_system.get('recent_logs') or []),
@@ -3021,11 +3112,11 @@ def observability_system_posture(request):
         'traces': len(selected_system.get('recent_traces') or []),
     }
 
-    summary = _firemap_summary(systems, access, catalog if isinstance(catalog, dict) else None, grafana=grafana, logs=logs, alerts=alerts)
+    summary = _system_posture_summary(systems, access, catalog if isinstance(catalog, dict) else None, grafana=grafana, logs=logs, alerts=alerts)
     summary['impact_nodes'] = sum(len(system.get('dependencies') or []) for system in systems if system['status'] != 'healthy')
 
     navigation = []
-    if access.get('firemap'):
+    if access.get('system_posture'):
         navigation.append({'title': '系统态势', 'path': '/observability/system-posture', 'description': '查看业务系统健康、SLA 指标与依赖影响。', 'tone': 'danger'})
     if access.get('trace'):
         navigation.append({'title': '链路追踪', 'path': '/observability/tracing', 'description': '查看 Trace、Span 和调用拓扑。', 'tone': 'success'})
@@ -3042,10 +3133,11 @@ def observability_system_posture(request):
     return Response({
         'summary': summary,
         'systems': systems,
+        'environments': _system_posture_environments(templates),
         'selected_system_id': selected_system['id'],
         'selected_system': selected_system,
         'topology': selected_system.get('topology') or {'node_count': 0, 'call_count': 0, 'selected_node_id': '', 'nodes': [], 'links': []},
-        'data_sources': _firemap_data_sources(access, catalog if isinstance(catalog, dict) else None, grafana=grafana, logs=logs, alerts=alerts, system_count=len(systems)),
+        'data_sources': _system_posture_data_sources(access, catalog if isinstance(catalog, dict) else None, grafana=grafana, logs=logs, alerts=alerts, system_count=len(systems)),
         'navigation': navigation,
         'timeline': selected_changes,
         'quick_actions': selected_system.get('actions') or [],
@@ -3058,13 +3150,9 @@ def observability_system_posture(request):
             'provider': provider,
             'layer': layer,
             'datasource_id': request.query_params.get('datasource_id', ''),
-            'can_manage': access.get('firemap_manage'),
+            'can_manage': access.get('system_posture_manage'),
         },
     })
-
-
-observability_firemap = observability_system_posture
-
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

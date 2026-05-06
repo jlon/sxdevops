@@ -1,4 +1,4 @@
-﻿from urllib.parse import quote
+from urllib.parse import quote
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -1168,7 +1168,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(conflict_metric['target'], 10)
         self.assertEqual(conflict_metric['status'], 'healthy')
 
-    def test_observability_system_posture_requires_firemap_permission(self):
+    def test_observability_system_posture_requires_system_posture_permission(self):
         limited_user = get_user_model().objects.create_user('system-posture-viewer', password='Admin@123456')
         self.client.force_authenticate(user=limited_user)
 
