@@ -1176,7 +1176,7 @@ class TransactionTicketViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
 
 
 class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = Alert.objects.select_related('host', 'integration').prefetch_related('actions', 'notification_logs__channel', 'notification_logs__rule').all()
+    queryset = Alert.objects.select_related('host', 'integration').prefetch_related('actions', 'claim_records', 'notification_logs__channel', 'notification_logs__rule').all()
     serializer_class = AlertSerializer
     search_fields = ['title', 'source', 'message', 'host__hostname', 'service', 'resource', 'business_line', 'cluster', 'namespace']
     filterset_fields = ['level', 'status', 'source_type', 'source', 'is_acknowledged', 'is_suppressed', 'service', 'environment', 'cluster', 'namespace', 'region', 'business_line', 'claimed_by']
@@ -1208,6 +1208,13 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
     def get_queryset(self):
         queryset = super().get_queryset()
         params = self.request.query_params
+        claimed = params.get('claimed')
+        if claimed is None:
+            claimed = params.get('ack')
+        if claimed in {'0', 'false', 'False'}:
+            queryset = queryset.filter(claim_records__isnull=True).distinct()
+        elif claimed in {'1', 'true', 'True'}:
+            queryset = queryset.exclude(claim_records__isnull=True).distinct()
         if params.get('only_open') in {'1', 'true', 'True'}:
             queryset = queryset.exclude(status__in=[Alert.STATUS_RESOLVED, Alert.STATUS_CLOSED])
         resource = params.get('resource')
@@ -1575,7 +1582,7 @@ def dashboard_stats(request):
     deploy_success = Deployment.objects.filter(status__in=['running', 'stopped', 'removed']).count()
 
     alert_total = Alert.objects.count()
-    alert_unacked = Alert.objects.filter(is_acknowledged=False).count()
+    alert_unacked = Alert.objects.filter(claim_records__isnull=True).distinct().count()
     alert_levels = dict(Alert.objects.values_list('level').annotate(count=Count('id')).values_list('level', 'count'))
 
     recent_deploys = DeploymentSerializer(
@@ -1583,7 +1590,7 @@ def dashboard_stats(request):
         many=True,
     ).data
     recent_alerts = AlertSerializer(
-        Alert.objects.select_related('host').filter(is_acknowledged=False)[:10],
+        Alert.objects.select_related('host').prefetch_related('claim_records').filter(claim_records__isnull=True)[:10],
         many=True,
     ).data
 

@@ -8,6 +8,7 @@ from .models import (
     Alert,
     AlertAction,
     AlertAggregationRule,
+    AlertClaim,
     AlertEscalationPolicy,
     AlertInhibitionRule,
     AlertIntegration,
@@ -1107,18 +1108,58 @@ class AlertInteractionTokenSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class AlertClaimSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AlertClaim
+        fields = ['id', 'claimant', 'claimed_at']
+
+
 class AlertSerializer(serializers.ModelSerializer):
     level_display = serializers.CharField(source='get_level_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     host_name = serializers.CharField(source='host.hostname', read_only=True, default='')
     integration_name = serializers.CharField(source='integration.name', read_only=True, default='')
+    claimed_by = serializers.SerializerMethodField()
+    claimed_at = serializers.SerializerMethodField()
+    claimants = serializers.SerializerMethodField()
+    claimant_count = serializers.SerializerMethodField()
+    current_user_claimed = serializers.SerializerMethodField()
     actions = AlertActionSerializer(many=True, read_only=True)
     recent_notifications = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
         fields = '__all__'
+
+    def _claim_records(self, obj):
+        records = getattr(obj, '_prefetched_objects_cache', {}).get('claim_records')
+        if records is not None:
+            return list(records)
+        return list(obj.claim_records.all())
+
+    def get_claimed_by(self, obj):
+        names = [item.claimant for item in self._claim_records(obj)]
+        return '、'.join(names)
+
+    def get_claimed_at(self, obj):
+        records = self._claim_records(obj)
+        if not records:
+            return None
+        return records[0].claimed_at
+
+    def get_claimants(self, obj):
+        return AlertClaimSerializer(self._claim_records(obj), many=True).data
+
+    def get_claimant_count(self, obj):
+        return len(self._claim_records(obj))
+
+    def get_current_user_claimed(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        username = request.user.username
+        return any(item.claimant == username for item in self._claim_records(obj))
 
     def get_recent_notifications(self, obj):
         logs = obj.notification_logs.select_related('channel', 'rule').all()[:5]

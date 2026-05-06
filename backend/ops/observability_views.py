@@ -20,6 +20,7 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
+from .alerting import _has_claimants
 from .models import Alert, Deployment, GrafanaSetting, LogDataSource, LogEntry, ObservabilityDataSourceLink, SystemPostureSystem, TracingDataSource
 from .serializers import (
     AlertSerializer,
@@ -534,11 +535,11 @@ def _log_module_summary():
 
 
 def _alert_module_summary():
-    latest = Alert.objects.select_related('host').all()[:5]
+    latest = Alert.objects.select_related('host').prefetch_related('claim_records').all()[:5]
     return {
         'path': '/alerts',
         'total': Alert.objects.count(),
-        'unacknowledged': Alert.objects.filter(is_acknowledged=False).count(),
+        'unacknowledged': Alert.objects.filter(claim_records__isnull=True).distinct().count(),
         'critical': Alert.objects.filter(level='critical').count(),
         'warning': Alert.objects.filter(level='warning').count(),
         'info': Alert.objects.filter(level='info').count(),
@@ -2092,8 +2093,8 @@ def _build_firemap_system_payload(template, access, catalog=None):
     if template.get('live_recent_traces') and access.get('trace'):
         matched_traces = list(template.get('live_recent_traces') or [])
 
-    alert_critical = sum(1 for alert in matched_alerts if alert.level == 'critical' and not alert.is_acknowledged)
-    alert_warning = sum(1 for alert in matched_alerts if alert.level == 'warning' and not alert.is_acknowledged)
+    alert_critical = sum(1 for alert in matched_alerts if alert.level == 'critical' and not _has_claimants(alert))
+    alert_warning = sum(1 for alert in matched_alerts if alert.level == 'warning' and not _has_claimants(alert))
     log_error = sum(1 for entry in matched_logs if entry.level == 'error')
     log_warning = sum(1 for entry in matched_logs if entry.level == 'warning')
     event_failed = sum(1 for event in matched_events if event.result in {EventRecord.RESULT_FAILED, EventRecord.RESULT_REJECTED})
@@ -2320,7 +2321,7 @@ def _build_firemap_system_payload(template, access, catalog=None):
         selected_metrics.append(_normalize_metric(metric))
         selected_metric_labels.add(metric.get('label'))
     if matched_alerts:
-        selected_metrics.append(_normalize_metric({'label': '未确认告警', 'value': sum(1 for alert in matched_alerts if not alert.is_acknowledged), 'target': 0, 'unit': '条', 'direction': 'lower'}))
+        selected_metrics.append(_normalize_metric({'label': '未认领告警', 'value': sum(1 for alert in matched_alerts if not _has_claimants(alert)), 'target': 0, 'unit': '条', 'direction': 'lower'}))
     if matched_traces:
         selected_metrics.append(_normalize_metric({'label': '错误 Trace', 'value': trace_error, 'target': 0, 'unit': '条', 'direction': 'lower'}))
     if matched_logs:
@@ -2442,7 +2443,7 @@ def _firemap_data_sources(access, catalog=None, grafana=None, logs=None, alerts=
             'name': '告警中心',
             'status': 'critical' if alerts.get('unacknowledged') else 'healthy',
             'count': alerts.get('unacknowledged', 0),
-            'description': '未确认与高优先级告警',
+            'description': '未认领与高优先级告警',
             'path': '/alerts',
         })
     if access.get('grafana') and grafana:
@@ -3031,7 +3032,7 @@ def observability_system_posture(request):
     if access.get('log_query') or access.get('log_datasource'):
         navigation.append({'title': '日志中心', 'path': '/logs', 'description': '按关键字和 Trace ID 回放日志。', 'tone': 'info'})
     if access.get('alerts'):
-        navigation.append({'title': '告警中心', 'path': '/alerts', 'description': '查看未确认告警与高风险动态。', 'tone': 'warning'})
+        navigation.append({'title': '告警中心', 'path': '/alerts', 'description': '查看未认领告警与高风险动态。', 'tone': 'warning'})
     if access.get('grafana'):
         navigation.append({'title': '监控看板', 'path': '/observability/grafana', 'description': '打开 Grafana 推荐看板。', 'tone': 'accent'})
     if access.get('eventwall'):
@@ -3095,7 +3096,7 @@ def observability_overview(request):
         log_description = '统一进入日志查询与数据源管理。' if access['log_query'] and access['log_datasource'] else '进入日志中心并按当前权限查看可用标签。'
         navigation.append({'title': '日志中心', 'path': '/logs', 'description': log_description, 'tone': 'info'})
     if access['alerts']:
-        navigation.append({'title': '告警中心', 'path': '/alerts', 'description': '集中处理当前未确认和高优先级告警。', 'tone': 'danger'})
+        navigation.append({'title': '告警中心', 'path': '/alerts', 'description': '集中处理当前未认领和高优先级告警。', 'tone': 'danger'})
     if access['trace']:
         navigation.append({'title': '链路追踪', 'path': '/observability/tracing', 'description': '统一查看 SkyWalking 与 OpenTelemetry Trace、Span 和调用拓扑。', 'tone': 'success'})
     if access['trace_datasource']:

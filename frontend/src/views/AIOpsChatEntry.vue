@@ -21,7 +21,7 @@
       </article>
       <article class="entry-card">
         <h3>告警分析</h3>
-        <p>围绕未确认告警、风险级别和关联对象做快速排查，减少人工切页成本。</p>
+        <p>围绕未认领告警、风险级别和关联对象做快速排查，减少人工切页成本。</p>
       </article>
       <article class="entry-card">
         <h3>排障建议</h3>

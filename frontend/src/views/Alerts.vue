@@ -65,10 +65,6 @@
           <el-select v-model="filters.source_type" size="small" clearable placeholder="&#x6765;&#x6E90;" @change="handleFilterChange">
             <el-option v-for="item in providerOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
-          <el-select v-model="filters.is_acknowledged" size="small" clearable placeholder="&#x786E;&#x8BA4;&#x72B6;&#x6001;" @change="handleFilterChange">
-            <el-option label="&#x672A;&#x786E;&#x8BA4;" :value="false" />
-            <el-option label="&#x5DF2;&#x786E;&#x8BA4;" :value="true" />
-          </el-select>
           <el-segmented v-model="eventMode" size="small" :options="eventModeOptions" @change="refreshEvents" />
         </div>
 
@@ -103,29 +99,30 @@
             <template #default="{ row }">{{ row.resource || row.host_name || '-' }}</template>
           </el-table-column>
           <el-table-column prop="environment" label="&#x73AF;&#x5883;" width="100" />
-          <el-table-column prop="claimed_by" label="&#x5904;&#x7406;&#x4EBA;" width="120">
-            <template #default="{ row }">{{ row.claimed_by || '-' }}</template>
+          <el-table-column prop="claimed_by" label="&#x8BA4;&#x9886;&#x4EBA;" min-width="220">
+            <template #default="{ row }">
+              <div class="claimant-cell" v-if="row.claimants?.length">
+                <el-tag v-for="item in row.claimants" :key="item.id" size="small" class="mini-tag claimant-tag">{{ item.claimant }}</el-tag>
+              </div>
+              <span v-else>-</span>
+            </template>
           </el-table-column>
           <el-table-column prop="occurrence_count" label="&#x6B21;&#x6570;" width="80" />
           <el-table-column prop="last_received_at" label="&#x6700;&#x8FD1;&#x63A5;&#x6536;" width="180">
             <template #default="{ row }">{{ formatTime(row.last_received_at || row.created_at) }}</template>
           </el-table-column>
-          <el-table-column label="&#x64CD;&#x4F5C;" width="320" fixed="right">
+          <el-table-column label="&#x64CD;&#x4F5C;" width="280" fixed="right">
             <template #default="{ row }">
               <div class="row-actions">
-                <el-button v-if="canQueryLogs" link type="primary" size="small" @click="openAlertLogs(row)">&#x65E5;&#x5FD7;</el-button>
-                <el-button v-if="canViewTracing" link type="warning" size="small" @click="openAlertTrace(row)">&#x94FE;&#x8DEF;</el-button>
-                <el-button v-if="canManageAlerts && !row.is_acknowledged" link type="primary" size="small" @click="runAlertAction(row, 'ack')">&#x786E;&#x8BA4;</el-button>
-                <el-button v-if="canManageAlerts && !row.claimed_by" link type="success" size="small" @click="runAlertAction(row, 'claim')">&#x8BA4;&#x9886;</el-button>
+                <el-button v-if="canManageAlerts && !row.current_user_claimed" link type="success" size="small" @click="runAlertAction(row, 'claim')">&#x8BA4;&#x9886;</el-button>
                 <el-dropdown v-if="canManageAlerts" trigger="click" @command="(cmd) => handleRowCommand(cmd, row)">
                   <el-button link size="small">&#x66F4;&#x591A;</el-button>
                   <template #dropdown>
                     <el-dropdown-menu>
                       <el-dropdown-item command="mute">&#x5C4F;&#x853D; 1 &#x5C0F;&#x65F6;</el-dropdown-item>
-                      <el-dropdown-item command="escalate">&#x5347;&#x7EA7;</el-dropdown-item>
                       <el-dropdown-item command="resolve">&#x6062;&#x590D;</el-dropdown-item>
                       <el-dropdown-item command="close">&#x5173;&#x95ED;</el-dropdown-item>
-                      <el-dropdown-item v-if="row.claimed_by" command="unclaim">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-dropdown-item>
+                      <el-dropdown-item v-if="row.current_user_claimed" command="unclaim">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-dropdown-item>
                       <el-dropdown-item v-if="canNotifyAlerts" command="notify">&#x53D1;&#x9001;&#x901A;&#x77E5;</el-dropdown-item>
                       <el-dropdown-item divided command="delete">&#x5220;&#x9664;</el-dropdown-item>
                     </el-dropdown-menu>
@@ -146,7 +143,7 @@
           <el-table-column prop="total" label="&#x603B;&#x6570;" width="80" />
           <el-table-column prop="critical" label="&#x4E25;&#x91CD;" width="80" />
           <el-table-column prop="warning" label="&#x8B66;&#x544A;" width="80" />
-          <el-table-column prop="unacknowledged" label="&#x672A;&#x786E;&#x8BA4;" width="90" />
+          <el-table-column prop="unacknowledged" label="&#x672A;&#x8BA4;&#x9886;" width="90" />
           <el-table-column prop="suppressed" label="&#x6291;&#x5236;" width="100" />
           <el-table-column prop="latest_at" label="&#x6700;&#x65B0;&#x65F6;&#x95F4;" width="170">
             <template #default="{ row }">{{ formatTime(row.latest_at) }}</template>
@@ -392,14 +389,19 @@
           <el-descriptions-item label="&#x8D44;&#x6E90;">{{ selectedAlert.resource || selectedAlert.host_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
           <el-descriptions-item label="&#x73AF;&#x5883;">{{ selectedAlert.environment || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="&#x8BA4;&#x9886;&#x4EBA;">
+            <div class="claimant-cell" v-if="selectedAlert.claimants?.length">
+              <el-tag v-for="item in selectedAlert.claimants" :key="item.id" size="small" class="mini-tag claimant-tag">{{ item.claimant }}</el-tag>
+            </div>
+            <span v-else>-</span>
+          </el-descriptions-item>
           <el-descriptions-item label="&#x805A;&#x5408;&#x952E;">{{ selectedAlert.group_key || '-' }}</el-descriptions-item>
           <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
         </el-descriptions>
         <div v-if="canManageAlerts" class="detail-actions">
-          <el-button size="small" type="primary" @click="runAlertAction(selectedAlert, 'ack')">&#x786E;&#x8BA4;</el-button>
-          <el-button size="small" type="success" @click="runAlertAction(selectedAlert, 'claim')">&#x8BA4;&#x9886;</el-button>
+          <el-button v-if="!selectedAlert.current_user_claimed" size="small" type="success" @click="runAlertAction(selectedAlert, 'claim')">&#x8BA4;&#x9886;</el-button>
+          <el-button v-if="selectedAlert.current_user_claimed" size="small" @click="runAlertAction(selectedAlert, 'unclaim')">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-button>
           <el-button size="small" type="warning" @click="runAlertAction(selectedAlert, 'mute')">&#x5C4F;&#x853D;</el-button>
-          <el-button size="small" type="danger" @click="runAlertAction(selectedAlert, 'escalate')">&#x5347;&#x7EA7;</el-button>
         </div>
         <h4>&#x6807;&#x7B7E;</h4>
         <div class="kv-list">
@@ -613,12 +615,10 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { Bell, Connection, Delete, Document, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { ElButton, ElInput, ElMessage, ElOption, ElPopconfirm, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
-import { openRouteInNewTab } from '@/utils/router'
 import {
-  acknowledgeAlert,
   claimAlert,
   closeAlert,
   createAlertAggregationRule,
@@ -800,7 +800,6 @@ const PolicyTable = defineComponent({
 })
 
 const route = useRoute()
-const router = useRouter()
 const authStore = useAuthStore()
 
 const activeTab = ref('events')
@@ -849,7 +848,6 @@ const filters = reactive({
   level: '',
   status: 'active',
   source_type: '',
-  is_acknowledged: '',
 })
 
 const loading = ref(false)
@@ -879,9 +877,6 @@ const canManageAlerts = computed(() => authStore.hasPermission('ops.alert.manage
 const canNotifyAlerts = computed(() => authStore.hasPermission('ops.alert.notify'))
 const canViewConfig = computed(() => authStore.hasPermission('ops.alert.config.view'))
 const canManageConfig = computed(() => authStore.hasPermission('ops.alert.config.manage'))
-const canQueryLogs = computed(() => authStore.hasPermission('ops.log.query'))
-const canViewTracing = computed(() => authStore.hasPermission('ops.trace.view'))
-const canViewGrafana = computed(() => authStore.hasPermission('ops.grafana.view'))
 
 const statCards = computed(() => [
   { label: '\u6D3B\u8DC3\u544A\u8B66', value: summary.value.active || 0, tone: '' },
@@ -971,7 +966,8 @@ function buildAlertParams() {
   if (filters.level) params.level = filters.level
   if (filters.status) params.status = filters.status
   if (filters.source_type) params.source_type = filters.source_type
-  if (filters.is_acknowledged !== '') params.is_acknowledged = filters.is_acknowledged
+  if (route.query.claimed === '0' || route.query.ack === '0') params.claimed = '0'
+  else if (route.query.claimed === '1' || route.query.ack === '1') params.claimed = '1'
   return params
 }
 
@@ -1024,42 +1020,8 @@ function openDetail(row) {
   detailVisible.value = true
 }
 
-function resolveAlertKeyword(row) {
-  return [row?.title, row?.source, row?.resource, row?.host_name, row?.service].find((item) => typeof item === 'string' && item.trim()) || ''
-}
-
-function inferAlertService(row) {
-  const candidate = [row?.service, row?.source, row?.host_name, row?.title, row?.message].find((item) => typeof item === 'string' && item.trim()) || ''
-  const matched = candidate.match(/([a-z0-9-]+(?:service|gateway|nginx|member|payment|order))/i)
-  return matched?.[1] || row?.service || ''
-}
-
-function openAlertLogs(row) {
-  openRouteInNewTab(router, {
-    path: '/logs/query',
-    query: {
-      keyword: resolveAlertKeyword(row) || undefined,
-      title: row?.title ? `\u544A\u8B66 ${row.title}` : undefined,
-      autoRun: '1',
-      window: '60',
-    },
-  })
-}
-
-function openAlertTrace(row) {
-  openRouteInNewTab(router, {
-    path: '/observability/tracing',
-    query: {
-      keyword: resolveAlertKeyword(row) || undefined,
-      service: inferAlertService(row) || undefined,
-      window: '60',
-    },
-  })
-}
-
 async function runAlertAction(row, action) {
   const actionMap = {
-    ack: () => acknowledgeAlert(row.id),
     claim: () => claimAlert(row.id),
     unclaim: () => unclaimAlert(row.id),
     mute: () => muteAlert(row.id, { minutes: 60 }),
@@ -1460,13 +1422,10 @@ async function removeEscalationPolicy(id) {
 function applyRouteFilters() {
   filters.search = typeof route.query.search === 'string' ? route.query.search.trim() : ''
   filters.level = typeof route.query.level === 'string' ? route.query.level.trim() : ''
-  if (route.query.ack === '0') filters.is_acknowledged = false
-  else if (route.query.ack === '1') filters.is_acknowledged = true
-  else filters.is_acknowledged = ''
 }
 
 watch(
-  () => [route.query.search || '', route.query.level || '', route.query.ack || ''].join('|'),
+  () => [route.query.search || '', route.query.level || '', route.query.claimed || '', route.query.ack || ''].join('|'),
   async () => {
     applyRouteFilters()
     page.value = 1
@@ -1508,10 +1467,19 @@ onMounted(async () => {
 .section-head,
 .detail-actions,
 .matcher-row,
-.level-row {
+.level-row,
+.claimant-cell {
   align-items: center;
   display: flex;
   gap: 8px;
+}
+
+.claimant-cell {
+  flex-wrap: wrap;
+}
+
+.claimant-tag {
+  margin: 0;
 }
 
 .hero.panel {

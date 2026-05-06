@@ -78,7 +78,7 @@
             </el-tag>
           </div>
           <div class="module-meta">
-            <span>未确认 {{ overview.modules.alerts.unacknowledged }}</span>
+            <span>未认领 {{ overview.modules.alerts.unacknowledged }}</span>
             <span>严重 {{ overview.modules.alerts.critical }}</span>
             <span>警告 {{ overview.modules.alerts.warning }}</span>
           </div>

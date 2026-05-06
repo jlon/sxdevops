@@ -143,8 +143,8 @@
       <section class="panel table-panel alerts-panel">
         <div class="section-head compact">
           <div>
-            <h3>未确认告警</h3>
-            <p>保留未确认告警，方便值班快速定位。</p>
+            <h3>未认领告警</h3>
+            <p>保留未认领告警，方便值班快速定位。</p>
           </div>
         </div>
         <el-table :data="stats.recent_alerts || []" stripe size="small" style="width: 100%">
@@ -206,7 +206,7 @@ const stabilityScore = computed(() => {
 
 const stabilityCopy = computed(() => {
   if (stabilityScore.value >= 85) return '整体稳定，可继续关注发布节奏和容量变化。'
-  if (stabilityScore.value >= 60) return '存在一定波动，建议优先确认风险告警和离线主机。'
+  if (stabilityScore.value >= 60) return '存在一定波动，建议优先处理风险告警和离线主机。'
   return '当前风险较高，建议立即切换到告警和主机页面排查。'
 })
 
@@ -242,7 +242,7 @@ const summaryCards = computed(() => [
     icon: Promotion,
   },
   {
-    label: '未确认告警',
+    label: '未认领告警',
     value: stats.value.alerts?.unacknowledged || 0,
     meta: `严重 ${stats.value.alerts?.critical || 0} / 警告 ${stats.value.alerts?.warning || 0}`,
     badge: '风险面',
@@ -274,7 +274,7 @@ const hostStatusCards = computed(() => [
 
 const primaryRiskAction = computed(() => {
   if ((stats.value.alerts?.critical || 0) > 0 || (stats.value.alerts?.unacknowledged || 0) > 0) {
-    return { name: '告警中心', reason: '先看严重和未确认告警。' }
+    return { name: '告警中心', reason: '先看严重和未认领告警。' }
   }
   if ((stats.value.hosts?.offline || 0) > 0 || (stats.value.hosts?.warning || 0) > 0) {
     return { name: '主机中心', reason: '先查主机连通性和健康状态。' }
@@ -286,7 +286,7 @@ const riskFocusLegend = computed(() => [
   {
     label: '严重告警',
     value: `${stats.value.alerts?.critical || 0} 条`,
-    meta: `未确认 ${stats.value.alerts?.unacknowledged || 0} 条`,
+    meta: `未认领 ${stats.value.alerts?.unacknowledged || 0} 条`,
     tone: (stats.value.alerts?.critical || 0) > 0 ? 'danger' : (stats.value.alerts?.unacknowledged || 0) > 0 ? 'warning' : 'good',
   },
   {
@@ -311,7 +311,7 @@ const resourceMeters = computed(() => [
 
 const alertStripItems = computed(() => {
   const items = []
-  if ((stats.value.alerts?.critical || 0) > 0) items.push(`存在 ${stats.value.alerts.critical} 条严重告警，建议优先进入告警中心确认。`)
+  if ((stats.value.alerts?.critical || 0) > 0) items.push(`存在 ${stats.value.alerts.critical} 条严重告警，建议优先进入告警中心处理。`)
   if ((stats.value.hosts?.offline || 0) > 0) items.push(`当前有 ${stats.value.hosts.offline} 台主机离线，需要排查连通性或采集状态。`)
   if ((stats.value.deployments?.failed || 0) > 0) items.push(`最近发布存在 ${stats.value.deployments.failed} 次失败记录，建议复盘变更影响。`)
   if ((stats.value.hosts?.avg_cpu || 0) >= 70) items.push(`平台平均 CPU 已到 ${formatPercent(stats.value.hosts.avg_cpu)}，需关注资源峰值。`)
@@ -328,7 +328,7 @@ const dutyCards = computed(() => [
   {
     label: '值班待办',
     value: `${(stats.value.alerts?.unacknowledged || 0) + (stats.value.hosts?.offline || 0) + (stats.value.deployments?.failed || 0)} 项`,
-    description: `先清未确认告警 ${stats.value.alerts?.unacknowledged || 0} 项，再看离线主机 ${stats.value.hosts?.offline || 0} 台，最后复核失败发布 ${stats.value.deployments?.failed || 0} 次。`,
+    description: `先清未认领告警 ${stats.value.alerts?.unacknowledged || 0} 项，再看离线主机 ${stats.value.hosts?.offline || 0} 台，最后复核失败发布 ${stats.value.deployments?.failed || 0} 次。`,
     tone: ((stats.value.alerts?.unacknowledged || 0) + (stats.value.hosts?.offline || 0) + (stats.value.deployments?.failed || 0)) > 0 ? 'warning' : 'info',
   },
   {

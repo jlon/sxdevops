@@ -2816,6 +2816,55 @@ class AlertWebhookIngestTests(TestCase):
         self.assertEqual(alert.status, Alert.STATUS_ACTIVE)
         self.assertTrue(AlertAction.objects.filter(alert=alert, action=AlertAction.ACTION_WEBHOOK).exists())
 
+    def test_prometheus_webhook_prefers_app_then_job_name_then_service_for_service_field(self):
+        response = self.client.post(
+            f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
+            {
+                'status': 'firing',
+                'alerts': [{
+                    'status': 'firing',
+                    'fingerprint': 'fp-002',
+                    'labels': {
+                        'alertname': 'KubeJobFailed',
+                        'severity': 'warning',
+                        'app': 'traffic-generator',
+                        'job_name': 'traffic-generator-29633802',
+                        'service': 'kube-prometheus-stack-kube-state-metrics',
+                    },
+                    'annotations': {'summary': 'Job failed to complete.'},
+                    'startsAt': '2026-05-04T10:00:00+08:00',
+                }],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 202)
+        alert = Alert.objects.get(fingerprint__isnull=False)
+        self.assertEqual(alert.service, 'traffic-generator')
+
+    def test_prometheus_webhook_falls_back_to_job_name_before_service(self):
+        response = self.client.post(
+            f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
+            {
+                'status': 'firing',
+                'alerts': [{
+                    'status': 'firing',
+                    'fingerprint': 'fp-003',
+                    'labels': {
+                        'alertname': 'KubeJobFailed',
+                        'severity': 'warning',
+                        'job_name': 'traffic-generator-29633802',
+                        'service': 'kube-prometheus-stack-kube-state-metrics',
+                    },
+                    'annotations': {'summary': 'Job failed to complete.'},
+                    'startsAt': '2026-05-04T10:00:00+08:00',
+                }],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 202)
+        alert = Alert.objects.get(fingerprint__isnull=False)
+        self.assertEqual(alert.service, 'traffic-generator-29633802')
+
     def test_invalid_webhook_token_is_rejected(self):
         response = self.client.post('/api/alerts/webhooks/prometheus/bad-token/', {'alerts': []}, format='json')
         self.assertEqual(response.status_code, 403)
@@ -2838,6 +2887,7 @@ class AlertActionApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.user = get_user_model().objects.create_superuser('alert-operator', 'operator@example.com', 'Admin@123456')
+        self.second_user = get_user_model().objects.create_superuser('backup-operator', 'backup@example.com', 'Admin@123456')
         self.client.force_authenticate(user=self.user)
         self.alert = Alert.objects.create(title='CPU high', level='warning', source='monitor', source_type='generic', message='cpu high')
 
@@ -2846,12 +2896,38 @@ class AlertActionApiTests(TestCase):
         self.assertEqual(claim_response.status_code, 200)
         self.alert.refresh_from_db()
         self.assertEqual(self.alert.claimed_by, 'alert-operator')
+        self.assertEqual(self.alert.claim_records.count(), 1)
 
         mute_response = self.client.post(f'/api/alerts/{self.alert.id}/mute/', {'minutes': 30}, format='json')
         self.assertEqual(mute_response.status_code, 200)
         self.alert.refresh_from_db()
         self.assertEqual(self.alert.status, Alert.STATUS_MUTED)
         self.assertTrue(self.alert.is_suppressed)
+
+    def test_multiple_users_can_claim_same_alert(self):
+        first_claim_response = self.client.post(f'/api/alerts/{self.alert.id}/claim/')
+        self.assertEqual(first_claim_response.status_code, 200)
+
+        self.client.force_authenticate(user=self.second_user)
+        second_claim_response = self.client.post(f'/api/alerts/{self.alert.id}/claim/')
+        self.assertEqual(second_claim_response.status_code, 200)
+
+        detail_response = self.client.get(f'/api/alerts/{self.alert.id}/')
+        self.assertEqual(detail_response.status_code, 200)
+        payload = detail_response.json()
+        self.assertEqual(payload['claimant_count'], 2)
+        self.assertCountEqual([item['claimant'] for item in payload['claimants']], ['alert-operator', 'backup-operator'])
+        self.assertTrue(payload['current_user_claimed'])
+
+        unclaim_response = self.client.post(f'/api/alerts/{self.alert.id}/unclaim/')
+        self.assertEqual(unclaim_response.status_code, 200)
+
+        self.client.force_authenticate(user=self.user)
+        detail_after_unclaim = self.client.get(f'/api/alerts/{self.alert.id}/')
+        self.assertEqual(detail_after_unclaim.status_code, 200)
+        payload_after_unclaim = detail_after_unclaim.json()
+        self.assertEqual(payload_after_unclaim['claimant_count'], 1)
+        self.assertEqual(payload_after_unclaim['claimants'][0]['claimant'], 'alert-operator')
 
     def test_notification_rule_can_be_configured(self):
         channel = AlertNotificationChannel.objects.create(name='email', channel_type='email', config={'to': ['ops@example.com']})

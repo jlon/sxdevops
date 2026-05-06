@@ -16,6 +16,7 @@ from .models import (
     Alert,
     AlertAction,
     AlertAggregationRule,
+    AlertClaim,
     AlertEscalationPolicy,
     AlertInhibitionRule,
     AlertIntegration,
@@ -31,7 +32,7 @@ from .models import (
 
 LEVEL_RANK = {'info': 1, 'warning': 2, 'critical': 3}
 DEFAULT_GROUP_BY = ['source_type', 'environment', 'service', 'cluster', 'namespace', 'resource']
-CARD_ACTIONS = ['acknowledge', 'claim', 'mute', 'escalate']
+CARD_ACTIONS = ['claim', 'mute']
 
 
 class SafeFormatDict(dict):
@@ -71,6 +72,21 @@ def _text(value, default=''):
     return str(value).strip()
 
 
+def _claim_records(alert):
+    records = getattr(alert, '_prefetched_objects_cache', {}).get('claim_records')
+    if records is not None:
+        return list(records)
+    return list(alert.claim_records.all())
+
+
+def _claimant_names(alert):
+    return [item.claimant for item in _claim_records(alert)]
+
+
+def _has_claimants(alert):
+    return bool(_claim_records(alert))
+
+
 def _dict(value):
     return value if isinstance(value, dict) else {}
 
@@ -91,6 +107,16 @@ def _first(*values):
             continue
         return value
     return ''
+
+
+def _service_from_labels(labels, *fallbacks):
+    labels = labels or {}
+    return _text(_first(
+        labels.get('app'),
+        labels.get('job_name'),
+        labels.get('service'),
+        *fallbacks,
+    ))
 
 
 def _parse_time(value):
@@ -252,7 +278,7 @@ def _normalize_prometheus(payload, integration=None):
             'fingerprint': _text(item.get('fingerprint')),
             'group_key': group_key,
             'message': _text(message),
-            'service': _text(_first(labels.get('service'), labels.get('app'), labels.get('job'))),
+            'service': _service_from_labels(labels, labels.get('job')),
             'environment': _text(_first(labels.get('env'), labels.get('environment'))),
             'cluster': _text(labels.get('cluster')),
             'namespace': _text(labels.get('namespace')),
@@ -295,7 +321,7 @@ def _normalize_nightingale(payload, integration=None):
             'fingerprint': _text(item.get('hash')),
             'group_key': _text(_first(item.get('group_name'), item.get('group_id'))),
             'message': _text(_first(item.get('rule_note'), item.get('trigger_value'), annotations.get('description'), title)),
-            'service': _text(_first(labels.get('service'), labels.get('app'), item.get('rule_prod'))),
+            'service': _service_from_labels(labels, item.get('rule_prod')),
             'environment': _text(_first(labels.get('env'), labels.get('environment'))),
             'cluster': _text(_first(item.get('cluster'), labels.get('cluster'))),
             'namespace': _text(labels.get('namespace')),
@@ -339,7 +365,7 @@ def _normalize_zabbix(payload, integration=None):
             'fingerprint': _text(_first(item.get('triggerid'), item.get('trigger_id'), item.get('eventid'))),
             'group_key': _text(_first(item.get('hostgroup'), item.get('host_group'), labels.get('group'))),
             'message': _text(message),
-            'service': _text(_first(labels.get('service'), item.get('application'))),
+            'service': _service_from_labels(labels, item.get('application')),
             'environment': _text(_first(labels.get('env'), labels.get('environment'))),
             'cluster': _text(labels.get('cluster')),
             'namespace': _text(labels.get('namespace')),
@@ -383,7 +409,7 @@ def _normalize_aliyun(payload, integration=None):
             'fingerprint': _text(':'.join(filter(None, [_text(item.get('ruleId')), _text(resource), _text(item.get('metricName'))]))),
             'group_key': _text(_first(item.get('groupId'), item.get('contactGroups'))),
             'message': _text(_first(item.get('message'), item.get('content'), item.get('curValue'), title)),
-            'service': _text(_first(item.get('product'), item.get('namespace'))),
+            'service': _service_from_labels(labels, item.get('product'), item.get('namespace')),
             'environment': _text(_first(item.get('env'), dimensions.get('env'))),
             'cluster': _text(dimensions.get('cluster')),
             'namespace': _text(_first(item.get('namespace'), dimensions.get('namespace'))),
@@ -416,7 +442,7 @@ def _normalize_generic(payload, integration=None, provider=Alert.SOURCE_GENERIC)
         'fingerprint': _text(payload.get('fingerprint')),
         'group_key': _text(payload.get('group_key')),
         'message': _text(_first(payload.get('message'), payload.get('description'), annotations.get('description'), title)),
-        'service': _text(_first(payload.get('service'), labels.get('service'), labels.get('app'))),
+        'service': _service_from_labels(labels, payload.get('service')),
         'environment': _text(_first(payload.get('environment'), payload.get('env'), labels.get('environment'), labels.get('env'))),
         'cluster': _text(_first(payload.get('cluster'), labels.get('cluster'))),
         'namespace': _text(_first(payload.get('namespace'), labels.get('namespace'))),
@@ -685,6 +711,7 @@ def _alert_context(alert, action='fire'):
         'resource': alert.resource,
         'metric_name': alert.metric_name,
         'message': alert.message,
+        'claimants': '、'.join(_claimant_names(alert)),
         'runbook_url': alert.runbook_url,
         'starts_at': alert.starts_at.isoformat() if alert.starts_at else '',
         'last_received_at': alert.last_received_at.isoformat() if alert.last_received_at else '',
@@ -1012,12 +1039,20 @@ def apply_alert_action(alert, action, actor='', note='', metadata=None, request=
         alert.acknowledged_at = now
         update_fields = ['is_acknowledged', 'acknowledged_by', 'acknowledged_at', 'updated_at']
     elif action == AlertAction.ACTION_CLAIM:
-        alert.claimed_by = actor
-        alert.claimed_at = now
+        if actor:
+            AlertClaim.objects.get_or_create(alert=alert, claimant=actor)
+        getattr(alert, '_prefetched_objects_cache', {}).pop('claim_records', None)
+        claim_records = _claim_records(alert)
+        alert.claimed_by = claim_records[0].claimant if claim_records else (actor or '')
+        alert.claimed_at = claim_records[0].claimed_at if claim_records else now
         update_fields = ['claimed_by', 'claimed_at', 'updated_at']
     elif action == AlertAction.ACTION_UNCLAIM:
-        alert.claimed_by = ''
-        alert.claimed_at = None
+        if actor:
+            AlertClaim.objects.filter(alert=alert, claimant=actor).delete()
+        getattr(alert, '_prefetched_objects_cache', {}).pop('claim_records', None)
+        claim_records = _claim_records(alert)
+        alert.claimed_by = claim_records[0].claimant if claim_records else ''
+        alert.claimed_at = claim_records[0].claimed_at if claim_records else None
         update_fields = ['claimed_by', 'claimed_at', 'updated_at']
     elif action == AlertAction.ACTION_MUTE:
         alert.status = Alert.STATUS_MUTED
@@ -1093,7 +1128,7 @@ def alert_group_summary(queryset, group_by=None, limit=5000):
         item = groups[key]
         item['total'] += 1
         item[alert.level] = item.get(alert.level, 0) + 1
-        if not alert.is_acknowledged:
+        if not _has_claimants(alert):
             item['unacknowledged'] += 1
         if alert.is_suppressed or alert.status == Alert.STATUS_MUTED:
             item['suppressed'] += 1
@@ -1121,8 +1156,8 @@ def alert_summary(queryset):
         'resolved': status_counter.get(Alert.STATUS_RESOLVED, 0),
         'muted': status_counter.get(Alert.STATUS_MUTED, 0),
         'closed': status_counter.get(Alert.STATUS_CLOSED, 0),
-        'unacknowledged': sum(1 for alert in alerts if not alert.is_acknowledged),
-        'claimed': sum(1 for alert in alerts if alert.claimed_by),
+        'unacknowledged': sum(1 for alert in alerts if not _has_claimants(alert)),
+        'claimed': sum(1 for alert in alerts if _has_claimants(alert)),
         'suppressed': sum(1 for alert in alerts if alert.is_suppressed or alert.status == Alert.STATUS_MUTED),
     }
 

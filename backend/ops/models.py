@@ -688,6 +688,26 @@ class Alert(models.Model):
         return f'[{self.level}] {self.title}'
 
 
+class AlertClaim(models.Model):
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name='claim_records', verbose_name='告警')
+    claimant = models.CharField('认领人', max_length=64)
+    claimed_at = models.DateTimeField('认领时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '告警认领记录'
+        verbose_name_plural = '告警认领记录'
+        ordering = ['claimed_at', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['alert', 'claimant'], name='uniq_ops_alert_claimant'),
+        ]
+        indexes = [
+            models.Index(fields=['alert', 'claimant']),
+        ]
+
+    def __str__(self):
+        return f'{self.alert_id}:{self.claimant}'
+
+
 class AlertIntegration(models.Model):
     PROVIDER_CHOICES = Alert.SOURCE_TYPE_CHOICES
 
