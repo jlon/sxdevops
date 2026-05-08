@@ -552,7 +552,6 @@ def _alert_module_summary():
 FIREMAP_STATUS_META = {
     'unknown': {'label': '未知', 'tone': 'info', 'rank': 0},
     'healthy': {'label': '健康', 'tone': 'success', 'rank': 1},
-    'warning': {'label': '告警', 'tone': 'warning', 'rank': 2},
     'critical': {'label': '故障', 'tone': 'danger', 'rank': 3},
     'offline': {'label': '离线', 'tone': 'info', 'rank': 0},
 }
@@ -1118,6 +1117,18 @@ def _system_posture_system_to_template(system, builtin_backed=False, builtin_tem
     configured_rule_config = system.rule_config if isinstance(system.rule_config, dict) else {}
     builtin_rule_config = builtin_template.get('rule_config') if isinstance(builtin_template, dict) and isinstance(builtin_template.get('rule_config'), dict) else {}
     rule_config = _deep_merge_dict(builtin_rule_config, configured_rule_config) if builtin_backed else configured_rule_config
+    default_north_star = (
+        north_star.get('label') == '可用率'
+        and north_star.get('value') == 99
+        and north_star.get('target') == 99.9
+        and north_star.get('unit') == '%'
+        and north_star.get('direction') == 'higher'
+    )
+    north_star_configured = (
+        isinstance(system.north_star, dict)
+        and bool(system.north_star)
+        and not (default_north_star and not metrics and not service_specs and not dependencies and not configured_rule_config)
+    )
     keywords = system.keywords if isinstance(system.keywords, list) else []
     playbook = system.playbook if isinstance(system.playbook, list) else []
 
@@ -1133,6 +1144,7 @@ def _system_posture_system_to_template(system, builtin_backed=False, builtin_tem
         'health_score': system.health_score,
         'keywords': keywords,
         'north_star': north_star,
+        'north_star_configured': north_star_configured,
         'metrics': metrics,
         'service_specs': service_specs,
         'dependencies': dependencies,
@@ -1161,6 +1173,7 @@ def _system_posture_system_to_template(system, builtin_backed=False, builtin_tem
         'health_score': system.health_score,
         'keywords': keywords,
         'north_star': north_star,
+        'north_star_configured': north_star_configured,
         'metrics': metrics,
         'service_specs': service_specs,
         'dependencies': dependencies,
@@ -1221,16 +1234,8 @@ def _metric_status(metric):
         return status if status in FIREMAP_STATUS_META else 'unknown'
     direction = str(metric.get('direction') or 'lower').strip()
     if direction == 'higher':
-        if value >= target:
-            return 'healthy'
-        if value >= target * 0.95:
-            return 'warning'
-        return 'critical'
-    if value <= target:
-        return 'healthy'
-    if value <= target * 1.2:
-        return 'warning'
-    return 'critical'
+        return 'healthy' if value >= target else 'critical'
+    return 'healthy' if value <= target else 'critical'
 
 
 def _normalize_metric(metric):
@@ -1238,6 +1243,132 @@ def _normalize_metric(metric):
     item['status'] = _metric_status(item)
     item['tone'] = _status_tone(item['status'])
     return item
+
+
+SLO_METRIC_KEYWORDS = ('slo', '成功率', '可用率', '通过率')
+
+
+def _is_slo_metric(metric):
+    label = str((metric or {}).get('label') or '').lower()
+    return any(keyword in label for keyword in SLO_METRIC_KEYWORDS)
+
+
+def _metric_float(metric, key):
+    try:
+        return float((metric or {}).get(key))
+    except (TypeError, ValueError):
+        return None
+
+
+def _primary_slo_metric(metrics):
+    normalized = [_normalize_metric(metric) for metric in metrics or [] if isinstance(metric, dict)]
+    if not normalized:
+        return {}
+    return next((metric for metric in normalized if _is_slo_metric(metric)), {})
+
+
+def _aggregate_slo_metric(metrics=None, child_metrics=None, fallback_label='汇总 SLI'):
+    own_metric = _primary_slo_metric(metrics)
+    if own_metric:
+        return own_metric
+    candidates = [
+        _normalize_metric(metric)
+        for metric in child_metrics or []
+        if isinstance(metric, dict) and _is_slo_metric(metric)
+    ]
+    if not candidates:
+        return {}
+    percent_candidates = [
+        metric for metric in candidates
+        if metric.get('direction') == 'higher'
+        and str(metric.get('unit') or '') == '%'
+        and _metric_float(metric, 'value') is not None
+        and _metric_float(metric, 'target') is not None
+    ]
+    compatible = percent_candidates or [
+        metric for metric in candidates
+        if metric.get('direction') == candidates[0].get('direction')
+        and str(metric.get('unit') or '') == str(candidates[0].get('unit') or '')
+        and _metric_float(metric, 'value') is not None
+        and _metric_float(metric, 'target') is not None
+    ]
+    if not compatible:
+        return candidates[0]
+    value = sum(_metric_float(metric, 'value') for metric in compatible) / len(compatible)
+    target = sum(_metric_float(metric, 'target') for metric in compatible) / len(compatible)
+    unit = compatible[0].get('unit') or ''
+    return _normalize_metric({
+        'label': fallback_label,
+        'value': round(value, 2),
+        'target': round(target, 2),
+        'unit': unit,
+        'direction': compatible[0].get('direction') or 'higher',
+    })
+
+
+def _health_score_from_status(status):
+    return {
+        'healthy': 96,
+        'critical': 45,
+        'offline': 0,
+    }.get(status)
+
+
+def _metric_health_score(metric):
+    try:
+        value = float(metric.get('value'))
+        target = float(metric.get('target'))
+    except (TypeError, ValueError):
+        return None
+    if target <= 0:
+        return None
+    direction = str(metric.get('direction') or 'lower').strip()
+    unit = str(metric.get('unit') or '').strip()
+    if direction == 'higher' and unit == '%':
+        return int(round(max(0, min(100, value))))
+    if direction == 'higher':
+        score = 100 if value >= target else max(0, min(100, 100 * value / target))
+    else:
+        score = 100 if value <= target else max(0, min(100, 100 * target / value)) if value > 0 else 0
+    return int(round(score))
+
+
+def _worst_status(statuses):
+    normalized = [status for status in statuses or [] if status in FIREMAP_STATUS_META]
+    if not normalized:
+        return 'unknown'
+    return max(normalized, key=_status_rank)
+
+
+def _aggregate_health_score(metrics=None, child_scores=None, dependency_scores=None, base_score=None):
+    own_slo = _primary_slo_metric(metrics)
+    if own_slo:
+        return _metric_health_score(own_slo)
+    scores = []
+    scores.extend(score for score in (child_scores or []) if score is not None)
+    scores.extend(score for score in (dependency_scores or []) if score is not None)
+    if scores:
+        return int(round(sum(scores) / len(scores)))
+    return base_score
+
+
+def _aggregate_status(metrics=None, child_statuses=None, dependency_statuses=None, base_status='unknown', health_score=None):
+    own_slo = _primary_slo_metric(metrics)
+    if own_slo:
+        return _metric_status(own_slo)
+    base_status = base_status if base_status in {'critical', 'healthy', 'unknown'} else 'unknown'
+    child_statuses = [status for status in child_statuses or [] if status]
+    dependency_statuses = [status for status in dependency_statuses or [] if status]
+    if 'critical' in child_statuses or 'critical' in dependency_statuses:
+        return 'critical'
+    if child_statuses or dependency_statuses:
+        if all(status == 'healthy' for status in [*child_statuses, *dependency_statuses]):
+            return 'healthy'
+    return base_status
+
+
+def _cap_health_score_by_status(health_score, status):
+    return health_score
 
 
 def _text_block(*values):
@@ -1661,9 +1792,9 @@ def _metric_status_rank(metrics):
     statuses = [_metric_status(metric) for metric in metrics or []]
     if 'critical' in statuses:
         return 'critical'
-    if 'warning' in statuses:
-        return 'warning'
-    return 'healthy'
+    if 'healthy' in statuses:
+        return 'healthy'
+    return 'unknown'
 
 
 def _is_example_url(value):
@@ -1886,11 +2017,9 @@ def _deployment_availability(snapshot, deployment):
 
 def _availability_status(availability):
     if availability is None:
-        return 'warning'
+        return 'unknown'
     if availability >= 100:
         return 'healthy'
-    if availability > 0:
-        return 'warning'
     return 'critical'
 
 
@@ -1946,7 +2075,7 @@ def _ecommerce_inventory_conflict_status(snapshot, rule_config):
         return '', '', matched_rule
     if conflict_rate >= critical_rate or (matched_rule.get('zero_success_is_critical') and success_rate == 0):
         return 'critical', matched_rule.get('critical_message') or matched_rule.get('warning_message') or '', matched_rule
-    return 'warning', matched_rule.get('warning_message') or '', matched_rule
+    return '', matched_rule.get('warning_message') or '', matched_rule
 
 
 def _ecommerce_conflict_metric(snapshot, rule_config, label=None):
@@ -2018,34 +2147,12 @@ def _ecommerce_health_score(snapshot, rule_config):
 
 
 def _ecommerce_status(snapshot, health_score, rule_config):
-    status_rules = rule_config.get('status_rules') if isinstance(rule_config.get('status_rules'), dict) else {}
-    critical_rules = status_rules.get('critical') if isinstance(status_rules.get('critical'), dict) else {}
-    warning_rules = status_rules.get('warning') if isinstance(status_rules.get('warning'), dict) else {}
+    north_star = rule_config.get('north_star') if isinstance(rule_config.get('north_star'), dict) else {}
     success_rate = snapshot.get('checkout_success_rate')
-    conflict_rate = snapshot.get('checkout_conflict_rate') or 0
-    rate_5xx = snapshot.get('checkout_5xx_rate') or 0
-    p95_ms = snapshot.get('checkout_p95_ms')
-    critical_score = _safe_float(critical_rules.get('health_score_lt'))
-    critical_success = _safe_float(critical_rules.get('success_rate_lt'))
-    critical_5xx = _safe_float(critical_rules.get('checkout_5xx_rate_gte'))
-    warning_score = _safe_float(warning_rules.get('health_score_lt'))
-    warning_success = _safe_float(warning_rules.get('success_rate_lt'))
-    warning_conflict = _safe_float(warning_rules.get('checkout_conflict_rate_gte'))
-    warning_p95 = _safe_float(warning_rules.get('checkout_p95_ms_gt'))
-    if (
-        (critical_score is not None and health_score < critical_score)
-        or (critical_success is not None and success_rate is not None and success_rate < critical_success)
-        or (critical_5xx is not None and rate_5xx >= critical_5xx)
-    ):
-        return 'critical'
-    if (
-        (warning_score is not None and health_score < warning_score)
-        or (warning_success is not None and success_rate is not None and success_rate < warning_success)
-        or (warning_conflict is not None and conflict_rate >= warning_conflict)
-        or (warning_p95 is not None and p95_ms is not None and p95_ms > warning_p95)
-    ):
-        return 'warning'
-    return 'healthy'
+    target = _safe_float(north_star.get('target')) or 99
+    if success_rate is None:
+        return 'unknown'
+    return 'healthy' if success_rate >= target else 'critical'
 
 
 def _build_ecommerce_interface_metrics(snapshot, rule_config, service_id, path, target_ms):
@@ -2395,14 +2502,14 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
     trace_error = sum(1 for trace in matched_traces if trace.get('is_error'))
 
     service_children = []
+    dependency_children = []
     system_nodes = []
     topology_nodes = []
     topology_links = []
 
-    base_status = template.get('base_status') or 'unknown'
+    base_status = template.get('base_status') if template.get('base_status') in {'critical', 'healthy', 'unknown'} else 'unknown'
     base_score = {
         'critical': 62,
-        'warning': 76,
         'healthy': 90,
     }.get(base_status)
     if template.get('health_score') is not None:
@@ -2411,50 +2518,50 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         except (TypeError, ValueError):
             pass
     if base_score is None:
-        if alert_critical or trace_error >= 2:
-            health_score = 0
-            status = 'critical'
-        elif alert_warning or log_warning or event_failed:
-            health_score = 70
-            status = 'warning'
-        else:
-            health_score = None
-            status = 'unknown'
+        health_score = _health_score_from_status(base_status)
+        status = base_status
     elif (template.get('live') or {}).get('enabled'):
         health_score = base_score
         status = base_status
     else:
-        score_penalty = alert_critical * 12 + alert_warning * 6 + log_error * 4 + log_warning * 2 + event_failed * 3 + trace_error * 3
-        health_score = max(0, min(100, base_score - score_penalty))
-        status_rank = _status_rank(base_status)
-        if health_score < 50 or alert_critical or trace_error >= 2:
+        health_score = base_score
+        if health_score < 50:
             status = 'critical'
-        elif health_score < 78 or alert_warning or log_warning or event_failed:
-            status = 'warning'
         else:
             status = base_status
-        if status_rank > _status_rank(status):
-            status = base_status or status
-        if alert_critical:
-            status = 'critical'
 
     for service_index, service in enumerate(service_specs):
-        service_status = service.get('base_status') or status
+        service_base_status = service.get('base_status') or 'unknown'
         service_metrics = [_normalize_metric(metric) for metric in service.get('metrics') or []]
         service_children_nodes = []
         for interface_index, interface in enumerate(service.get('interfaces') or []):
+            interface_base_status = interface.get('base_status') or 'unknown'
             interface_metrics = [_normalize_metric(metric) for metric in interface.get('metrics') or []]
-            interface_status = interface.get('base_status') or service_status
-            if any(metric['status'] == 'critical' for metric in interface_metrics):
-                interface_status = 'critical'
-            elif any(metric['status'] == 'warning' for metric in interface_metrics):
-                interface_status = 'warning' if interface_status != 'critical' else interface_status
+            interface_health_score = _aggregate_health_score(
+                interface_metrics,
+                base_score=_health_score_from_status(interface_base_status),
+            )
+            interface_status = _aggregate_status(
+                interface_metrics,
+                base_status=interface_base_status,
+                health_score=interface_health_score,
+            )
+            interface_health_score = _cap_health_score_by_status(interface_health_score, interface_status)
+            interface_slo = _aggregate_slo_metric(interface_metrics)
+            if interface_slo:
+                interface_status = _metric_status(interface_slo)
+                interface_health_score = _metric_health_score(interface_slo)
+            else:
+                interface_status = 'unknown'
+                interface_health_score = None
             service_children_nodes.append({
                 'id': interface['id'],
                 'name': interface['name'],
                 'kind': 'interface',
                 'status': interface_status,
                 'tone': _status_tone(interface_status),
+                'health_score': interface_health_score,
+                'north_star': interface_slo,
                 'hint': interface.get('hint') or '',
                 'metrics': interface_metrics,
                 'children': [],
@@ -2474,10 +2581,29 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
                 'value': 1,
                 'kind': 'drilldown',
             })
-        if any(child['status'] == 'critical' for child in service_children_nodes):
-            service_status = 'critical'
-        elif any(child['status'] == 'warning' for child in service_children_nodes):
-            service_status = 'warning' if service_status != 'critical' else service_status
+        service_health_score = _aggregate_health_score(
+            service_metrics,
+            child_scores=[child.get('health_score') for child in service_children_nodes],
+            base_score=_health_score_from_status(service_base_status),
+        )
+        service_status = _aggregate_status(
+            service_metrics,
+            child_statuses=[child.get('status') for child in service_children_nodes],
+            base_status=service_base_status,
+            health_score=service_health_score,
+        )
+        service_health_score = _cap_health_score_by_status(service_health_score, service_status)
+        service_slo = _aggregate_slo_metric(
+            service_metrics,
+            child_metrics=[child.get('north_star') for child in service_children_nodes],
+            fallback_label='服务 SLI',
+        )
+        if service_slo:
+            service_status = _metric_status(service_slo)
+            service_health_score = _metric_health_score(service_slo)
+        else:
+            service_status = 'unknown'
+            service_health_score = None
         service_children.append({
             'id': service['id'],
             'name': service['name'],
@@ -2485,6 +2611,8 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
             'role': service.get('role') or '',
             'status': service_status,
             'tone': _status_tone(service_status),
+            'health_score': service_health_score,
+            'north_star': service_slo,
             'metrics': service_metrics,
             'hint': service.get('hint') or service.get('role') or '',
             'children': service_children_nodes,
@@ -2513,12 +2641,37 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         })
 
     for dep_index, dep in enumerate(dependency_specs):
-        dep_status = dep.get('base_status') or 'unknown'
         dep_metrics = [_normalize_metric(metric) for metric in dep.get('metrics') or []]
-        if any(metric['status'] == 'critical' for metric in dep_metrics):
-            dep_status = 'critical'
-        elif any(metric['status'] == 'warning' for metric in dep_metrics):
-            dep_status = 'warning' if dep_status != 'critical' else dep_status
+        dep_base_status = dep.get('base_status') or 'unknown'
+        dep_health_score = _aggregate_health_score(
+            dep_metrics,
+            base_score=_health_score_from_status(dep_base_status),
+        )
+        dep_status = _aggregate_status(
+            dep_metrics,
+            base_status=dep_base_status,
+            health_score=dep_health_score,
+        )
+        dep_health_score = _cap_health_score_by_status(dep_health_score, dep_status)
+        dep_slo = _aggregate_slo_metric(dep_metrics)
+        if dep_slo:
+            dep_status = _metric_status(dep_slo)
+            dep_health_score = _metric_health_score(dep_slo)
+        else:
+            dep_status = 'unknown'
+            dep_health_score = None
+        dependency_children.append({
+            'id': dep['id'],
+            'name': dep['name'],
+            'role': dep.get('role') or 'dependency',
+            'kind': dep.get('kind') or '依赖',
+            'status': dep_status,
+            'tone': _status_tone(dep_status),
+            'health_score': dep_health_score,
+            'north_star': dep_slo,
+            'metrics': dep_metrics,
+            'impact': dep.get('impact') or '',
+        })
         topology_nodes.append({
             'id': dep['id'],
             'name': dep['name'],
@@ -2604,12 +2757,11 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         log_context = {
             'service': template.get('focus_service_id') or '',
             'keyword': template.get('focus_keyword') or template['name'],
-            'traceId': recent_traces[0]['trace_id'] if recent_traces else '',
         }
 
     selected_metrics = [
         _normalize_metric(metric)
-        for metric in template.get('north_star') and [
+        for metric in template.get('north_star') and template.get('north_star_configured', True) and [
             {
                 'label': template['north_star']['label'],
                 'value': template['north_star']['value'],
@@ -2631,6 +2783,37 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         selected_metrics.append(_normalize_metric({'label': '错误 Trace', 'value': trace_error, 'target': 0, 'unit': '条', 'direction': 'lower'}))
     if matched_logs:
         selected_metrics.append(_normalize_metric({'label': '错误日志', 'value': log_error, 'target': 0, 'unit': '条', 'direction': 'lower'}))
+
+    if not (template.get('live') or {}).get('enabled'):
+        health_score = _aggregate_health_score(
+            selected_metrics,
+            child_scores=[child.get('health_score') for child in service_children],
+            dependency_scores=[dep.get('health_score') for dep in dependency_children],
+            base_score=health_score,
+        )
+        status = _aggregate_status(
+            selected_metrics,
+            child_statuses=[child.get('status') for child in service_children],
+            dependency_statuses=[dep.get('status') for dep in dependency_children],
+            base_status=template.get('base_status') or 'unknown',
+            health_score=health_score,
+        )
+        health_score = _cap_health_score_by_status(health_score, status)
+
+    north_star_payload = _aggregate_slo_metric(
+        selected_metrics,
+        child_metrics=[
+            *(child.get('north_star') for child in service_children),
+            *(dep.get('north_star') for dep in dependency_children),
+        ],
+        fallback_label='系统 SLI',
+    )
+    if north_star_payload:
+        status = _metric_status(north_star_payload)
+        health_score = _metric_health_score(north_star_payload)
+    else:
+        status = 'unknown'
+        health_score = None
 
     topology = {
         'node_count': len(topology_nodes) + 1,
@@ -2675,22 +2858,10 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         'health_score': health_score,
         'summary': template['summary'],
         'keywords': template['keywords'],
-        'north_star': {**template['north_star'], 'status': _metric_status(template['north_star'])},
+        'north_star': north_star_payload,
         'metrics': selected_metrics,
         'children': service_children,
-        'dependencies': [
-            {
-                'id': dep['id'],
-                'name': dep['name'],
-                'role': dep.get('role') or 'dependency',
-                'kind': dep.get('kind') or '依赖',
-                'status': dep.get('base_status') or 'unknown',
-                'tone': _status_tone(dep.get('base_status') or 'unknown'),
-                'metrics': [_normalize_metric(metric) for metric in dep.get('metrics') or []],
-                'impact': dep.get('impact') or '',
-            }
-            for dep in dependency_specs
-        ],
+        'dependencies': dependency_children,
         'playbook': template.get('playbook') or [],
         'rule_config': rule_config,
         'source': template.get('source') or 'builtin',
@@ -2801,7 +2972,6 @@ def _system_posture_quick_actions(system, access=None):
                     'datasourceId': trace_context.get('datasource_id') or '',
                     'service': trace_context.get('service') or '',
                     'keyword': trace_context.get('keyword') or '',
-                    'traceId': trace_context.get('traceId') or '',
                 }.items()
                 if value
             },
@@ -2814,7 +2984,6 @@ def _system_posture_quick_actions(system, access=None):
             'query': {
                 key: value
                 for key, value in {
-                    'traceId': log_context.get('traceId') or '',
                     'service': log_context.get('service') or '',
                     'keyword': log_context.get('keyword') or '',
                     'title': system.get('name') or '',
@@ -2834,15 +3003,15 @@ def _system_posture_quick_actions(system, access=None):
 def _system_posture_summary(systems, access, catalog=None, grafana=None, logs=None, alerts=None):
     alert_total = sum(len(system.get('recent_alerts') or []) for system in systems)
     critical_count = sum(1 for system in systems if system['status'] == 'critical')
-    warning_count = sum(1 for system in systems if system['status'] == 'warning')
     healthy_count = sum(1 for system in systems if system['status'] == 'healthy')
+    unknown_count = sum(1 for system in systems if system['status'] == 'unknown')
     trace_count = catalog.get('summary', {}).get('trace_count', 0) if catalog else 0
     return {
         'system_count': len(systems),
         'critical_systems': critical_count,
-        'warning_systems': warning_count,
         'healthy_systems': healthy_count,
-        'impacting_systems': critical_count + warning_count,
+        'unknown_systems': unknown_count,
+        'impacting_systems': critical_count,
         'alert_count': alerts.get('unacknowledged', 0) if alerts else alert_total,
         'trace_count': trace_count,
         'datasource_count': logs.get('datasource_count', 0) if logs else 0,
@@ -3356,7 +3525,7 @@ def observability_system_posture(request):
             None,
         )
     if not selected_system:
-        selected_system = next((item for item in systems if item['status'] == 'critical'), None) or next((item for item in systems if item['status'] == 'warning'), None) or systems[0]
+        selected_system = next((item for item in systems if item['status'] == 'critical'), None) or systems[0]
 
     selected_template = next((item for item in templates if item['id'] == selected_system['id']), templates[0])
     selected_system['actions'] = _system_posture_quick_actions(selected_system, access)

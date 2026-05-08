@@ -84,12 +84,12 @@
                 <em>{{ cardSlo(item).target !== undefined ? `SLO${targetText(cardSlo(item))}` : kindLabel(item.kind) }}</em>
               </div>
               <div class="system-card__signals">
-                <span>异常 {{ abnormalCount(item) }}</span>
+                <span>故障节点 {{ abnormalCount(item) }}</span>
                 <span>{{ hasChildren(item) ? `下级 ${item.children.length}` : '叶子节点' }}</span>
               </div>
               <div class="score-row">
-                <span>状态</span>
-                <strong>{{ statusLabel(cardStatus(item)) }}</strong>
+                <span>健康分</span>
+                <strong>{{ item.health_score ?? '--' }}</strong>
                 <button
                   v-if="hasChildren(item)"
                   type="button"
@@ -119,8 +119,6 @@
                 </div>
                 <div class="environment-summary">
                   <span v-if="group.counts.critical">故障 {{ group.counts.critical }}</span>
-                  <span v-if="group.counts.warning">告警 {{ group.counts.warning }}</span>
-                  <span v-if="group.counts.offline">离线 {{ group.counts.offline }}</span>
                   <span v-if="group.counts.unknown">未知 {{ group.counts.unknown }}</span>
                   <span>健康 {{ group.counts.healthy }}</span>
                 </div>
@@ -165,7 +163,7 @@
                     <em>{{ cardSlo(item).target !== undefined ? `SLO${targetText(cardSlo(item))}` : kindLabel(item.kind) }}</em>
                   </div>
                   <div class="system-card__signals">
-                    <span>异常 {{ abnormalCount(item) }}</span>
+                    <span>故障节点 {{ abnormalCount(item) }}</span>
                     <span>{{ hasChildren(item) ? `下级 ${item.children.length}` : '叶子节点' }}</span>
                   </div>
                   <div class="score-row">
@@ -204,8 +202,8 @@
               <em>{{ cardSlo(focusTarget).target !== undefined ? `SLO${targetText(cardSlo(focusTarget))}` : kindLabel(focusTarget.kind) }}</em>
             </div>
             <div class="focus-kpi">
-              <span>{{ focusTarget.kind === 'system' ? '健康分' : '节点状态' }}</span>
-              <strong>{{ focusTarget.kind === 'system' ? focusTarget.health_score ?? '--' : statusLabel(cardStatus(focusTarget)) }}</strong>
+              <span>健康分</span>
+              <strong>{{ focusTarget.health_score ?? '--' }}</strong>
               <em>{{ focusTarget.children?.length ? `下级 ${focusTarget.children.length}` : '叶子节点' }}</em>
             </div>
           </div>
@@ -717,7 +715,6 @@ const selectedNode = computed(() => {
   if (!drilldownRows.value.length) return null
   return drilldownRows.value.find(item => item.id === selectedNodeId.value)
     || drilldownRows.value.find(item => item.status === 'critical')
-    || drilldownRows.value.find(item => item.status === 'warning')
     || drilldownRows.value[0]
 })
 
@@ -791,7 +788,7 @@ function flattenNodes(nodes = [], level = 0) {
 }
 
 function abnormalChildren(system) {
-  return flattenNodes(system.children || [], 1).filter(item => item.status === 'critical' || item.status === 'warning')
+  return flattenNodes(system.children || [], 1).filter(item => item.status === 'critical')
 }
 
 function hasChildren(item = {}) {
@@ -800,7 +797,7 @@ function hasChildren(item = {}) {
 
 function cardStatus(item = {}) {
   const status = item.status || item.base_status
-  return ['critical', 'warning', 'healthy', 'offline', 'unknown'].includes(status) ? status : 'unknown'
+  return ['critical', 'healthy', 'unknown'].includes(status) ? status : 'unknown'
 }
 
 function cardSlo(item = {}) {
@@ -921,18 +918,14 @@ function isDrillCardActive(item = {}) {
 function tagType(status) {
   return {
     critical: 'danger',
-    warning: 'warning',
     healthy: 'success',
-    offline: 'info',
   }[status] || 'info'
 }
 
 function statusLabel(status) {
   return {
     critical: '故障',
-    warning: '告警',
     healthy: '健康',
-    offline: '离线',
   }[status] || '未知'
 }
 
@@ -1017,28 +1010,25 @@ function effectiveCardStatus(item = {}) {
   const childStatuses = flattenNodes(item.children || [], 1).map((node) => {
     const nodeStatus = cardStatus(node)
     if (nodeStatus === 'critical') return 'critical'
-    if (nodeStatus === 'warning' || isSloBreached(node)) return 'warning'
+    if (isSloBreached(node)) return 'critical'
     return nodeStatus
   })
   if (childStatuses.includes('critical')) return 'critical'
-  if (ownStatus === 'warning' || childStatuses.includes('warning') || isSloBreached(item)) return 'warning'
-  if (ownStatus === 'offline') return 'offline'
+  if (isSloBreached(item)) return 'critical'
   if (ownStatus === 'unknown') return 'unknown'
   return ownStatus
 }
 
 function environmentCounts(items = []) {
   return items.reduce((acc, item) => {
-    const status = effectiveCardStatus(item)
+    const status = cardStatus(item)
     acc[status] = (acc[status] || 0) + 1
     return acc
-  }, { critical: 0, warning: 0, healthy: 0, offline: 0, unknown: 0 })
+  }, { critical: 0, healthy: 0, unknown: 0 })
 }
 
 function environmentStatusFromCounts(counts = {}, total = 0) {
   if (counts.critical) return 'critical'
-  if (counts.warning) return 'warning'
-  if (total && counts.offline === total) return 'offline'
   if (total && counts.unknown === total) return 'unknown'
   return total ? 'healthy' : 'unknown'
 }

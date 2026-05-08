@@ -1079,9 +1079,17 @@ class ObservabilityViewsTests(TestCase):
         self.assertIn('grafana', [item['id'] for item in selected_rule_config['drilldown']['services']])
         self.assertTrue(any(link['type'] == 'upstream' for link in selected_rule_config['topology']['links']))
         edge = next(item for item in payload['systems'] if item['id'] == 'platform-edge')
+        self.assertEqual(edge['status'], 'critical')
+        self.assertEqual(edge['north_star']['status'], 'critical')
+        self.assertGreater(edge['health_score'], 50)
+        self.assertTrue(all(item['status'] in {'healthy', 'unknown'} for item in edge['dependencies']))
         edge_rule_config = edge['form']['rule_config']
         self.assertIn('nginx-ingress', [item['id'] for item in edge_rule_config['drilldown']['services']])
         self.assertTrue(any(link['source'] == 'waf-rule' and link['target'] == 'platform-edge' for link in edge_rule_config['topology']['links']))
+        for action in payload['quick_actions']:
+            if action['key'] in {'trace', 'log'}:
+                self.assertNotIn('traceId', action.get('query') or {})
+                self.assertNotIn('trace_id', action.get('query') or {})
 
     @override_settings(OBSERVABILITY_CONFIG={
         **TEST_OBSERVABILITY_CONFIG,
@@ -1102,7 +1110,7 @@ class ObservabilityViewsTests(TestCase):
         selected = payload['selected_system']
         self.assertEqual(selected['id'], 'commerce-core')
         self.assertEqual(selected['north_star']['value'], 96.5)
-        self.assertEqual(selected['north_star']['status'], 'warning')
+        self.assertEqual(selected['north_star']['status'], 'critical')
         self.assertTrue(selected['live']['enabled'])
         self.assertEqual(selected['live']['north_star_metric'], 'checkout_success_rate')
         self.assertNotIn('window', selected['rule_config'])
@@ -1113,10 +1121,9 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(selected['children'][0]['id'], 'api-gateway')
         conflict_metric = next(item for item in selected['metrics'] if item['label'] == 'Checkout 409占比')
         self.assertEqual(conflict_metric['value'], 3.5)
-        self.assertEqual(conflict_metric['status'], 'warning')
+        self.assertEqual(conflict_metric['status'], 'critical')
         inventory = next(item for item in selected['children'] if item['id'] == 'inventory')
-        self.assertEqual(inventory['status'], 'warning')
-        self.assertIn('Checkout 409', inventory['hint'])
+        self.assertEqual(inventory['status'], 'healthy')
         inventory_api = next(item for item in inventory['children'] if item['id'] == 'inventory-availability')
         self.assertIn('库存', inventory_api['hint'])
         self.assertGreater(selected['health_score'], 80)
@@ -1288,7 +1295,10 @@ class ObservabilityViewsTests(TestCase):
 
         updated_overview = self.client.get(f'/api/observability/system-posture/?system=custom-{system_id}').json()
         self.assertEqual(updated_overview['selected_system']['owner'], 'growth-sre')
-        self.assertEqual(updated_overview['selected_system']['health_score'], 91)
+        self.assertEqual(updated_overview['selected_system']['health_score'], 98)
+        self.assertEqual(updated_overview['selected_system']['status'], 'critical')
+        self.assertIsNone(updated_overview['selected_system']['children'][0]['health_score'])
+        self.assertEqual(updated_overview['selected_system']['children'][0]['children'][0]['status'], 'unknown')
 
         delete_response = self.client.delete(f'/api/observability/system-posture/systems/{system_id}/')
         self.assertEqual(delete_response.status_code, 204)
@@ -1308,6 +1318,7 @@ class ObservabilityViewsTests(TestCase):
         selected = overview_response.json()['selected_system']
         self.assertEqual(selected['status'], 'unknown')
         self.assertIsNone(selected['health_score'])
+        self.assertEqual(selected['north_star'], {})
         self.assertEqual(selected['children'], [])
         self.assertEqual(selected['dependencies'], [])
 

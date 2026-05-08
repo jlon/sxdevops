@@ -1042,7 +1042,7 @@ class SystemPostureSystem(models.Model):
     STATUS_CHOICES = [
         (STATUS_UNKNOWN, '未知'),
         (STATUS_HEALTHY, '健康'),
-        (STATUS_WARNING, '告警'),
+        (STATUS_WARNING, '风险'),
         (STATUS_CRITICAL, '故障'),
         (STATUS_OFFLINE, '离线'),
     ]
