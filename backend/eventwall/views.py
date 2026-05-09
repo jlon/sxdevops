@@ -44,9 +44,16 @@ EVENT_CATEGORY_DEFINITIONS = [
     {
         'key': 'ops_transaction',
         'label': '运维事务',
-        'description': '权限开通、网络配置、机器申请释放、巡检和通用运维处理类事件。',
+        'description': '权限开通、网络配置、机器申请释放和通用运维处理类事件。',
         'required_fields': ['event_id', 'event_category', 'title', 'environment', 'business_line', 'result'],
         'recommended_fields': ['ticket_type', 'owner', 'applicant', 'resource_type', 'resource_id'],
+    },
+    {
+        'key': 'task_center',
+        'label': '任务调度',
+        'description': '平台内主机任务、定时编排、批量执行，以及外部自动化任务平台推送的执行类事件。',
+        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'result'],
+        'recommended_fields': ['task_type', 'task_id', 'target', 'executor', 'duration_ms', 'schedule_id'],
     },
 ]
 EVENT_CATEGORY_MAP = {item['key']: item for item in EVENT_CATEGORY_DEFINITIONS}
@@ -74,6 +81,15 @@ EVENT_CATEGORY_ALIASES = {
     'ops': 'ops_transaction',
     'transaction': 'ops_transaction',
     'workorder': 'ops_transaction',
+    'task': 'task_center',
+    'tasks': 'task_center',
+    'task_center': 'task_center',
+    'taskcenter': 'task_center',
+    'host_task': 'task_center',
+    'host_task_batch': 'task_center',
+    'host_task_schedule': 'task_center',
+    'automation_task': 'task_center',
+    'scheduled_task': 'task_center',
 }
 
 DEFAULT_EVENT_SOURCES = [
@@ -89,7 +105,7 @@ DEFAULT_EVENT_SOURCES = [
         'field_mapping': {'time': 'occurred_at', 'title': 'title', 'status': 'result', 'operator': 'actor_username'},
         'config': {
             'resource_types': ['deployment', 'sql_order', 'transaction_ticket', 'deployment_approval_flow'],
-            'supported_event_categories': ['application_release', 'db_change', 'config_change', 'ops_transaction'],
+            'supported_event_categories': ['application_release', 'db_change', 'config_change', 'ops_transaction', 'task_center'],
         },
     },
     {
@@ -102,7 +118,7 @@ DEFAULT_EVENT_SOURCES = [
         'status': EventSource.STATUS_HEALTHY,
         'auth_type': EventSource.AUTH_NONE,
         'field_mapping': {'time': 'occurred_at', 'target': 'resource_name', 'status': 'result'},
-        'config': {'resource_types': ['host_task', 'host_task_batch', 'host_task_schedule'], 'default_event_category': 'ops_transaction'},
+        'config': {'resource_types': ['host_task', 'host_task_batch', 'host_task_schedule'], 'default_event_category': 'task_center'},
     },
     {'code': 'jira', 'name': 'Jira', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_JIRA, 'description': '接入 Jira issue 创建、流转、发布关联和故障工单事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'issue.key': 'resource_id', 'issue.fields.summary': 'title', 'user.name': 'actor'}, 'config': {'default_event_category': 'ops_transaction'}},
     {'code': 'jenkins', 'name': 'Jenkins', 'source_kind': EventSource.KIND_EXTERNAL, 'source_type': EventSource.TYPE_JENKINS, 'description': '接入 Jenkins 构建开始、成功、失败、回滚和部署流水线事件。', 'enabled': False, 'status': EventSource.STATUS_NOT_CONFIGURED, 'auth_type': EventSource.AUTH_WEBHOOK, 'field_mapping': {'job_name': 'application', 'build_number': 'resource_id', 'status': 'result'}, 'config': {'default_event_category': 'application_release'}},
@@ -132,7 +148,7 @@ INGEST_SPEC = {
     'recommended_fields': ['event_id', 'occurred_at', 'summary', 'event_type', 'action', 'result', 'severity', 'actor', 'business_line', 'environment', 'application', 'resource_type', 'resource_id', 'resource_name', 'correlation_id', 'tags', 'related_resources', 'changes', 'metadata'],
     'event_categories': EVENT_CATEGORY_DEFINITIONS,
     'idempotency': '同一事件源下 event_id 会作为幂等键，重复推送不会生成第二条事件。',
-    'scope': '平台内置事件源只接收工单系统和任务中心；平台配置、资源管理、告警配置等内部操作请查看操作审计。',
+    'scope': '平台内置事件源只接收工单系统和任务中心；外部系统可通过 Webhook 推送 application_release、db_change、config_change、ops_transaction、task_center 事件；平台配置、资源管理、告警配置等内部操作请查看操作审计。',
     'result_values': [choice[0] for choice in EventRecord.RESULT_CHOICES],
     'severity_values': [choice[0] for choice in EventRecord.SEVERITY_CHOICES],
     'example': {
@@ -341,7 +357,7 @@ def _infer_event_category(event, source=None):
     if event.resource_type == 'sql_order':
         return 'db_change'
     if event.resource_type in {'host_task', 'host_task_batch', 'host_task_schedule'}:
-        return 'ops_transaction'
+        return 'task_center'
     if event.resource_type == 'transaction_ticket':
         ticket_type = str(metadata.get('ticket_type') or '').lower()
         if ticket_type == 'change':
@@ -507,10 +523,40 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['get'])
     def filter_options(self, request):
         queryset = self.get_queryset()
+        scope_rows = list(
+            queryset
+            .exclude(environment='')
+            .values('environment', 'business_line', 'application')
+            .distinct()
+            .order_by('environment', 'business_line', 'application')
+        )
+        systems_by_environment = {}
+        applications_by_environment = {}
+        applications_by_environment_system = {}
+        for row in scope_rows:
+            environment = row.get('environment') or ''
+            business_line = row.get('business_line') or ''
+            application = row.get('application') or ''
+            if business_line:
+                systems_by_environment.setdefault(environment, set()).add(business_line)
+            if application:
+                applications_by_environment.setdefault(environment, set()).add(application)
+                if business_line:
+                    applications_by_environment_system.setdefault(environment, {}).setdefault(business_line, set()).add(application)
+        applications_by_environment_system = {
+            environment: {
+                system: sorted(applications)
+                for system, applications in systems.items()
+            }
+            for environment, systems in applications_by_environment_system.items()
+        }
         return Response({
             'business_lines': list(queryset.exclude(business_line='').values_list('business_line', flat=True).distinct().order_by('business_line')[:50]),
             'environments': list(queryset.exclude(environment='').values_list('environment', flat=True).distinct().order_by('environment')[:50]),
             'applications': list(queryset.exclude(application='').values_list('application', flat=True).distinct().order_by('application')[:100]),
+            'systems_by_environment': {key: sorted(value) for key, value in systems_by_environment.items()},
+            'applications_by_environment': {key: sorted(value) for key, value in applications_by_environment.items()},
+            'applications_by_environment_system': applications_by_environment_system,
         })
 
     @action(detail=False, methods=['get'])
@@ -1006,7 +1052,7 @@ class ExternalEventIngestView(APIView):
             source.last_error = '事件载荷缺少有效事件分类 event_category'
             source.save(update_fields=['status', 'last_error', 'updated_at'])
             return Response(
-                {'event_category': '请提供有效事件分类：application_release、db_change、config_change、ops_transaction。'},
+                {'event_category': '请提供有效事件分类：application_release、db_change、config_change、ops_transaction、task_center。'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         event_id = data.get('event_id', '')

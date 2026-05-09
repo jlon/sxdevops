@@ -18,6 +18,12 @@ const routes = [
     meta: { public: true, title: '无权访问' },
   },
   {
+    path: '/ai-agent-promo',
+    name: 'AIAgentPromo',
+    component: () => import('@/views/AIAgentPromo.vue'),
+    meta: { public: true, title: 'AI Agent 产品演示' },
+  },
+  {
     path: '/',
     component: AppLayout,
     redirect: '/dashboard',

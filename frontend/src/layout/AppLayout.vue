@@ -56,6 +56,13 @@
           <span class="breadcrumb">{{ currentTitle }}</span>
         </div>
         <div class="header-right">
+          <el-tooltip content="查看 AI Agent 产品演示" placement="bottom">
+            <button class="promo-trigger" type="button" @click="openAIAgentPromo">
+              <el-icon :size="17"><Promotion /></el-icon>
+              <span>产品演示</span>
+            </button>
+          </el-tooltip>
+
           <el-tooltip v-if="canOpenAIOpsAssistant" content="打开智能助手" placement="bottom">
             <button class="assistant-trigger" type="button" @click="openAIOpsAssistant">
               <el-icon :size="18"><Service /></el-icon>
@@ -693,6 +700,10 @@ function openAIOpsAssistant() {
   window.dispatchEvent(new Event('sxdevops-aiops-open'))
 }
 
+function openAIAgentPromo() {
+  router.push('/ai-agent-promo')
+}
+
 function canHandleDeploymentApproval(item) {
   const step = item?.current_approval_step
   if (!step?.approver_type || !step?.approver_value) return authStore.hasPermission('ops.deployment.approve')
@@ -751,6 +762,7 @@ onBeforeUnmount(() => {
 }
 
 .assistant-trigger,
+.promo-trigger,
 .notice-trigger {
   width: 36px;
   height: 36px;
@@ -763,6 +775,27 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s ease;
+}
+
+.promo-trigger {
+  width: auto;
+  min-width: 102px;
+  padding: 0 12px;
+  gap: 6px;
+  color: #2563eb;
+  border-color: rgba(96, 165, 250, 0.22);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.92) 0%, rgba(236, 253, 245, 0.74) 100%);
+  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.08);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.promo-trigger:hover {
+  color: #1d4ed8;
+  border-color: rgba(96, 165, 250, 0.36);
+  background: linear-gradient(135deg, rgba(219, 234, 254, 0.98) 0%, rgba(209, 250, 229, 0.84) 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(59, 130, 246, 0.12);
 }
 
 .assistant-trigger {

@@ -15,6 +15,12 @@
             覆盖 CMDB、多云、可观测、工单、容器与中间件、AIOps，帮助团队在一个平台内完成日常运维协同。
           </p>
 
+          <div class="overview-actions">
+            <router-link class="promo-link" to="/ai-agent-promo">
+              查看 AI Agent 产品演示
+            </router-link>
+          </div>
+
           <div class="feature-grid">
             <article v-for="item in features" :key="item.title" class="feature-card">
               <div class="feature-icon">
@@ -215,11 +221,41 @@ async function handleLogin() {
   white-space: nowrap;
 }
 
+.overview-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.promo-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 18px;
+  border: 1px solid rgba(59, 130, 246, 0.24);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.98) 0%, rgba(255, 247, 237, 0.92) 100%);
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+  box-shadow: 0 12px 24px rgba(59, 130, 246, 0.1);
+  transition: all 0.2s ease;
+}
+
+.promo-link:hover {
+  transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.36);
+  box-shadow: 0 16px 28px rgba(59, 130, 246, 0.14);
+}
+
 .feature-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin-top: 24px;
+  margin-top: 20px;
 }
 
 .feature-card {

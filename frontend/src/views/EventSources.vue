@@ -7,6 +7,7 @@
             <el-icon><Share /></el-icon>
           </span>
           <h2>事件源</h2>
+          <span class="hero-tagline">沉淀事件线索辅助问题溯源，支持通过 Webhook 接入 Jira、Jenkins、GitLab 等外部系统</span>
         </div>
       </div>
       <div class="hero-actions">
@@ -34,25 +35,36 @@
 
     <EventWallTabs />
 
-    <section class="hint-strip">
-      <el-icon><InfoFilled /></el-icon>
-      <span>事件墙只沉淀故障分析线索：平台内置仅保留工单和任务中心，外部系统通过 Webhook 接入 Jira、Jenkins、ArgoCD、GitLab 和自研事件。</span>
-    </section>
-
-    <section v-if="activeFilterChips.length" class="active-filter-strip">
-      <span>当前筛选</span>
-      <button v-for="item in activeFilterChips" :key="item.key" type="button" @click="clearFilter(item.key)">
-        {{ item.label }}
-        <i>×</i>
-      </button>
-      <button type="button" class="clear-all" @click="clearAllFilters">清空</button>
-    </section>
-
     <section class="source-board">
       <div class="panel source-map-panel" v-loading="loading">
         <div class="section-head">
           <h3>接入概览</h3>
           <span>{{ filteredSources.length }} 个事件源</span>
+        </div>
+        <div class="source-filter-bar">
+          <button
+            v-for="item in kindSummary"
+            :key="item.kind"
+            type="button"
+            class="source-filter-pill"
+            :class="{ active: sourceKindFilter === item.kind }"
+            @click="sourceKindFilter = sourceKindFilter === item.kind ? '' : item.kind"
+          >
+            {{ item.label }} <b>{{ item.count }}</b>
+          </button>
+          <i></i>
+          <button
+            v-for="item in statusSummary"
+            :key="item.status"
+            type="button"
+            class="source-filter-pill"
+            :class="{ active: statusFilter === item.status }"
+            @click="statusFilter = statusFilter === item.status ? '' : item.status"
+          >
+            <em :class="`is-${item.status}`"></em>
+            {{ item.label }} <b>{{ item.count }}</b>
+          </button>
+          <button v-if="sourceKindFilter || statusFilter" type="button" class="source-filter-pill clear" @click="clearAllFilters">清空</button>
         </div>
         <div class="source-card-grid">
           <article
@@ -88,6 +100,7 @@
             </footer>
             <div class="card-actions">
               <el-button size="small" text type="primary" @click="openEvents(item)">看事件</el-button>
+              <el-button v-if="canManageSources && item.source_kind === 'external'" size="small" text @click="openEditAccess(item)">编辑</el-button>
               <el-button v-if="item.source_kind === 'external'" size="small" text @click="openSpec(item)">接入规范</el-button>
               <el-button v-if="item.source_kind === 'external'" size="small" text @click="copyEndpoint(item)">复制地址</el-button>
             </div>
@@ -95,87 +108,6 @@
         </div>
         <el-empty v-if="!loading && !featuredSources.length" description="当前筛选条件下没有事件源" />
       </div>
-
-      <aside class="panel status-panel">
-        <div class="section-head">
-          <h3>健康分布</h3>
-          <span>{{ sources.length }} 个来源</span>
-        </div>
-        <button
-          v-for="item in statusSummary"
-          :key="item.status"
-          type="button"
-          class="status-row"
-          :class="{ active: statusFilter === item.status }"
-          @click="statusFilter = statusFilter === item.status ? '' : item.status"
-        >
-          <span>
-            <i :class="`is-${item.status}`"></i>
-            <strong>{{ item.label }}</strong>
-          </span>
-          <b>{{ item.count }}</b>
-          <em><i :style="{ width: item.percent }"></i></em>
-        </button>
-      </aside>
-    </section>
-
-    <section class="panel table-panel" v-loading="loading">
-      <div class="section-head">
-        <h3>事件源列表</h3>
-        <span>{{ filteredSources.length }} / {{ sources.length }} 个来源</span>
-      </div>
-      <el-table :data="filteredSources" size="small" row-key="code" class="source-table">
-        <el-table-column label="事件源" min-width="220">
-          <template #default="{ row }">
-            <div class="source-name">
-              <strong>{{ row.name }}</strong>
-              <span>{{ row.code }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="分类" width="120">
-          <template #default="{ row }">
-            <el-tag size="small" effect="light">{{ kindLabel(row.source_kind) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="类型" width="140">
-          <template #default="{ row }">{{ typeLabel(row.source_type) }}</template>
-        </el-table-column>
-        <el-table-column label="默认事件分类" width="130">
-          <template #default="{ row }">{{ sourceEventCategoryLabel(row) }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="110">
-          <template #default="{ row }">
-            <el-tag size="small" :type="statusTone(row.status)">{{ statusLabel(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="7 天事件" width="100" prop="recent_event_count" />
-        <el-table-column label="最近事件" width="150">
-          <template #default="{ row }">{{ formatShortTime(row.last_event_at || row.last_sync_at) }}</template>
-        </el-table-column>
-        <el-table-column label="说明" min-width="260" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.description || '-' }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="270" fixed="right">
-          <template #default="{ row }">
-            <div class="table-actions">
-              <el-button size="small" text type="primary" @click="openEvents(row)">看事件</el-button>
-              <el-button v-if="canManageSources && row.source_kind === 'external'" size="small" text @click="openEditAccess(row)">编辑</el-button>
-              <el-button v-if="row.source_kind === 'external'" size="small" text @click="openSpec(row)">接入规范</el-button>
-              <el-button v-if="row.source_kind === 'external'" size="small" text @click="copyEndpoint(row)">复制地址</el-button>
-              <el-button v-if="canManageSources && row.source_kind === 'external'" size="small" text @click="issueToken(row)">签发令牌</el-button>
-              <el-switch
-                v-if="canManageSources"
-                :model-value="row.enabled"
-                size="small"
-                :disabled="row.source_kind === 'builtin'"
-                @change="toggleSource(row)"
-              />
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-empty v-if="!loading && !filteredSources.length" description="当前筛选条件下没有事件源" />
     </section>
 
     <el-dialog v-model="sourceDialogVisible" title="新建自定义 Webhook 接入" width="620px" append-to-body destroy-on-close>
@@ -256,7 +188,7 @@
       </div>
     </el-drawer>
 
-    <el-dialog v-model="editDialogVisible" title="编辑当前接入" width="620px" append-to-body destroy-on-close>
+    <el-dialog v-model="editDialogVisible" title="编辑事件源接入" width="620px" append-to-body destroy-on-close>
       <el-form label-position="top" :model="sourceEditForm" class="access-edit-form">
         <el-form-item label="接入编码">
           <el-input v-model="sourceEditForm.code" disabled />
@@ -309,14 +241,13 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { InfoFilled, Plus, RefreshRight, Share } from '@element-plus/icons-vue'
+import { Plus, RefreshRight, Share } from '@element-plus/icons-vue'
 import {
   createEventSource,
   getEventSourceIngestSpec,
   getEventSourceSummary,
   getEventSources,
   issueEventSourceToken,
-  toggleEventSource,
   updateEventSource,
 } from '@/api/modules/eventwall'
 import EventWallTabs from '@/components/eventwall/EventWallTabs.vue'
@@ -330,6 +261,7 @@ const sources = ref([])
 const summary = ref({})
 const ingestSpec = ref({})
 const statusFilter = ref('')
+const sourceKindFilter = ref('')
 const specDrawerVisible = ref(false)
 const sourceDialogVisible = ref(false)
 const editDialogVisible = ref(false)
@@ -345,7 +277,8 @@ const eventCategoryOptions = [
   { key: 'application_release', label: '应用发布', description: '应用发布、回滚、启停、下线和流水线发布类事件。' },
   { key: 'db_change', label: 'DB变更', description: 'SQL 上线、数据库结构变更、数据修复和执行结果类事件。' },
   { key: 'config_change', label: '配置变更', description: '配置发布、参数调整、网络策略、域名路由和中间件配置类事件。' },
-  { key: 'ops_transaction', label: '运维事务', description: '权限开通、网络配置、机器申请释放、巡检和通用运维处理类事件。' },
+  { key: 'ops_transaction', label: '运维事务', description: '权限开通、网络配置、机器申请释放和通用运维处理类事件。' },
+  { key: 'task_center', label: '任务调度', description: '平台内任务中心与外部自动化任务平台推送的任务执行、定时编排和批量处理事件。' },
 ]
 const statCards = computed(() => [
   { value: `来源 ${summary.value.total_sources || 0}`, label: '事件源总数', tone: '' },
@@ -355,14 +288,10 @@ const statCards = computed(() => [
 ])
 const filteredSources = computed(() => {
   return sources.value.filter((item) => {
+    if (sourceKindFilter.value && item.source_kind !== sourceKindFilter.value) return false
     if (statusFilter.value && item.status !== statusFilter.value) return false
     return true
   })
-})
-const activeFilterChips = computed(() => {
-  const chips = []
-  if (statusFilter.value) chips.push({ key: 'status', label: `状态 ${statusLabel(statusFilter.value)}` })
-  return chips
 })
 const featuredSources = computed(() => {
   return [...filteredSources.value]
@@ -372,10 +301,12 @@ const featuredSources = computed(() => {
       if (statusDelta !== 0) return statusDelta
       return (b.recent_event_count || 0) - (a.recent_event_count || 0)
     })
-    .slice(0, 8)
 })
+const kindSummary = computed(() => [
+  { kind: 'builtin', label: '平台内置', count: sources.value.filter(source => source.source_kind === 'builtin').length },
+  { kind: 'external', label: '外部接入', count: sources.value.filter(source => source.source_kind === 'external').length },
+])
 const statusSummary = computed(() => {
-  const total = Math.max(sources.value.length, 1)
   return [
     { status: 'healthy', label: '健康' },
     { status: 'warning', label: '待关注' },
@@ -383,7 +314,7 @@ const statusSummary = computed(() => {
     { status: 'disabled', label: '已停用' },
   ].map((item) => {
     const count = sources.value.filter(source => source.status === item.status).length
-    return { ...item, count, percent: `${Math.round((count / total) * 100)}%` }
+    return { ...item, count }
   })
 })
 const endpointPreview = computed(() => endpointFor({ code: sourceForm.code.trim() || '{code}' }))
@@ -421,10 +352,6 @@ function statusLabel(status) {
     disabled: '已停用',
     not_configured: '未配置',
   }[status] || status || '-'
-}
-
-function statusTone(status) {
-  return { healthy: 'success', warning: 'warning', disabled: 'info', not_configured: 'danger' }[status] || 'info'
 }
 
 function sourceInitial(item) {
@@ -499,12 +426,9 @@ function openEditAccess(item) {
   editDialogVisible.value = true
 }
 
-function clearFilter(key) {
-  if (key === 'status') statusFilter.value = ''
-}
-
 function clearAllFilters() {
   statusFilter.value = ''
+  sourceKindFilter.value = ''
 }
 
 async function saveSource() {
@@ -563,18 +487,6 @@ async function saveEditAccess() {
   }
 }
 
-async function toggleSource(item) {
-  await toggleEventSource(item.code)
-  await loadAll()
-}
-
-async function issueToken(item) {
-  const response = await issueEventSourceToken(item.code)
-  issuedToken.value = response.token
-  tokenDialogVisible.value = true
-  await loadAll()
-}
-
 async function copyToken() {
   if (!issuedToken.value) return
   await navigator.clipboard.writeText(issuedToken.value)
@@ -627,8 +539,9 @@ onMounted(loadAll)
 }
 
 .hero-title-row {
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .hero-title-row h2 {
@@ -636,6 +549,13 @@ onMounted(loadAll)
   font-size: 23px;
   font-weight: 700;
   line-height: 1.1;
+}
+
+.hero-tagline {
+  color: #646a73;
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 620px;
 }
 
 .hero-icon {
@@ -650,8 +570,7 @@ onMounted(loadAll)
   font-size: 20px;
 }
 
-.hero-actions,
-.table-actions {
+.hero-actions {
   gap: 8px;
 }
 
@@ -719,19 +638,6 @@ onMounted(loadAll)
   font-weight: 500;
 }
 
-.hint-strip {
-  min-height: 38px;
-  padding: 9px 12px;
-  border: 1px solid rgba(51, 112, 255, 0.18);
-  border-radius: 12px;
-  background: linear-gradient(90deg, #f7faff, #f8fbff);
-  color: #245bdb;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
 .access-create-tip {
   margin-bottom: 12px;
   padding: 10px 12px;
@@ -759,7 +665,16 @@ onMounted(loadAll)
   gap: 0 12px;
 }
 
+.access-edit-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+}
+
 .access-create-form :deep(.el-form-item:nth-child(5)),
+.access-edit-form :deep(.el-form-item:nth-child(2)),
+.access-edit-form :deep(.el-form-item:nth-child(5)),
+.access-edit-form :deep(.el-form-item:nth-child(6)),
 .access-endpoint-preview {
   grid-column: 1 / -1;
 }
@@ -786,72 +701,72 @@ onMounted(loadAll)
   font-size: 12px;
 }
 
-.access-edit-form {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 12px;
+.source-board {
+  margin-top: -6px;
+  display: block;
 }
 
-.access-edit-form :deep(.el-form-item:nth-child(2)),
-.access-edit-form :deep(.el-form-item:nth-child(5)),
-.access-edit-form :deep(.el-form-item:nth-child(6)) {
-  grid-column: 1 / -1;
+.source-map-panel {
+  padding: 14px;
 }
 
-.active-filter-strip {
-  min-height: 34px;
-  padding: 6px 8px;
-  border: 1px solid #e5e7eb;
+.source-filter-bar {
+  margin-bottom: 10px;
+  padding: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.88);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
+}
+
+.source-filter-bar > i {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: #e5e7eb;
+}
+
+.source-filter-pill {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #4e5969;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.source-filter-pill:hover,
+.source-filter-pill.active {
+  background: #e8f0ff;
+  color: #245bdb;
+}
+
+.source-filter-pill.clear {
+  color: #245bdb;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.12);
+}
+
+.source-filter-pill b {
   font-size: 12px;
 }
 
-.active-filter-strip > span {
-  color: #8f959e;
-}
-
-.active-filter-strip button {
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid #dee0e3;
-  border-radius: 6px;
-  background: #f7f8fa;
-  color: #4e5969;
-  cursor: pointer;
-}
-
-.active-filter-strip button:hover {
-  border-color: #bacefd;
-  color: #245bdb;
-  background: #f7faff;
-}
-
-.active-filter-strip button i {
-  margin-left: 5px;
-  color: #8f959e;
-  font-style: normal;
-}
-
-.active-filter-strip .clear-all {
-  background: #fff;
-  color: #245bdb;
-}
-
-.source-board {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
-  gap: 8px;
-}
-
-.source-map-panel,
-.status-panel,
-.table-panel {
-  padding: 14px;
+.source-filter-pill em {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8f959e;
+  flex: 0 0 auto;
 }
 
 .source-card-grid {
@@ -891,9 +806,7 @@ onMounted(loadAll)
 .source-card header,
 .source-card footer,
 .source-meta,
-.card-actions,
-.status-row,
-.status-row span {
+.card-actions {
   display: flex;
   align-items: center;
 }
@@ -913,8 +826,7 @@ onMounted(loadAll)
 .source-card strong,
 .source-card em,
 .source-card p,
-.source-meta span,
-.status-row strong {
+.source-meta span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -946,8 +858,7 @@ onMounted(loadAll)
   color: #0c8f63;
 }
 
-.status-dot,
-.status-row i {
+.status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -956,22 +867,22 @@ onMounted(loadAll)
 }
 
 .status-dot.is-healthy,
-.status-row i.is-healthy {
+.source-filter-pill em.is-healthy {
   background: #34c759;
 }
 
 .status-dot.is-warning,
-.status-row i.is-warning {
+.source-filter-pill em.is-warning {
   background: #ffb11a;
 }
 
 .status-dot.is-not_configured,
-.status-row i.is-not_configured {
+.source-filter-pill em.is-not_configured {
   background: #f54a45;
 }
 
 .status-dot.is-disabled,
-.status-row i.is-disabled {
+.source-filter-pill em.is-disabled {
   background: #8f959e;
 }
 
@@ -1026,92 +937,6 @@ onMounted(loadAll)
 .card-actions :deep(.el-button) {
   margin-left: 0;
   padding: 0 4px;
-}
-
-.status-panel {
-  align-self: start;
-}
-
-.status-row {
-  width: 100%;
-  padding: 9px 0;
-  border: 0;
-  border-bottom: 1px solid #eff0f1;
-  background: transparent;
-  color: #1f2329;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 7px 10px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.status-row:last-child {
-  border-bottom: 0;
-}
-
-.status-row:hover,
-.status-row.active {
-  color: #245bdb;
-}
-
-.status-row span {
-  min-width: 0;
-  gap: 8px;
-}
-
-.status-row b {
-  font-size: 16px;
-}
-
-.status-row em {
-  grid-column: 1 / -1;
-  height: 6px;
-  border-radius: 999px;
-  background: #eff0f1;
-  overflow: hidden;
-}
-
-.status-row em i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #3370ff;
-}
-
-.source-name {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.source-name span {
-  color: #8f959e;
-  font-size: 12px;
-}
-
-.source-table :deep(.el-table__header th) {
-  background: #f8fafc;
-  color: #646a73;
-  font-weight: 600;
-}
-
-.source-table :deep(.el-table__inner-wrapper::before) {
-  display: none;
-}
-
-.source-table :deep(.el-table__row) {
-  height: 50px;
-}
-
-.source-table :deep(.el-table__row:hover > td.el-table__cell) {
-  background: #f7faff;
-}
-
-.table-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
 }
 
 .section-head {
@@ -1231,8 +1056,7 @@ pre {
 }
 
 @media (max-width: 980px) {
-  .capability-card-grid,
-  .source-board {
+  .capability-card-grid {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -1247,6 +1071,10 @@ pre {
   .hero-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .hero-tagline {
+    max-width: none;
   }
 
   .capability-card-grid,

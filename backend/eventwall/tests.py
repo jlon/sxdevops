@@ -86,6 +86,37 @@ class EventSourceTests(TestCase):
         self.assertTrue(second_response.data['deduplicated'])
         self.assertEqual(EventRecord.objects.filter(metadata__event_source_code='custom', metadata__external_event_id='repeat-001').count(), 1)
 
+    def test_external_ingest_accepts_task_center_category(self):
+        _ensure_default_event_sources()
+        source = EventSource.objects.get(code='custom')
+        token = source.issue_token()
+        source.enabled = True
+        source.status = EventSource.STATUS_HEALTHY
+        source.save(update_fields=['token_hash', 'token_preview', 'enabled', 'status', 'updated_at'])
+
+        response = APIClient().post(
+            '/api/event-sources/custom/ingest/',
+            {
+                'event_id': 'external-task-001',
+                'event_category': 'task_center',
+                'title': '外部自动化任务执行失败',
+                'event_type': 'automation_task',
+                'action': 'run_task',
+                'result': EventRecord.RESULT_FAILED,
+                'severity': EventRecord.SEVERITY_DANGER,
+                'resource_type': 'automation_task',
+                'resource_id': 'task-001',
+                'resource_name': '批量巡检任务',
+            },
+            format='json',
+            HTTP_AUTHORIZATION=f'Bearer {token}',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        event = EventRecord.objects.get(metadata__event_source_code='custom', metadata__external_event_id='external-task-001')
+        self.assertEqual(event.metadata['event_category'], 'task_center')
+        self.assertEqual(event.metadata['event_category_label'], '任务调度')
+
     def test_external_ingest_requires_event_category_without_source_default(self):
         _ensure_default_event_sources()
         source = EventSource.objects.get(code='custom')
@@ -227,6 +258,7 @@ class EventSourceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['summary']['total'], 1)
         self.assertEqual(response.data['events'][0]['title'], '任务中心执行失败')
+        self.assertEqual(response.data['events'][0]['event_category']['key'], 'task_center')
         self.assertEqual(response.data['lanes'][0]['source']['code'], 'builtin-task-center')
 
     def test_operation_audit_excludes_external_ingest_events(self):
