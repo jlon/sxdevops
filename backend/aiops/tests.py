@@ -6,12 +6,12 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from cmdb.models import CIType, ConfigItem
-from eventwall.models import EventRecord
-from ops.models import Alert, Deployment, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, ObservabilityDataSourceLink, TracingDataSource, TransactionTicket
+from eventwall.models import EventRecord, EventSource
+from ops.models import Alert, Deployment, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, LogEntry, ObservabilityDataSourceLink, TracingDataSource, TransactionTicket
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
-from .models import AIOpsChatMessage, AIOpsChatSession, AIOpsMCPServer, AIOpsModelProvider
+from .models import AIOpsChatMessage, AIOpsChatSession, AIOpsKnowledgeEnvironment, AIOpsMCPServer, AIOpsModelProvider
 from .services import (
     DEFAULT_WELCOME_MESSAGE,
     _ensure_followup_line,
@@ -75,7 +75,7 @@ class AIOpsApiTests(TestCase):
         self.assertTrue(any(item['name'] == 'N9E 监控 MCP' for item in response.data['active_mcp_servers']))
         self.assertIn('回答整形器', active_skill_names)
 
-    def test_knowledge_graph_links_observability_and_business_context(self):
+    def test_knowledge_graph_only_links_observability_and_event_context(self):
         log_source = LogDataSource.objects.create(name='prod-loki', provider='loki', is_enabled=True)
         trace_source = TracingDataSource.objects.create(name='prod-tempo', provider='tempo', is_enabled=True)
         GrafanaSetting.objects.create(
@@ -95,6 +95,12 @@ class AIOpsApiTests(TestCase):
             environment='prod',
             applicant='admin',
         )
+        Deployment.objects.create(
+            app_name='platform-release-only',
+            version='v1',
+            business_line='电商',
+            environment='prod',
+        )
         Alert.objects.create(
             title='checkout latency',
             level='critical',
@@ -106,6 +112,23 @@ class AIOpsApiTests(TestCase):
             business_line='电商',
             environment='prod',
         )
+        garbled_prod_env = '\u9422\u71b6\u9a87'
+        Alert.objects.create(
+            title='billing latency',
+            level='warning',
+            status='active',
+            source='prometheus',
+            source_type='prometheus',
+            message='latency high',
+            service='billing',
+            business_line='电商',
+            environment=garbled_prod_env,
+        )
+        LogEntry.objects.create(
+            service='checkout',
+            level='error',
+            message='checkout failed',
+        )
         EventRecord.objects.create(
             module='external',
             category='deploy',
@@ -116,17 +139,193 @@ class AIOpsApiTests(TestCase):
             environment='prod',
             application='checkout',
         )
+        EventRecord.objects.create(
+            module='external',
+            category='deploy',
+            action='sync',
+            title='Demo checkout deploy',
+            source_type=EventRecord.SOURCE_SEED,
+            business_line='演示系统',
+            environment='prod',
+            application='demo-checkout',
+            is_demo=True,
+        )
 
         response = self.client.get('/api/aiops/knowledge-graph/')
 
         self.assertEqual(response.status_code, 200)
-        node_ids = {node['id'] for node in response.data['nodes']}
-        relation_types = {edge['relation'] for edge in response.data['edges']}
-        self.assertIn('capability:alerts', node_ids)
-        self.assertIn('business:电商', node_ids)
+        self.assertTrue(response.data['environment_required'])
+        self.assertEqual(response.data['nodes'], [])
+        self.assertIn('prod', response.data['filters']['environments'])
+        self.assertIn('生产', response.data['filters']['environments'])
+        self.assertNotIn(garbled_prod_env, response.data['filters']['environments'])
+
+        filtered_response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'prod', 'system': '电商'})
+        self.assertEqual(filtered_response.status_code, 200)
+        node_ids = {node['id'] for node in filtered_response.data['nodes']}
+        node_labels = {node['label'] for node in filtered_response.data['nodes']}
+        relation_types = {edge['relation'] for edge in filtered_response.data['edges']}
+        self.assertNotIn('capability:alerts', node_ids)
+        self.assertIn('system:prod:电商', node_ids)
+        self.assertTrue(any(node['kind'] == 'system' for node in filtered_response.data['nodes']))
+        self.assertIn('电商', filtered_response.data['filters']['systems'])
+        checkout_node = next(node for node in filtered_response.data['nodes'] if node['id'] == 'service:prod:电商:checkout')
+        self.assertIn('logs', {item['name'] for item in checkout_node['capabilities']})
+        self.assertNotIn('capability:workorders', node_ids)
+        self.assertNotIn('checkout-change', node_labels)
+        self.assertNotIn('platform-release-only', node_labels)
+        self.assertNotIn('演示系统', node_labels)
+        self.assertNotIn('demo-checkout', node_labels)
+        self.assertNotIn('演示系统', filtered_response.data['filters']['systems'])
+        self.assertIn('environment_system', relation_types)
+        self.assertIn('system_service', relation_types)
         self.assertIn('observability_link', relation_types)
-        self.assertIn('service_capability', relation_types)
-        self.assertGreaterEqual(response.data['summary']['datasource_count'], 2)
+        self.assertNotIn('service_capability', relation_types)
+        self.assertGreaterEqual(filtered_response.data['summary']['datasource_count'], 2)
+        self.assertTrue(any(node.get('system_name') == '电商' for node in filtered_response.data['nodes']))
+
+        repaired_response = self.client.get('/api/aiops/knowledge-graph/', {'environment': '生产', 'system': '电商'})
+        repaired_node_ids = {node['id'] for node in repaired_response.data['nodes']}
+        self.assertIn('system:生产:电商', repaired_node_ids)
+        self.assertNotIn(f'system:{garbled_prod_env}:电商', repaired_node_ids)
+
+    def test_knowledge_graph_uses_configured_environment_associations(self):
+        log_source = LogDataSource.objects.create(name='trade-loki', provider='loki', is_enabled=True)
+        other_log_source = LogDataSource.objects.create(name='other-loki', provider='loki', is_enabled=True)
+        trace_source = TracingDataSource.objects.create(name='trade-tempo', provider='tempo', is_enabled=True)
+        other_trace_source = TracingDataSource.objects.create(name='other-tempo', provider='tempo', is_enabled=True)
+        GrafanaSetting.objects.create(
+            name='default',
+            enabled=True,
+            folders=[{'path': '交易系统'}],
+            dashboards=[
+                {'key': 'trade-overview', 'title': '交易总览', 'folder': '交易系统'},
+                {'key': 'trade-service-detail', 'title': '服务详情', 'folder': '交易系统/服务明细'},
+                {'key': 'other-overview', 'title': '其他总览', 'folder': '其他系统'},
+            ],
+        )
+        ObservabilityDataSourceLink.objects.create(
+            name='trade-observable-link',
+            log_datasource=log_source,
+            tracing_datasource=trace_source,
+            grafana_dashboard_key='trade-overview',
+        )
+        ObservabilityDataSourceLink.objects.create(
+            name='other-observable-link',
+            log_datasource=other_log_source,
+            tracing_datasource=other_trace_source,
+            grafana_dashboard_key='other-overview',
+        )
+        EventSource.objects.create(
+            code='jenkins',
+            name='Jenkins',
+            source_kind=EventSource.KIND_EXTERNAL,
+            source_type=EventSource.TYPE_JENKINS,
+            enabled=True,
+            status=EventSource.STATUS_HEALTHY,
+        )
+        EventSource.objects.create(
+            code='gitlab',
+            name='GitLab',
+            source_kind=EventSource.KIND_EXTERNAL,
+            source_type=EventSource.TYPE_GITLAB,
+            enabled=True,
+            status=EventSource.STATUS_HEALTHY,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='交易生产',
+            event_environments=['event-prod'],
+            grafana_folder_keys=['交易系统'],
+            log_datasource_ids=[log_source.id],
+            tracing_datasource_ids=[trace_source.id],
+            alert_environments=['alert-prod'],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+        Alert.objects.create(
+            title='checkout latency',
+            level='critical',
+            status='active',
+            source='prometheus',
+            source_type='prometheus',
+            message='latency high',
+            service='checkout',
+            business_line='电商',
+            environment='alert-prod',
+        )
+        Alert.objects.create(
+            title='other latency',
+            level='critical',
+            status='active',
+            source='prometheus',
+            source_type='prometheus',
+            message='latency high',
+            service='other',
+            business_line='其他系统',
+            environment='alert-other',
+        )
+        LogEntry.objects.create(service='checkout', level='error', message='checkout failed')
+        EventRecord.objects.create(
+            module='external',
+            category='deploy',
+            action='sync',
+            title='Jenkins checkout deploy',
+            source_type=EventRecord.SOURCE_EXTERNAL,
+            business_line='电商',
+            environment='event-prod',
+            application='checkout',
+            metadata={'event_source_code': 'jenkins'},
+        )
+        EventRecord.objects.create(
+            module='external',
+            category='deploy',
+            action='sync',
+            title='GitLab other deploy',
+            source_type=EventRecord.SOURCE_EXTERNAL,
+            business_line='其他系统',
+            environment='event-other',
+            application='other',
+            metadata={'event_source_code': 'gitlab'},
+        )
+
+        options_response = self.client.get('/api/aiops/knowledge-graph/')
+        self.assertEqual(options_response.status_code, 200)
+        self.assertEqual(options_response.data['filters']['environments'], ['交易生产'])
+
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': '交易生产', 'system': '电商'})
+        self.assertEqual(response.status_code, 200)
+        node_ids = {node['id'] for node in response.data['nodes']}
+        node_labels = {node['label'] for node in response.data['nodes']}
+        self.assertIn('environment:交易生产', node_ids)
+        self.assertIn('system:交易生产:电商', node_ids)
+        self.assertIn('service:交易生产:电商:checkout', node_ids)
+        self.assertIn('trade-loki', node_labels)
+        self.assertIn('trade-tempo', node_labels)
+        self.assertIn('交易系统', node_labels)
+        self.assertNotIn('交易总览', node_labels)
+        self.assertNotIn('交易系统/服务明细', node_labels)
+        self.assertNotIn('服务详情', node_labels)
+        self.assertNotIn('other-loki', node_labels)
+        self.assertNotIn('other-tempo', node_labels)
+        self.assertNotIn('其他系统', node_labels)
+        self.assertNotIn('其他总览', node_labels)
+        self.assertNotIn('alert-prod', node_labels)
+        self.assertIn('Jenkins', node_labels)
+        self.assertNotIn('GitLab', node_labels)
+        checkout_node = next(node for node in response.data['nodes'] if node['id'] == 'service:交易生产:电商:checkout')
+        self.assertIn('alerts', {item['name'] for item in checkout_node['capabilities']})
+        self.assertIn('external_events', {item['name'] for item in checkout_node['capabilities']})
+
+        catalog_response = self.client.get('/api/aiops/knowledge-environments/catalog/')
+        self.assertEqual(catalog_response.status_code, 200)
+        self.assertIn('event-prod', catalog_response.data['event_environments'])
+        self.assertIn('alert-prod', catalog_response.data['alert_environments'])
+        catalog_folder_keys = {item['key'] for item in catalog_response.data['grafana_folders']}
+        self.assertIn('交易系统', catalog_folder_keys)
+        self.assertNotIn('交易总览', catalog_folder_keys)
+        self.assertIn('trade-loki', {item['name'] for item in catalog_response.data['log_datasources']})
+        self.assertNotIn('ELK 演示（API Key 模板）', {item['name'] for item in catalog_response.data['log_datasources']})
 
     def test_get_agent_config_creates_n9e_mcp_preset(self):
         get_agent_config()

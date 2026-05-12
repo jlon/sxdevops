@@ -396,6 +396,12 @@ const routes = [
         },
       },
       {
+        path: 'aiops/knowledge/config',
+        name: 'AIOpsKnowledgeConfig',
+        redirect: (to) => ({ path: '/aiops/knowledge', query: { ...to.query, tab: 'config' } }),
+        meta: { hidden: true },
+      },
+      {
         path: 'aiops/config',
         name: 'AIOpsConfig',
         component: () => import('@/views/AIOpsConfig.vue'),

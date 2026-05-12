@@ -48,6 +48,7 @@ from ops.middleware_views import _build_payload as build_middleware_payload
 from ops.middleware_views import _get_demo_state as get_middleware_demo_state
 from rbac.services import is_demo_account, user_has_permissions
 
+from .knowledge_graph import resolve_knowledge_environment, resolve_knowledge_environments_from_text
 from .models import (
     AIOpsAgentConfig,
     AIOpsChatMessage,
@@ -903,12 +904,30 @@ def _normalize_alert_query_request(query='', level='', only_unacknowledged=False
 
 
 def _extract_environment(text):
+    knowledge_matches = resolve_knowledge_environments_from_text(text)
+    if knowledge_matches:
+        return knowledge_matches[0]['name']
     mapping = {'生产': 'prod', 'prod': 'prod', '测试': 'test', 'test': 'test', '开发': 'dev', 'dev': 'dev'}
     lowered = (text or '').lower()
     for keyword, code in mapping.items():
         if keyword in lowered:
             return code
     return ''
+
+
+def _resolve_knowledge_environment_for_query(query='', environment=''):
+    resolved = resolve_knowledge_environment(environment)
+    if resolved:
+        return resolved
+    matches = resolve_knowledge_environments_from_text(query)
+    return matches[0] if matches else None
+
+
+def _strip_knowledge_environment_name(query='', knowledge_environment=None):
+    text = str(query or '')
+    if knowledge_environment and knowledge_environment.get('name'):
+        text = text.replace(knowledge_environment['name'], ' ')
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 def _extract_business_line(text):
@@ -1379,8 +1398,10 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
     started_at = time.time()
     normalized_query, level, only_unacknowledged = _normalize_alert_query_request(query, level, only_unacknowledged)
     environment = _extract_environment(normalized_query)
+    knowledge_environment = _resolve_knowledge_environment_for_query(normalized_query, environment)
+    search_query = _strip_knowledge_environment_name(normalized_query, knowledge_environment)
     service_query = _strip_common_query_phrases(
-        normalized_query,
+        search_query,
         [
             '分析', '排查', '异常', '根因', '最近', '当前', '生产', '测试', '开发',
             'prod', 'test', 'dev', '服务', '告警', '有哪些', '是什么', '情况',
@@ -1395,6 +1416,7 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
             'raw_query': query,
             'query': normalized_query,
             'environment': environment,
+            'knowledge_environment': knowledge_environment.get('name') if knowledge_environment else '',
             'service_query': service_query,
             'tokens': tokens,
             'level': level,
@@ -1407,7 +1429,10 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
         return {'error': '当前账号无权查看告警。', 'sections': [], 'citations': []}
 
     queryset = Alert.objects.select_related('host').all()
-    if environment:
+    if knowledge_environment:
+        alert_environments = knowledge_environment.get('alert_environments') or []
+        queryset = queryset.filter(environment__in=alert_environments) if alert_environments else Alert.objects.none()
+    elif environment:
         queryset = queryset.filter(Q(host__environment=environment) | Q(message__icontains=environment))
     if only_unacknowledged:
         queryset = queryset.filter(is_acknowledged=False)
@@ -1440,12 +1465,27 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
 
 def query_events(session, user_message, user, query='', limit=8):
     started_at = time.time()
-    tokens = _clean_tokens(query)
-    invocation = _create_tool_invocation(session, user_message, 'query_events', {'query': query, 'tokens': tokens, 'limit': limit})
+    knowledge_environment = _resolve_knowledge_environment_for_query(query)
+    search_query = _strip_knowledge_environment_name(query, knowledge_environment)
+    tokens = _clean_tokens(search_query)
+    invocation = _create_tool_invocation(
+        session,
+        user_message,
+        'query_events',
+        {
+            'query': query,
+            'knowledge_environment': knowledge_environment.get('name') if knowledge_environment else '',
+            'tokens': tokens,
+            'limit': limit,
+        },
+    )
     if not user_has_permissions(user, ['eventwall.view']):
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'sections': [], 'citations': []}
-    queryset = EventRecord.objects.all()
+    queryset = EventRecord.objects.filter(is_demo=False).exclude(source_type=EventRecord.SOURCE_SEED)
+    if knowledge_environment:
+        event_environments = knowledge_environment.get('event_environments') or []
+        queryset = queryset.filter(environment__in=event_environments) if event_environments else EventRecord.objects.none()
     queryset = _queryset_search(queryset, ['title', 'summary', 'resource_name', 'application', 'module'], tokens)
     events = list(queryset.order_by('-occurred_at')[:limit])
     sections = [{
@@ -1458,13 +1498,30 @@ def query_events(session, user_message, user, query='', limit=8):
 
 def query_logs(session, user_message, user, query='', limit=6):
     started_at = time.time()
-    tokens = _clean_tokens(query)
-    invocation = _create_tool_invocation(session, user_message, 'query_logs', {'query': query, 'tokens': tokens, 'limit': limit})
+    knowledge_environment = _resolve_knowledge_environment_for_query(query)
+    search_query = _strip_knowledge_environment_name(query, knowledge_environment)
+    tokens = _clean_tokens(search_query)
+    invocation = _create_tool_invocation(
+        session,
+        user_message,
+        'query_logs',
+        {
+            'query': query,
+            'knowledge_environment': knowledge_environment.get('name') if knowledge_environment else '',
+            'tokens': tokens,
+            'limit': limit,
+        },
+    )
     allowed = user_has_permissions(user, ['ops.log.entry.view']) or user_has_permissions(user, ['ops.log.query'])
     if not allowed:
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'sections': [], 'citations': []}
-    queryset = _queryset_search(LogEntry.objects.select_related('host').all(), ['service', 'message', 'host__hostname'], tokens)
+    queryset = LogEntry.objects.select_related('host').all()
+    if knowledge_environment:
+        source_environments = set(knowledge_environment.get('event_environments') or []) | set(knowledge_environment.get('alert_environments') or [])
+        if source_environments:
+            queryset = queryset.filter(Q(host__environment__in=source_environments) | Q(host__isnull=True))
+    queryset = _queryset_search(queryset, ['service', 'message', 'host__hostname'], tokens)
     logs = list(queryset.order_by('-timestamp')[:limit])
     sections = [{
         'title': '相关日志',
@@ -1526,10 +1583,13 @@ def _format_trace_item(item):
     return f"{item.get('service_name') or item.get('service_id') or '-'} / {item.get('state') or '-'} / {item.get('duration_ms') or 0}ms / {item.get('start') or '-'} / {endpoints} / {short_trace_id}"
 
 
-def _query_live_traces(query='', errors_only=False, limit=6, duration_minutes=60):
+def _query_live_traces(query='', errors_only=False, limit=6, duration_minutes=60, datasource_ids=None):
+    datasource_queryset = TracingDataSource.objects.filter(is_enabled=True)
+    if datasource_ids:
+        datasource_queryset = datasource_queryset.filter(id__in=datasource_ids)
     datasource = (
-        TracingDataSource.objects.filter(is_enabled=True, is_default=True).order_by('id').first()
-        or TracingDataSource.objects.filter(is_enabled=True).order_by('id').first()
+        datasource_queryset.filter(is_default=True).order_by('id').first()
+        or datasource_queryset.order_by('id').first()
     )
     provider = datasource.provider if datasource else ''
     datasource_id = str(datasource.id) if datasource else ''
@@ -1601,12 +1661,21 @@ def _is_trace_focused_question(question):
 
 def query_traces(session, user_message, user, query='', errors_only=False, limit=6, duration_minutes=60):
     started_at = time.time()
-    tokens = _clean_tokens(query)
+    knowledge_environment = _resolve_knowledge_environment_for_query(query)
+    trace_query_input = _strip_knowledge_environment_name(query, knowledge_environment)
+    tokens = _clean_tokens(trace_query_input)
     invocation = _create_tool_invocation(
         session,
         user_message,
         'query_traces',
-        {'query': query, 'tokens': tokens, 'errors_only': errors_only, 'limit': limit, 'duration_minutes': duration_minutes},
+        {
+            'query': query,
+            'knowledge_environment': knowledge_environment.get('name') if knowledge_environment else '',
+            'tokens': tokens,
+            'errors_only': errors_only,
+            'limit': limit,
+            'duration_minutes': duration_minutes,
+        },
     )
     if not user_has_permissions(user, ['ops.trace.view']):
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
@@ -1614,10 +1683,11 @@ def query_traces(session, user_message, user, query='', errors_only=False, limit
 
     try:
         live_result, matched_service, trace_query = _query_live_traces(
-            query=query,
+            query=trace_query_input,
             errors_only=errors_only,
             limit=limit,
             duration_minutes=duration_minutes,
+            datasource_ids=knowledge_environment.get('tracing_datasource_ids') if knowledge_environment else None,
         )
         traces = (live_result.get('traces') or [])[:limit]
         tracing_meta = live_result.get('tracing') or {}

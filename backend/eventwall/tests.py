@@ -36,7 +36,10 @@ class EventSourceTests(TestCase):
         for event in EventRecord.objects.filter(metadata__hourly_demo_environment='电商测试环境-k3s'):
             self.assertEqual(event.environment, '电商测试环境-k3s')
             self.assertEqual(event.business_line, '电商')
+            self.assertEqual(event.application, '')
             self.assertIn(event.metadata['event_category'], allowed_categories)
+            if event.metadata['event_category'] == 'db_change':
+                self.assertIn('table', event.metadata)
             by_hour.setdefault(event.metadata['hourly_demo_hour'], 0)
             by_hour[event.metadata['hourly_demo_hour']] += 1
         self.assertTrue(all(count in {2, 3} for count in by_hour.values()))

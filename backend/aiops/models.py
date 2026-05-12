@@ -165,6 +165,29 @@ class AIOpsSkill(models.Model):
         return self.name
 
 
+class AIOpsKnowledgeEnvironment(models.Model):
+    name = models.CharField('知识图谱环境名', max_length=128, unique=True)
+    description = models.CharField('描述', max_length=255, blank=True, default='')
+    event_environments = models.JSONField('事件中心环境', default=list, blank=True)
+    grafana_folder_keys = models.JSONField('监控看板目录', default=list, blank=True)
+    log_datasource_ids = models.JSONField('日志中心数据源', default=list, blank=True)
+    tracing_datasource_ids = models.JSONField('链路追踪数据源', default=list, blank=True)
+    alert_environments = models.JSONField('告警中心环境', default=list, blank=True)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['name', 'id']
+        verbose_name = 'AIOps 知识图谱环境关联'
+        verbose_name_plural = 'AIOps 知识图谱环境关联'
+
+    def __str__(self):
+        return self.name
+
+
 class AIOpsChatSession(models.Model):
     STATUS_ACTIVE = 'active'
     STATUS_ARCHIVED = 'archived'

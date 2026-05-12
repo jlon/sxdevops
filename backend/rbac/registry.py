@@ -1,5 +1,6 @@
 PERMISSION_DEFINITIONS = [
     ('aiops.knowledge.view', '查看 AIOps 知识图谱', 'aiops', '查看工单、日志、链路、看板、告警、系统态势和事件源之间的业务关联'),
+    ('aiops.knowledge.manage', '管理 AIOps 知识图谱配置', 'aiops', '维护知识图谱环境与事件中心、监控看板、日志、链路、告警来源的关联'),
     ('ops.dashboard.view', '查看运维仪表盘', 'ops', '访问首页运维统计与最近动态'),
     ('ops.host.view', '查看主机', 'ops', '查看主机列表与详情'),
     ('ops.host.manage', '管理主机', 'ops', '新增、编辑、删除、测试、刷新主机'),
@@ -101,7 +102,7 @@ BUILTIN_ROLES = [
         'name': '运维管理员',
         'description': '负责主机、部署、容器、Nginx、日志与 CMDB 维护。',
         'permissions': [
-            'aiops.knowledge.view',
+            'aiops.knowledge.view', 'aiops.knowledge.manage',
             'ops.dashboard.view', 'ops.host.view', 'ops.host.manage', 'ops.host.terminal', 'ops.host.execute',
             'ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute',
             'ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve',

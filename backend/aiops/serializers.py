@@ -4,6 +4,7 @@ from .models import (
     AIOpsAgentConfig,
     AIOpsChatMessage,
     AIOpsChatSession,
+    AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelProvider,
     AIOpsPendingAction,
@@ -112,6 +113,61 @@ class AIOpsSkillSerializer(serializers.ModelSerializer):
             validated_data.pop('slug', None)
             validated_data.pop('source_type', None)
         return super().update(instance, validated_data)
+
+
+class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AIOpsKnowledgeEnvironment
+        fields = [
+            'id', 'name', 'description', 'event_environments', 'grafana_folder_keys',
+            'log_datasource_ids', 'tracing_datasource_ids', 'alert_environments',
+            'is_enabled', 'created_by', 'updated_by', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+
+    def validate_name(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError('请填写知识图谱环境名')
+        return value
+
+    def validate(self, attrs):
+        list_fields = [
+            'event_environments',
+            'grafana_folder_keys',
+            'log_datasource_ids',
+            'tracing_datasource_ids',
+            'alert_environments',
+        ]
+        for field in list_fields:
+            if field not in attrs:
+                continue
+            value = attrs.get(field)
+            if value in (None, ''):
+                attrs[field] = []
+                continue
+            if not isinstance(value, list):
+                raise serializers.ValidationError({field: '必须为数组'})
+            normalized = []
+            for item in value:
+                if field.endswith('_ids'):
+                    try:
+                        normalized_item = int(item)
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    normalized_item = str(item or '').strip()
+                if normalized_item and normalized_item not in normalized:
+                    normalized.append(normalized_item)
+            attrs[field] = normalized
+
+        instance = self.instance
+        has_association = any(
+            attrs.get(field, getattr(instance, field, [])) for field in list_fields
+        )
+        if not has_association:
+            raise serializers.ValidationError('请至少选择一个事件中心、看板目录、日志、链路或告警来源')
+        return attrs
 
 
 class AIOpsPendingActionSerializer(serializers.ModelSerializer):

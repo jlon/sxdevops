@@ -5,13 +5,16 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from eventwall.models import EventRecord
 from eventwall.services import record_event
+from ops.models import Alert, GrafanaSetting, LogDataSource, TracingDataSource
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
 
 from .models import (
     AIOpsChatMessage,
     AIOpsChatSession,
+    AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelProvider,
     AIOpsPendingAction,
@@ -25,6 +28,7 @@ from .serializers import (
     AIOpsChatMessageSerializer,
     AIOpsChatSessionSerializer,
     AIOpsCreateSessionSerializer,
+    AIOpsKnowledgeEnvironmentSerializer,
     AIOpsMCPServerSerializer,
     AIOpsModelProviderSerializer,
     AIOpsPendingActionSerializer,
@@ -166,6 +170,175 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if instance.is_builtin:
             return Response({'detail': '内置 Skill 不允许删除'}, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
+
+
+def _clean_catalog_value(value):
+    return str(value or '').strip()
+
+
+def _is_demoish_catalog_item(*values):
+    text = ' '.join(str(value or '') for value in values).lower()
+    return any(keyword in text for keyword in ['demo', '演示', '示例', '样例'])
+
+
+def _is_invalid_environment_value(value):
+    text = _clean_catalog_value(value)
+    if not text:
+        return True
+    lowered = text.lower()
+    return (
+        lowered.startswith('env-')
+        or set(text) == {'?'}
+        or text in {'未知', 'unknown', 'null', 'none', '-'}
+    )
+
+
+def _grafana_folder_key(value):
+    text = _clean_catalog_value(value)
+    return text
+
+
+class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+    serializer_class = AIOpsKnowledgeEnvironmentSerializer
+    pagination_class = None
+    search_fields = ['name', 'description']
+    demo_account_allowed_actions = {'create', 'update', 'partial_update', 'destroy'}
+    rbac_permissions = {
+        'list': ['aiops.knowledge.view'],
+        'retrieve': ['aiops.knowledge.view'],
+        'catalog': ['aiops.knowledge.view'],
+        'create': ['aiops.knowledge.manage'],
+        'update': ['aiops.knowledge.manage'],
+        'partial_update': ['aiops.knowledge.manage'],
+        'destroy': ['aiops.knowledge.manage'],
+    }
+
+    def get_queryset(self):
+        return AIOpsKnowledgeEnvironment.objects.all().order_by('name', 'id')
+
+    @action(detail=False, methods=['get'])
+    def catalog(self, request):
+        event_environments = list(
+            EventRecord.objects
+            .filter(is_demo=False)
+            .exclude(source_type=EventRecord.SOURCE_SEED)
+            .exclude(environment='')
+            .values_list('environment', flat=True)
+            .distinct()
+            .order_by('environment')[:100]
+        )
+        alert_environments = list(
+            Alert.objects
+            .exclude(environment='')
+            .values_list('environment', flat=True)
+            .distinct()
+            .order_by('environment')[:100]
+        )
+        log_datasources = [
+            {
+                'id': item.id,
+                'name': item.name,
+                'provider': item.provider,
+                'provider_display': item.get_provider_display(),
+                'description': item.description,
+            }
+            for item in LogDataSource.objects.filter(is_enabled=True).order_by('provider', 'name')
+            if not _is_demoish_catalog_item(item.name, item.description, item.provider)
+        ]
+        tracing_datasources = [
+            {
+                'id': item.id,
+                'name': item.name,
+                'provider': item.provider,
+                'provider_display': item.get_provider_display(),
+                'description': item.description,
+            }
+            for item in TracingDataSource.objects.filter(is_enabled=True).order_by('provider', 'name')
+            if not _is_demoish_catalog_item(item.name, item.description, item.provider)
+        ]
+
+        folder_map = {}
+        for setting in GrafanaSetting.objects.filter(enabled=True).order_by('name'):
+            folders = setting.folders if isinstance(setting.folders, list) else []
+            dashboards = setting.dashboards if isinstance(setting.dashboards, list) else []
+            for folder in folders:
+                key = _grafana_folder_key(folder.get('path') or folder.get('folder') or folder.get('name'))
+                if _is_demoish_catalog_item(key, folder.get('description')):
+                    continue
+                if key:
+                    folder_map.setdefault(key, {'key': key, 'label': key, 'setting': setting.name, 'dashboard_count': 0})
+            for dashboard in dashboards:
+                if _is_demoish_catalog_item(dashboard.get('key'), dashboard.get('title'), dashboard.get('name'), dashboard.get('description')):
+                    continue
+                folder_key = _grafana_folder_key(dashboard.get('folder'))
+                if not folder_key:
+                    continue
+                item = folder_map.setdefault(folder_key, {'key': folder_key, 'label': folder_key, 'setting': setting.name, 'dashboard_count': 0})
+                item['dashboard_count'] += 1
+
+        return Response({
+            'event_environments': [
+                _clean_catalog_value(item)
+                for item in event_environments
+                if not _is_invalid_environment_value(item)
+            ],
+            'grafana_folders': sorted(folder_map.values(), key=lambda item: item['label']),
+            'log_datasources': log_datasources,
+            'tracing_datasources': tracing_datasources,
+            'alert_environments': [_clean_catalog_value(item) for item in alert_environments if _clean_catalog_value(item)],
+        })
+
+    def perform_create(self, serializer):
+        instance = serializer.save(
+            created_by=getattr(self.request.user, 'username', ''),
+            updated_by=getattr(self.request.user, 'username', ''),
+        )
+        record_event(
+            request=self.request,
+            module='aiops',
+            category='knowledge',
+            action='create_knowledge_environment',
+            title='创建知识图谱环境关联',
+            summary=f'已创建知识图谱环境《{instance.name}》',
+            resource_type='aiops_knowledge_environment',
+            resource_id=instance.id,
+            resource_name=instance.name,
+            correlation_id=f'aiops-knowledge-env:{instance.id}',
+        )
+
+    def perform_update(self, serializer):
+        instance = serializer.save(updated_by=getattr(self.request.user, 'username', ''))
+        record_event(
+            request=self.request,
+            module='aiops',
+            category='knowledge',
+            action='update_knowledge_environment',
+            title='更新知识图谱环境关联',
+            summary=f'已更新知识图谱环境《{instance.name}》',
+            resource_type='aiops_knowledge_environment',
+            resource_id=instance.id,
+            resource_name=instance.name,
+            correlation_id=f'aiops-knowledge-env:{instance.id}',
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        resource_id = instance.id
+        resource_name = instance.name
+        response = super().destroy(request, *args, **kwargs)
+        record_event(
+            request=request,
+            module='aiops',
+            category='knowledge',
+            action='delete_knowledge_environment',
+            title='删除知识图谱环境关联',
+            summary=f'已删除知识图谱环境《{resource_name}》',
+            resource_type='aiops_knowledge_environment',
+            resource_id=resource_id,
+            resource_name=resource_name,
+            correlation_id=f'aiops-knowledge-env:{resource_id}',
+        )
+        return response
 
 
 class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):

@@ -1720,3 +1720,26 @@ body {
 .theme-purple .neo-sub-tab-btn.active {
   color: #6d28d9;
 }
+
+section.hero.panel {
+  border-radius: 12px !important;
+  min-height: auto !important;
+  padding: 12px 14px !important;
+}
+
+section.hero.panel .hero-icon,
+section.hero.panel .release-header-icon,
+section.hero.panel .host-header-icon,
+section.hero.panel .title-icon,
+section.hero.panel .ticket-header-icon {
+  width: 40px !important;
+  min-width: 40px !important;
+  height: 40px !important;
+  border-radius: 16px !important;
+}
+
+section.hero.panel .hero-actions .el-button:not(.is-link) {
+  min-height: 32px !important;
+  padding: 0 14px !important;
+  border-radius: 10px !important;
+}

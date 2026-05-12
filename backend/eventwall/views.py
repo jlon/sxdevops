@@ -31,14 +31,14 @@ EVENT_CATEGORY_DEFINITIONS = [
         'key': 'db_change',
         'label': 'DB变更',
         'description': 'SQL 上线、数据库结构变更、数据修复和执行结果类事件。',
-        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'application', 'result'],
+        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'result'],
         'recommended_fields': ['database', 'sql_type', 'affected_rows', 'duration_ms', 'datasource'],
     },
     {
         'key': 'config_change',
         'label': '配置变更',
         'description': '配置发布、参数调整、网络策略、域名路由和中间件配置类事件。',
-        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'application', 'result'],
+        'required_fields': ['event_id', 'event_category', 'title', 'environment', 'result'],
         'recommended_fields': ['config_key', 'change_window', 'before', 'after', 'approval_id'],
     },
     {
@@ -142,64 +142,72 @@ HOURLY_DEMO_ENVIRONMENT = '电商测试环境-k3s'
 HOURLY_DEMO_SYSTEM = '电商'
 HOURLY_DEMO_CATEGORIES = ('db_change', 'config_change', 'ops_transaction', 'task_center')
 
+
+def _is_application_release_category(value):
+    return _normalize_event_category(value) == 'application_release'
+
+
+def _application_for_event_category(category_key, value):
+    return value if _is_application_release_category(category_key) else ''
+
 HOURLY_DEMO_EVENT_TEMPLATES = {
     'db_change': [
         {
             'module': 'sqlaudit',
             'action': 'execute',
-            'title': '订单库索引变更执行完成',
-            'summary': '电商测试环境订单库索引变更已执行完成，影响行数符合预期。',
+            'title': 'order_test.orders 表索引变更执行完成',
+            'summary': '电商测试环境 order_test.orders 表完成索引调整，影响行数符合预期。',
             'result': EventRecord.RESULT_SUCCESS,
             'severity': EventRecord.SEVERITY_INFO,
             'actor_username': 'dba.bot',
             'actor_display': 'DBA Bot',
             'resource_type': 'sql_order',
-            'resource_name': '订单库索引变更',
-            'application': 'order-db',
-            'metadata': {'database': 'order_test', 'sql_type': 'alter_index', 'affected_rows': 0, 'duration_ms': 1460},
+            'resource_name': '订单库 orders 表索引变更',
+            'application': '',
+            'metadata': {'database': 'order_test', 'table': 'orders', 'sql_type': 'alter_index', 'affected_rows': 0, 'duration_ms': 1460},
         },
         {
             'module': 'sqlaudit',
             'action': 'execute',
-            'title': '会员库数据修复待复核',
-            'summary': '会员库数据修复脚本执行完成，存在少量待 DBA 复核记录。',
+            'title': 'member_test.member_profile 表数据修复待复核',
+            'summary': 'member_test.member_profile 表数据修复脚本执行完成，存在少量待 DBA 复核记录。',
             'result': EventRecord.RESULT_PARTIAL,
             'severity': EventRecord.SEVERITY_WARNING,
             'actor_username': 'audit.bot',
             'actor_display': 'SQL Audit Bot',
             'resource_type': 'sql_order',
-            'resource_name': '会员库数据修复',
-            'application': 'member-db',
-            'metadata': {'database': 'member_test', 'sql_type': 'data_fix', 'affected_rows': 37, 'duration_ms': 5280},
+            'resource_name': '会员库 member_profile 表数据修复',
+            'application': '',
+            'metadata': {'database': 'member_test', 'table': 'member_profile', 'sql_type': 'data_fix', 'affected_rows': 37, 'duration_ms': 5280},
         },
     ],
     'config_change': [
         {
             'module': 'ops',
             'action': 'config_change',
-            'title': '网关灰度参数更新',
-            'summary': '电商测试环境网关灰度参数已更新，新的路由权重进入观测窗口。',
+            'title': 'gateway.gray.weight 灰度权重配置更新',
+            'summary': '电商测试环境网关灰度权重 gateway.gray.weight 从 10 调整为 20，新的路由权重进入观测窗口。',
             'result': EventRecord.RESULT_SUCCESS,
             'severity': EventRecord.SEVERITY_INFO,
             'actor_username': 'release.bot',
             'actor_display': 'Release Bot',
             'resource_type': 'transaction_ticket',
-            'resource_name': '网关灰度参数',
-            'application': 'gateway-service',
+            'resource_name': 'gateway.gray.weight',
+            'application': '',
             'metadata': {'ticket_type': 'change', 'config_key': 'gateway.gray.weight', 'before': '10', 'after': '20'},
         },
         {
             'module': 'ops',
             'action': 'config_change',
-            'title': '缓存 TTL 配置调整',
-            'summary': '商品缓存 TTL 从 10 分钟调整到 5 分钟，用于验证活动页刷新策略。',
+            'title': 'product.cache.ttl 缓存 TTL 配置调整',
+            'summary': '商品缓存配置 product.cache.ttl 从 600s 调整为 300s，用于验证活动页刷新策略。',
             'result': EventRecord.RESULT_SUCCESS,
             'severity': EventRecord.SEVERITY_WARNING,
             'actor_username': 'config.bot',
             'actor_display': 'Config Bot',
             'resource_type': 'transaction_ticket',
-            'resource_name': '商品缓存 TTL',
-            'application': 'product-service',
+            'resource_name': 'product.cache.ttl',
+            'application': '',
             'metadata': {'ticket_type': 'change', 'config_key': 'product.cache.ttl', 'before': '600s', 'after': '300s'},
         },
     ],
@@ -215,7 +223,7 @@ HOURLY_DEMO_EVENT_TEMPLATES = {
             'actor_display': 'Ops Bot',
             'resource_type': 'transaction_ticket',
             'resource_name': '临时权限开通',
-            'application': 'sxdevops',
+            'application': '',
             'metadata': {'ticket_type': 'access_change', 'permission_scope': 'ecommerce-test', 'ttl_hours': 4},
         },
         {
@@ -229,7 +237,7 @@ HOURLY_DEMO_EVENT_TEMPLATES = {
             'actor_display': 'NetOps Bot',
             'resource_type': 'transaction_ticket',
             'resource_name': '联调白名单调整',
-            'application': 'gateway-service',
+            'application': '',
             'metadata': {'ticket_type': 'network_change', 'cidr': '10.42.18.0/24', 'target': 'gateway-service'},
         },
     ],
@@ -245,7 +253,7 @@ HOURLY_DEMO_EVENT_TEMPLATES = {
             'actor_display': 'Task Bot',
             'resource_type': 'host_task',
             'resource_name': '节点健康巡检',
-            'application': 'node-health-check',
+            'application': '',
             'metadata': {'task_type': 'health_check', 'target_count': 12, 'success_count': 11, 'failed_count': 1},
         },
         {
@@ -259,7 +267,7 @@ HOURLY_DEMO_EVENT_TEMPLATES = {
             'actor_display': 'Task Bot',
             'resource_type': 'host_task_schedule',
             'resource_name': '日志采集 Agent 检查',
-            'application': 'log-agent',
+            'application': '',
             'metadata': {'task_type': 'agent_check', 'target_count': 12, 'success_count': 12, 'duration_ms': 3200},
         },
     ],
@@ -354,6 +362,17 @@ def _safe_get(payload, path, default=''):
     return current if current is not None else default
 
 
+def _normalize_service_name(value, metadata=None):
+    metadata = metadata or {}
+    service = str(metadata.get('service') or metadata.get('service_name') or '').strip()
+    if service:
+        return service
+    name = str(value or '').strip()
+    if name.endswith('-release'):
+        return name[:-8]
+    return name
+
+
 def _normalize_provider_payload(source, payload):
     if source.source_type == EventSource.TYPE_JIRA:
         issue = payload.get('issue') or {}
@@ -366,7 +385,7 @@ def _normalize_provider_payload(source, payload):
         result = EventRecord.RESULT_FAILED if status_value in {'failed', 'failure', 'aborted'} else EventRecord.RESULT_SUCCESS
         job_name = payload.get('job_name') or payload.get('name') or _safe_get(payload, 'build.full_url')
         build_number = payload.get('build_number') or _safe_get(payload, 'build.number')
-        application = payload.get('application') or payload.get('service') or job_name or ''
+        application = _normalize_service_name(payload.get('application') or job_name or '', payload)
         environment = payload.get('environment') or _safe_get(payload, 'build.environment') or ''
         system_name = payload.get('system_name') or payload.get('business_line') or payload.get('team') or ''
         return {'event_id': f'{job_name}#{build_number}' if job_name and build_number else '', 'title': f'Jenkins {job_name or "构建事件"}', 'summary': payload.get('message') or status_value or 'Jenkins 构建事件', 'event_type': 'jenkins_build', 'action': payload.get('phase') or 'build', 'result': result, 'severity': EventRecord.SEVERITY_DANGER if result == EventRecord.RESULT_FAILED else EventRecord.SEVERITY_INFO, 'actor': payload.get('user') or 'jenkins', 'system_name': system_name, 'environment': environment, 'application': application, 'resource_type': 'jenkins_build', 'resource_id': str(build_number or ''), 'resource_name': str(job_name or ''), 'metadata': payload}
@@ -620,7 +639,7 @@ def _ensure_hourly_ecommerce_demo_events(hours=24):
                 resource_name=template['resource_name'],
                 business_line=HOURLY_DEMO_SYSTEM,
                 environment=HOURLY_DEMO_ENVIRONMENT,
-                application=template['application'],
+                application=_application_for_event_category(category_key, template.get('application', '')),
                 tags=['hourly-demo', category_key],
                 related_resources=[
                     build_resource('ops', 'k8s_cluster', 'ecommerce-test-k3s', HOURLY_DEMO_ENVIRONMENT),
@@ -747,7 +766,7 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         for row in scope_rows:
             environment = row.get('environment') or ''
             business_line = row.get('business_line') or ''
-            application = row.get('application') or ''
+            application = _normalize_service_name(row.get('application') or '')
             if business_line:
                 systems_by_environment.setdefault(environment, set()).add(business_line)
             if application:
@@ -766,7 +785,11 @@ class EventRecordViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
             'system_names': system_names,
             'business_lines': system_names,
             'environments': list(queryset.exclude(environment='').values_list('environment', flat=True).distinct().order_by('environment')[:50]),
-            'applications': list(queryset.exclude(application='').values_list('application', flat=True).distinct().order_by('application')[:100]),
+            'applications': sorted({
+                _normalize_service_name(application)
+                for application in queryset.exclude(application='').values_list('application', flat=True).distinct()
+                if _normalize_service_name(application)
+            })[:100],
             'systems_by_environment': {key: sorted(value) for key, value in systems_by_environment.items()},
             'applications_by_environment': {key: sorted(value) for key, value in applications_by_environment.items()},
             'applications_by_environment_system': applications_by_environment_system,

@@ -24,7 +24,7 @@
       <div class="query-head">
         <div class="query-title-block">
           <h3>事件筛选</h3>
-          <span>环境必选，先选择环境，再选择系统、应用和事件源。</span>
+          <span>环境必选，先选择环境，再选择系统、服务和事件源。</span>
         </div>
         <div class="query-actions">
           <el-button size="small" type="primary" :loading="loading" @click="applyQuery">查询</el-button>
@@ -47,8 +47,8 @@
             </el-select>
           </label>
           <label class="inline-filter">
-            <span>应用</span>
-            <el-select v-model="scope.application" size="small" placeholder="选择应用" clearable filterable :disabled="!scope.environment">
+            <span>服务</span>
+            <el-select v-model="scope.application" size="small" placeholder="选择服务" clearable filterable :disabled="!scope.environment">
               <el-option v-for="item in applicationOptions" :key="item" :label="item" :value="item" />
             </el-select>
           </label>
@@ -225,7 +225,7 @@
         <el-table-column label="环境" width="88" show-overflow-tooltip>
           <template #default="{ row }">{{ environmentLabel(row) }}</template>
         </el-table-column>
-        <el-table-column label="系统（业务）" min-width="150" show-overflow-tooltip>
+        <el-table-column label="系统" min-width="120" show-overflow-tooltip>
           <template #default="{ row }">{{ systemLabel(row) }}</template>
         </el-table-column>
         <el-table-column v-if="activeCategoryTab === 'application_release'" label="服务" min-width="140" show-overflow-tooltip>
@@ -237,7 +237,14 @@
         <el-table-column v-if="activeCategoryTab === 'application_release'" label="动作" width="96" show-overflow-tooltip>
           <template #default="{ row }">{{ releaseAction(row) }}</template>
         </el-table-column>
-        <el-table-column prop="title" label="事件" min-width="180" show-overflow-tooltip />
+        <el-table-column label="事件" min-width="260">
+          <template #default="{ row }">
+            <div class="event-cell">
+              <strong>{{ eventTitle(row) }}</strong>
+              <span v-if="eventDescription(row)">{{ eventDescription(row) }}</span>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="操作人" width="116" show-overflow-tooltip>
           <template #default="{ row }">{{ actorLabel(row) }}</template>
         </el-table-column>
@@ -381,7 +388,7 @@ const activeCategorySection = computed(() => {
 const activeFilterChips = computed(() => {
   const chips = []
   if (scope.system_name) chips.push({ key: 'system_name', label: `系统 ${scope.system_name}` })
-  if (scope.application) chips.push({ key: 'application', label: `应用 ${scope.application}` })
+  if (scope.application) chips.push({ key: 'application', label: `服务 ${scope.application}` })
   if (eventSourceCode.value) {
     const source = sourceOptions.value.find(item => item.code === eventSourceCode.value)
     chips.push({ key: 'event_source_code', label: `事件源 ${source?.name || eventSourceCode.value}` })
@@ -397,7 +404,7 @@ const querySummaryItems = computed(() => {
   ]
   if (scope.environment) items.push({ key: 'environment', label: '环境', value: scope.environment, clearable: false })
   if (scope.system_name) items.push({ key: 'system_name', label: '系统', value: scope.system_name, clearable: true })
-  if (scope.application) items.push({ key: 'application', label: '应用', value: scope.application, clearable: true })
+  if (scope.application) items.push({ key: 'application', label: '服务', value: scope.application, clearable: true })
   if (eventSourceCode.value) {
     const source = sourceOptions.value.find(item => item.code === eventSourceCode.value)
     items.push({ key: 'event_source_code', label: '事件源', value: source?.name || eventSourceCode.value, clearable: true })
@@ -656,8 +663,8 @@ function eventDotStyle(event) {
   const overflowIndex = event?._timelineOverflowIndex || 0
   const overlapOffset = Math.min(overflowIndex, 8)
   const isFocusedLane = timelineCategoryFilter.value !== 'all'
-  const topBase = isFocusedLane ? 14 : 9
-  const verticalStep = isFocusedLane ? 30 : 24
+  const topBase = isFocusedLane ? 14 : 12
+  const verticalStep = isFocusedLane ? 30 : 28
   return {
     left: `calc(${event?._timelinePercent ?? timelineEventPercent(event)}% + ${overlapOffset * (isFocusedLane ? 4 : 7)}px)`,
     top: `${topBase + compressedIndex * verticalStep}px`,
@@ -670,7 +677,7 @@ function laneTrackStyle(lane) {
   const isFocusedLane = timelineCategoryFilter.value !== 'all'
   const visibleDepth = Math.min(depth, isFocusedLane ? 8 : 3)
   return {
-    minHeight: `${Math.max(isFocusedLane ? 118 : 52, 20 + visibleDepth * (isFocusedLane ? 38 : 30))}px`,
+    minHeight: `${Math.max(isFocusedLane ? 118 : 72, 24 + visibleDepth * (isFocusedLane ? 38 : 34))}px`,
   }
 }
 
@@ -803,8 +810,58 @@ function environmentLabel(row) {
 }
 
 function systemLabel(row) {
-  const system = row?.application || row?.resource_name || row?.resource_id || '未标注系统'
-  return row?.system_name ? `${system}（${row.system_name}）` : system
+  return row?.system_name || row?.business_line || '-'
+}
+
+function eventTitle(row) {
+  return row?.title || '-'
+}
+
+function eventDescription(row) {
+  const category = eventCategoryKey(row)
+  if (category === 'application_release') return row?.summary || row?.detail || ''
+  if (category === 'db_change') return dbChangeDescription(row)
+  if (category === 'config_change') return configChangeDescription(row)
+  return row?.summary || row?.detail || ''
+}
+
+function dbChangeDescription(row) {
+  const metadata = row?.metadata || {}
+  const database = metadata.database || metadata.db || metadata.schema || ''
+  const table = metadata.table || metadata.table_name || metadata.tables || ''
+  const target = [database, Array.isArray(table) ? table.join(',') : table].filter(Boolean).join('.')
+  const sqlType = sqlTypeLabel(metadata.sql_type || metadata.change_type || row?.action)
+  const affectedRows = metadata.affected_rows
+  const parts = []
+  if (target) parts.push(`对象 ${target}`)
+  if (sqlType) parts.push(`类型 ${sqlType}`)
+  if (affectedRows !== undefined && affectedRows !== null && affectedRows !== '') parts.push(`影响 ${affectedRows} 行`)
+  if (parts.length) return `DB 变更：${parts.join('，')}`
+  return row?.summary || row?.detail || ''
+}
+
+function configChangeDescription(row) {
+  const metadata = row?.metadata || {}
+  const configKey = metadata.config_key || metadata.key || row?.resource_name || ''
+  const before = metadata.before
+  const after = metadata.after
+  const parts = []
+  if (configKey) parts.push(`配置项 ${configKey}`)
+  if (before !== undefined && before !== null && before !== '') parts.push(`从 ${before}`)
+  if (after !== undefined && after !== null && after !== '') parts.push(`改为 ${after}`)
+  if (parts.length) return `配置变更：${parts.join('，')}`
+  return row?.summary || row?.detail || ''
+}
+
+function sqlTypeLabel(value) {
+  return {
+    alter_index: '索引调整',
+    data_fix: '数据修复',
+    alter_table: '表结构变更',
+    ddl: 'DDL',
+    dml: 'DML',
+    execute: '执行 SQL',
+  }[value] || value || ''
 }
 
 function releaseService(row) {
@@ -1254,6 +1311,30 @@ onUnmounted(cleanupTimelineSelection)
   cursor: pointer;
 }
 
+.event-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.event-cell strong,
+.event-cell span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-cell strong {
+  color: #1f2329;
+  font-weight: 700;
+}
+
+.event-cell span {
+  color: #646a73;
+  font-size: 12px;
+}
+
 .timeline-panel {
   --timeline-label-width: 160px;
   --timeline-column-gap: 12px;
@@ -1494,7 +1575,7 @@ onUnmounted(cleanupTimelineSelection)
   margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .lane-row {
@@ -1516,7 +1597,7 @@ onUnmounted(cleanupTimelineSelection)
 .lane-label {
   width: 100%;
   min-width: 0;
-  min-height: 58px;
+  min-height: 72px;
   padding: 9px 10px;
   border: 1px solid #e5e7eb;
   border-radius: 12px;
@@ -1577,7 +1658,7 @@ onUnmounted(cleanupTimelineSelection)
 
 .lane-track {
   position: relative;
-  min-height: 52px;
+  min-height: 72px;
   border-radius: 8px;
   background: #f7f8fa;
   overflow: hidden;

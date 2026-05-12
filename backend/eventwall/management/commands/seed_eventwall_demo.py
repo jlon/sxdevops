@@ -9,6 +9,18 @@ from eventwall.services import build_resource, record_event
 
 DEMO_WINDOW_MINUTES = 7 * 24 * 60 - 1
 EXCLUDED_DEMO_ENVIRONMENTS = {'prod', 'staging'}
+APPLICATION_RELEASE_ACTIONS = {
+    'deploy_start',
+    'deploy_finish',
+    'approval_finish',
+    'rollback',
+    'service_deployment',
+}
+APPLICATION_RELEASE_RESOURCE_TYPES = {
+    'deployment',
+    'service_deployment',
+    'deployment_approval_flow',
+}
 
 
 class Command(BaseCommand):
@@ -31,6 +43,8 @@ class Command(BaseCommand):
         offset_minutes = self._normalize_offset_minutes(fallback_minutes, occurred_at=occurred_at)
         payload_metadata = dict(metadata or {})
         payload_metadata['demo_offset_minutes'] = offset_minutes
+        if not self._is_application_release_demo(kwargs):
+            kwargs['application'] = ''
         record_event(
             occurred_at=self.now - timedelta(minutes=offset_minutes),
             source_type=EventRecord.SOURCE_SEED,
@@ -51,6 +65,11 @@ class Command(BaseCommand):
             delta = self.now - current
             fallback_minutes = int(delta.total_seconds() // 60)
         return max(5, min(int(fallback_minutes), DEMO_WINDOW_MINUTES))
+
+    def _is_application_release_demo(self, payload):
+        action = str(payload.get('action') or '').strip()
+        resource_type = str(payload.get('resource_type') or '').strip()
+        return action in APPLICATION_RELEASE_ACTIONS or resource_type in APPLICATION_RELEASE_RESOURCE_TYPES
 
     def build_demo_events(self):
         return [
@@ -130,15 +149,15 @@ class Command(BaseCommand):
                 'module': 'sqlaudit',
                 'category': 'execution',
                 'action': 'execute',
-                'title': 'SQL 工单执行成功',
-                'summary': '用户画像库索引优化完成，执行窗口与影响行数符合预期。',
+                'title': 'profile_db.user_profile 表索引优化执行成功',
+                'summary': 'profile_db.user_profile 表索引优化完成，执行窗口与影响行数符合预期。',
                 'result': EventRecord.RESULT_SUCCESS,
                 'severity': EventRecord.SEVERITY_INFO,
                 'actor_username': 'wang.qi',
                 'actor_display': '王琦',
                 'resource_type': 'sql_order',
                 'resource_id': 'sql-1901',
-                'resource_name': '画像索引优化',
+                'resource_name': 'profile_db.user_profile 索引优化',
                 'business_line': '增长',
                 'environment': 'prod',
                 'application': 'profile-db',
@@ -147,14 +166,14 @@ class Command(BaseCommand):
                     build_resource('sqlaudit', 'sql_datasource', 'mysql-prod-profile', '画像库 MySQL'),
                 ],
                 'fallback_minutes': 512,
-                'metadata': {'database': 'profile_db', 'affected_rows': 0, 'duration_ms': 1842},
+                'metadata': {'database': 'profile_db', 'table': 'user_profile', 'sql_type': 'alter_index', 'affected_rows': 0, 'duration_ms': 1842},
             },
             {
                 'module': 'sqlaudit',
                 'category': 'execution',
                 'action': 'execute',
-                'title': 'SQL 工单执行告警',
-                'summary': '营销活动库变更执行耗时偏高，已自动标记为重点复盘事件。',
+                'title': 'campaign_db.campaign_activity 表分区调整执行告警',
+                'summary': 'campaign_db.campaign_activity 表分区调整执行耗时偏高，已自动标记为重点复盘事件。',
                 'result': EventRecord.RESULT_PARTIAL,
                 'severity': EventRecord.SEVERITY_WARNING,
                 'actor_username': 'sun.jie',
@@ -170,7 +189,7 @@ class Command(BaseCommand):
                     build_resource('sqlaudit', 'sql_datasource', 'mysql-stg-campaign', '活动库 MySQL'),
                 ],
                 'fallback_minutes': 910,
-                'metadata': {'database': 'campaign_db', 'duration_ms': 12840, 'review_note': '需要低峰窗口再次执行'},
+                'metadata': {'database': 'campaign_db', 'table': 'campaign_activity', 'sql_type': 'alter_table', 'duration_ms': 12840, 'review_note': '需要低峰窗口再次执行'},
             },
             {
                 'module': 'multicloud',
@@ -437,15 +456,15 @@ class Command(BaseCommand):
                 'module': 'sqlaudit',
                 'category': 'workflow',
                 'action': 'review_pending',
-                'title': 'SQL 工单等待复核',
-                'summary': '核心订单库字段清理申请已提交，等待 DBA 复核执行窗口。',
+                'title': 'order_db.order_archive 表字段清理等待复核',
+                'summary': 'order_db.order_archive 表字段清理申请已提交，等待 DBA 复核执行窗口。',
                 'result': EventRecord.RESULT_PENDING,
                 'severity': EventRecord.SEVERITY_WARNING,
                 'actor_username': 'feng.rui',
                 'actor_display': '冯睿',
                 'resource_type': 'sql_order',
                 'resource_id': 'sql-1903',
-                'resource_name': '订单字段清理',
+                'resource_name': 'order_db.order_archive 字段清理',
                 'business_line': '零售',
                 'environment': 'prod',
                 'application': 'order-db',
@@ -454,6 +473,6 @@ class Command(BaseCommand):
                     build_resource('sqlaudit', 'sql_datasource', 'mysql-prod-order', '订单库 MySQL'),
                 ],
                 'fallback_minutes': 7080,
-                'metadata': {'database': 'order_db', 'current_node': 'DBA 复核'},
+                'metadata': {'database': 'order_db', 'table': 'order_archive', 'sql_type': 'alter_table', 'current_node': 'DBA 复核'},
             },
         ]
