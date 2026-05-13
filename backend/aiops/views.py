@@ -7,7 +7,7 @@ from rest_framework.response import Response
 
 from eventwall.models import EventRecord
 from eventwall.services import record_event
-from ops.models import Alert, GrafanaSetting, LogDataSource, TracingDataSource
+from ops.models import Alert, DockerHost, GrafanaSetting, K8sCluster, LogDataSource, TracingDataSource
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
 
@@ -198,6 +198,29 @@ def _grafana_folder_key(value):
     return text
 
 
+def _k8s_namespace_options(cluster):
+    try:
+        from ops.k8s_views import DEMO_NAMESPACES, _get_k8s_client, _is_demo
+    except Exception:
+        return []
+    try:
+        if _is_demo(cluster):
+            return [
+                item.get('name')
+                for item in DEMO_NAMESPACES
+                if item.get('name')
+            ]
+        k8s = _get_k8s_client(cluster)
+        v1 = k8s.CoreV1Api()
+        return sorted([
+            item.metadata.name
+            for item in v1.list_namespace().items
+            if item.metadata and item.metadata.name
+        ])
+    except Exception:
+        return []
+
+
 class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsKnowledgeEnvironmentSerializer
     pagination_class = None
@@ -256,6 +279,29 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             for item in TracingDataSource.objects.filter(is_enabled=True).order_by('provider', 'name')
             if not _is_demoish_catalog_item(item.name, item.description, item.provider)
         ]
+        k8s_clusters = [
+            {
+                'id': item.id,
+                'name': item.name,
+                'api_server': item.api_server,
+                'status': item.status,
+                'description': item.description,
+                'namespaces': _k8s_namespace_options(item),
+            }
+            for item in K8sCluster.objects.order_by('name', 'id')
+            if not _is_demoish_catalog_item(item.name, item.description, item.api_server)
+        ]
+        docker_hosts = [
+            {
+                'id': item.id,
+                'name': item.name,
+                'ip_address': item.ip_address,
+                'status': item.status,
+                'description': item.description,
+            }
+            for item in DockerHost.objects.order_by('name', 'id')
+            if not _is_demoish_catalog_item(item.name, item.description, item.ip_address)
+        ]
 
         folder_map = {}
         for setting in GrafanaSetting.objects.filter(enabled=True).order_by('name'):
@@ -286,6 +332,8 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             'log_datasources': log_datasources,
             'tracing_datasources': tracing_datasources,
             'alert_environments': [_clean_catalog_value(item) for item in alert_environments if _clean_catalog_value(item)],
+            'k8s_clusters': k8s_clusters,
+            'docker_hosts': docker_hosts,
         })
 
     def perform_create(self, serializer):

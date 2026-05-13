@@ -792,7 +792,7 @@
     <el-dialog v-model="clusterDialogVisible" :title="editingClusterId ? '编辑集群' : '新增 K8s 集群'" width="90%" style="max-width:600px;" top="5vh" append-to-body destroy-on-close>
       <el-form :model="clusterForm" label-width="110px">
         <el-form-item label="集群名称"><el-input v-model="clusterForm.name" placeholder="例如 prod-cluster" /></el-form-item>
-        <el-form-item label="API Server"><el-input v-model="clusterForm.api_server" placeholder="例如 https://10.0.0.1:6443（可选）" /></el-form-item>
+        <el-form-item label="API Server"><el-input v-model="clusterForm.api_server" placeholder="填写证书匹配的域名或 IP，例如 https://k8s.example.com:6443（可选）" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="clusterForm.description" placeholder="集群用途描述" /></el-form-item>
         <el-form-item label="KubeConfig"><el-input v-model="clusterForm.kubeconfig" type="textarea" :rows="12" placeholder="粘贴 kubeconfig YAML 内容" style="font-family:monospace;font-size:12px;" /></el-form-item>
       </el-form>

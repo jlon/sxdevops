@@ -544,6 +544,63 @@ def _normalize_logs(items):
     return normalized
 
 
+RUNTIME_COMPONENT_HINTS = {
+    'mysql': ('MySQL', 'DB'),
+    'postgres': ('PostgreSQL', 'DB'),
+    'postgresql': ('PostgreSQL', 'DB'),
+    'mariadb': ('MariaDB', 'DB'),
+    'mongodb': ('MongoDB', 'DB'),
+    'mongo': ('MongoDB', 'DB'),
+    'redis': ('Redis', '中间件'),
+    'jedis': ('Redis', '中间件'),
+    'lettuce': ('Redis', '中间件'),
+    'kafka': ('Kafka', '中间件'),
+    'rocketmq': ('RocketMQ', '中间件'),
+    'rabbitmq': ('RabbitMQ', '中间件'),
+    'elasticsearch': ('Elasticsearch', '中间件'),
+    'nacos': ('Nacos', '中间件'),
+    'zookeeper': ('ZooKeeper', '中间件'),
+}
+
+
+def _span_tags_map(span):
+    result = {}
+    for item in (span.get('tags') or []) + (span.get('resource_tags') or []) + (span.get('scope_tags') or []):
+        key = str(item.get('key') or '').strip()
+        if key:
+            result[key] = str(item.get('value') or '').strip()
+    return result
+
+
+def _runtime_component_from_span(span):
+    tag_map = _span_tags_map(span)
+    values = [
+        tag_map.get('db.system'),
+        tag_map.get('db.type'),
+        tag_map.get('messaging.system'),
+        tag_map.get('peer.service'),
+        span.get('component'),
+        span.get('peer'),
+        span.get('endpoint_name'),
+        span.get('layer'),
+    ]
+    text = ' '.join(str(item or '').lower() for item in values)
+    for hint, (technology, component_type) in RUNTIME_COMPONENT_HINTS.items():
+        if hint in text:
+            peer_name = str(span.get('peer') or tag_map.get('server.address') or tag_map.get('net.peer.name') or '').split(':', 1)[0].strip()
+            name = peer_name if peer_name and hint in peer_name.lower() else technology
+            node_key = ''.join(char.lower() if char.isalnum() else '-' for char in name).strip('-') or hint
+            return {
+                'id': f'runtime:{node_key}',
+                'name': name,
+                'type': 'RUNTIME_COMPONENT',
+                'runtime_type': component_type,
+                'technology': technology,
+                'layers': [component_type],
+            }
+    return None
+
+
 def _trace_detail_from_spans(trace_id, spans):
     normalized_spans = []
     services = set()
@@ -613,6 +670,18 @@ def _build_topology_from_trace_details(details):
         for span in detail.get('spans') or []:
             service = span.get('service_code') or 'unknown'
             nodes.setdefault(service, {'id': service, 'name': service, 'type': 'SERVICE', 'layers': [span.get('layer') or 'UNSET']})
+            runtime_component = _runtime_component_from_span(span)
+            if runtime_component:
+                nodes.setdefault(runtime_component['id'], runtime_component)
+                call_id = f'{service}->{runtime_component["id"]}'
+                calls.setdefault(call_id, {
+                    'id': call_id,
+                    'source': service,
+                    'target': runtime_component['id'],
+                    'count': 0,
+                    'type': 'runtime_dependency',
+                })
+                calls[call_id]['count'] += 1
             parent_id = span.get('parent_span_id')
             parent = span_map.get(str(parent_id))
             if not parent:

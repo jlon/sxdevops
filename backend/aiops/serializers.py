@@ -121,6 +121,7 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'description', 'event_environments', 'grafana_folder_keys',
             'log_datasource_ids', 'tracing_datasource_ids', 'alert_environments',
+            'k8s_cluster_ids', 'k8s_namespaces', 'docker_host_ids',
             'is_enabled', 'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
@@ -138,6 +139,8 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
             'log_datasource_ids',
             'tracing_datasource_ids',
             'alert_environments',
+            'k8s_cluster_ids',
+            'docker_host_ids',
         ]
         for field in list_fields:
             if field not in attrs:
@@ -161,12 +164,36 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
                     normalized.append(normalized_item)
             attrs[field] = normalized
 
+        if 'k8s_namespaces' in attrs:
+            value = attrs.get('k8s_namespaces')
+            if value in (None, ''):
+                attrs['k8s_namespaces'] = {}
+            elif not isinstance(value, dict):
+                raise serializers.ValidationError({'k8s_namespaces': '必须为对象'})
+            else:
+                normalized = {}
+                for cluster_id, namespaces in value.items():
+                    try:
+                        normalized_cluster_id = str(int(cluster_id))
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(namespaces, list):
+                        continue
+                    normalized_namespaces = []
+                    for namespace in namespaces:
+                        namespace = str(namespace or '').strip()
+                        if namespace and namespace not in normalized_namespaces:
+                            normalized_namespaces.append(namespace)
+                    if normalized_namespaces:
+                        normalized[normalized_cluster_id] = normalized_namespaces
+                attrs['k8s_namespaces'] = normalized
+
         instance = self.instance
         has_association = any(
             attrs.get(field, getattr(instance, field, [])) for field in list_fields
         )
         if not has_association:
-            raise serializers.ValidationError('请至少选择一个事件中心、看板目录、日志、链路或告警来源')
+            raise serializers.ValidationError('请至少选择一个事件中心、看板目录、日志、链路、告警、K8s 集群或 Docker 环境来源')
         return attrs
 
 

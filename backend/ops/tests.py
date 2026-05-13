@@ -1,5 +1,6 @@
 from urllib.parse import quote
 from datetime import datetime
+import ssl
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -24,7 +25,8 @@ from ops.models import (
     ObservabilityDataSourceLink,
     TracingDataSource,
 )
-from ops.tracing_providers import _tempo_flatten_trace, _trace_detail_from_spans
+from ops.k8s_views import _prepare_kubeconfig
+from ops.tracing_providers import _build_topology_from_trace_details, _tempo_flatten_trace, _trace_detail_from_spans
 
 
 TEST_LOG_PROVIDER_CONFIGS = {
@@ -2197,6 +2199,48 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(span['resource_tags'][1]['key'], 'k8s.pod.name')
         self.assertEqual(span['scope_tags'][0]['value'], 'opentelemetry.instrumentation.django')
 
+    def test_trace_topology_includes_runtime_component_dependencies(self):
+        detail = _trace_detail_from_spans('tempo-runtime-trace', [
+            {
+                'span_id': 'root',
+                'parent_span_id': '',
+                'service_code': 'checkout',
+                'endpoint_name': 'GET /checkout',
+                'start_time': '2026-05-03T12:00:00+00:00',
+                'end_time': '2026-05-03T12:00:01+00:00',
+            },
+            {
+                'span_id': 'redis',
+                'parent_span_id': 'root',
+                'service_code': 'checkout',
+                'endpoint_name': 'Redis GET cart',
+                'start_time': '2026-05-03T12:00:00.100+00:00',
+                'end_time': '2026-05-03T12:00:00.140+00:00',
+                'component': 'Jedis',
+                'peer': 'redis:6379',
+                'layer': 'CACHE',
+            },
+            {
+                'span_id': 'postgres',
+                'parent_span_id': 'root',
+                'service_code': 'checkout',
+                'endpoint_name': 'SELECT products',
+                'start_time': '2026-05-03T12:00:00.200+00:00',
+                'end_time': '2026-05-03T12:00:00.320+00:00',
+                'tags': [{'key': 'db.system', 'value': 'postgresql'}],
+                'layer': 'DATABASE',
+            },
+        ])
+
+        topology = _build_topology_from_trace_details([detail])
+
+        node_ids = {node['id'] for node in topology['nodes']}
+        self.assertIn('checkout', node_ids)
+        self.assertIn('runtime:redis', node_ids)
+        self.assertIn('runtime:postgresql', node_ids)
+        self.assertTrue(any(call['source'] == 'checkout' and call['target'] == 'runtime:redis' for call in topology['calls']))
+        self.assertTrue(any(call['source'] == 'checkout' and call['target'] == 'runtime:postgresql' for call in topology['calls']))
+
     def test_tempo_flatten_trace_keeps_full_resource_attributes(self):
         spans = _tempo_flatten_trace({
             'batches': [
@@ -2432,6 +2476,48 @@ class ContainerManagementTests(TestCase):
         self.user = get_user_model().objects.create_superuser('container-admin', 'container@example.com', 'Admin@123456')
         self.client.force_authenticate(user=self.user)
         cache.clear()
+
+    def test_prepare_kubeconfig_overrides_active_cluster_server(self):
+        cluster = K8sCluster.objects.create(
+            name='prod-k8s',
+            api_server='https://k8s.example.com:6443',
+            kubeconfig=(
+                'apiVersion: v1\n'
+                'kind: Config\n'
+                'current-context: prod\n'
+                'contexts:\n'
+                '  - name: prod\n'
+                '    context:\n'
+                '      cluster: prod-cluster\n'
+                '      user: prod-user\n'
+                'clusters:\n'
+                '  - name: prod-cluster\n'
+                '    cluster:\n'
+                '      server: https://120.26.213.176:6443\n'
+            ),
+        )
+
+        rendered = _prepare_kubeconfig(cluster)
+
+        self.assertIn('server: https://k8s.example.com:6443', rendered)
+        self.assertNotIn('server: https://120.26.213.176:6443', rendered)
+
+    @patch('ops.k8s_views._get_k8s_client')
+    def test_k8s_connection_reports_certificate_hint_on_ssl_error(self, mock_get_client):
+        cluster = K8sCluster.objects.create(
+            name='broken-k8s',
+            api_server='https://120.26.213.176:6443',
+            kubeconfig='apiVersion: v1\nkind: Config\ncurrent-context: broken\nclusters: []\ncontexts: []\n',
+        )
+        mock_get_client.side_effect = ssl.SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed')
+
+        response = self.client.post(f'/api/k8s/clusters/{cluster.id}/test_connection/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload['success'])
+        self.assertIn('证书校验失败', payload['message'])
+        self.assertEqual(K8sCluster.objects.get(id=cluster.id).status, 'error')
 
     def test_k8s_summary_returns_demo_cluster_metrics(self):
         cluster = K8sCluster.objects.create(

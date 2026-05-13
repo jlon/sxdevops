@@ -38,16 +38,42 @@
       <span>模型 Key 加密保存；高风险动作默认二次确认；MCP 与 Skill 受控接入。</span>
     </div>
 
-    <section class="panel">
-      <el-tabs v-model="activeTab">
-        <el-tab-pane label="智能体策略" name="strategy" />
-        <el-tab-pane label="MCP" name="mcp" />
-        <el-tab-pane label="Skill" name="skills" />
-        <el-tab-pane label="IM 接入" name="im" />
-        <el-tab-pane label="模型提供商" name="providers" />
-        <el-tab-pane label="审计" name="audit" />
+    <section class="tabs-card">
+      <el-tabs v-model="activeTab" class="event-like-tabs">
+        <el-tab-pane name="strategy">
+          <template #label>
+            <span class="tab-label"><el-icon><Setting /></el-icon>智能体策略</span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="mcp">
+          <template #label>
+            <span class="tab-label"><el-icon><Connection /></el-icon>MCP</span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="skills">
+          <template #label>
+            <span class="tab-label"><el-icon><Tools /></el-icon>Skill</span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="im">
+          <template #label>
+            <span class="tab-label"><el-icon><Message /></el-icon>IM 接入</span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="providers">
+          <template #label>
+            <span class="tab-label"><el-icon><Cpu /></el-icon>模型提供商</span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="audit">
+          <template #label>
+            <span class="tab-label"><el-icon><Tickets /></el-icon>审计</span>
+          </template>
+        </el-tab-pane>
       </el-tabs>
+    </section>
 
+    <section class="panel">
       <template v-if="activeTab === 'strategy'">
         <div class="config-grid">
           <div class="config-section">
@@ -407,7 +433,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ChatDotSquare, InfoFilled } from '@element-plus/icons-vue'
+import { ChatDotSquare, Connection, Cpu, InfoFilled, Message, Setting, Tickets, Tools } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import {
@@ -853,6 +879,7 @@ onMounted(async () => {
 .page-desc.inline-subtitle{margin:0;color:#64748b;font-size:13px;line-height:1.6}
 .stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.release-stat-card{position:relative;min-height:76px;padding:14px 16px;border-radius:16px;background:linear-gradient(145deg,#ffffff 0%,#f6faff 100%);border:1px solid rgba(148,163,184,.16);box-shadow:0 12px 26px rgba(15,23,42,.05);overflow:hidden}.release-stat-card::after{content:'';position:absolute;inset:auto -24px -30px auto;width:108px;height:108px;border-radius:50%;background:radial-gradient(circle,rgba(64,158,255,.16) 0%,rgba(64,158,255,0) 70%)}.stat-value{position:relative;font-size:28px;font-weight:700;color:#0f172a}.stat-label{position:relative;margin-top:6px;color:#64748b;font-size:13px}.success-card::after{background:radial-gradient(circle,rgba(16,185,129,.18) 0%,rgba(16,185,129,0) 70%)}.warning-card::after{background:radial-gradient(circle,rgba(245,158,11,.18) 0%,rgba(245,158,11,0) 70%)}
 .runtime-strip{display:flex;align-items:center;gap:0;padding:8px 11px;border-radius:10px;background:linear-gradient(90deg,rgba(59,130,246,.08) 0%,rgba(14,165,233,.04) 100%);color:#64748b;border:1px solid rgba(59,130,246,.14);font-size:12px;line-height:1.45;margin-top:-10px}.runtime-strip :deep(.el-icon){display:none}
+.tabs-card{display:flex;align-items:flex-start;width:100%;padding:4px;border:1px solid rgba(148,163,184,.16);border-radius:12px;background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(248,250,252,.9));box-shadow:0 12px 26px rgba(15,23,42,.04)}.event-like-tabs{width:100%}.event-like-tabs :deep(.el-tabs__header){margin:0}.event-like-tabs :deep(.el-tabs__nav-wrap){display:block;max-width:100%;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}.event-like-tabs :deep(.el-tabs__nav-wrap::after),.event-like-tabs :deep(.el-tabs__active-bar){display:none}.event-like-tabs :deep(.el-tabs__content){display:none}.event-like-tabs :deep(.el-tabs__nav-scroll){overflow:visible}.event-like-tabs :deep(.el-tabs__nav){display:flex;gap:8px;border:0}.event-like-tabs :deep(.el-tabs__item){min-height:38px;height:38px;padding:0 20px!important;border-radius:8px;color:#4e5969;font-size:13px;font-weight:700;line-height:38px}.event-like-tabs :deep(.el-tabs__item:hover){background:rgba(51,112,255,.06);color:#245bdb}.event-like-tabs :deep(.el-tabs__item.is-active){background:#e8f0ff;color:#245bdb;box-shadow:inset 0 0 0 1px rgba(51,112,255,.08)}.tab-label{display:inline-flex;align-items:center;gap:6px}.tab-label :deep(.el-icon){font-size:15px}
 .config-grid{align-items:flex-start}.config-section{flex:1;padding:8px 0}.section-title{font-size:14px;font-weight:700;color:#0f172a;margin-bottom:8px}.switch-list{flex-direction:column}.switch-item{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}
 .section-toolbar{justify-content:flex-end;margin-bottom:8px}.dialog-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px}.audit-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.audit-card{padding:16px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0;display:flex;flex-direction:column;gap:8px}.audit-card strong{font-size:28px;color:#0f172a}
 .model-discovery-strip{display:flex;align-items:center;gap:8px;margin:-2px 0 12px 102px;padding:8px 10px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0}

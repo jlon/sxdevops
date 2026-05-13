@@ -7,7 +7,8 @@ from rest_framework.test import APIClient
 
 from cmdb.models import CIType, ConfigItem
 from eventwall.models import EventRecord, EventSource
-from ops.models import Alert, Deployment, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, LogEntry, ObservabilityDataSourceLink, TracingDataSource, TransactionTicket
+from marketplace.models import ServiceDeployment, ServiceTemplate
+from ops.models import Alert, Deployment, DockerHost, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, LogEntry, ObservabilityDataSourceLink, SystemPostureSystem, TracingDataSource, TransactionTicket
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -194,6 +195,68 @@ class AIOpsApiTests(TestCase):
         other_log_source = LogDataSource.objects.create(name='other-loki', provider='loki', is_enabled=True)
         trace_source = TracingDataSource.objects.create(name='trade-tempo', provider='tempo', is_enabled=True)
         other_trace_source = TracingDataSource.objects.create(name='other-tempo', provider='tempo', is_enabled=True)
+        cluster = K8sCluster.objects.create(
+            name='trade-prod-k8s',
+            api_server='https://trade-prod-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        docker_host = DockerHost.objects.create(
+            name='trade-docker-01',
+            ip_address='10.30.1.20',
+            status='connected',
+            docker_api_version='24.0',
+        )
+        compose_host = Host.objects.create(
+            hostname='trade-docker-01',
+            ip_address='10.30.1.20',
+            environment='prod',
+            status='online',
+        )
+        mysql_template = ServiceTemplate.objects.create(
+            name='Trade MySQL',
+            icon='mysql',
+            category='database',
+            versions=['8.0'],
+            k8s_manifest_template='kind: Deployment',
+        )
+        redis_template = ServiceTemplate.objects.create(
+            name='Trade Redis',
+            icon='redis',
+            category='cache',
+            versions=['7.2'],
+            docker_compose_template='services: {}',
+        )
+        ServiceDeployment.objects.create(
+            template=mysql_template,
+            deploy_mode='k8s',
+            cluster=cluster,
+            namespace='database',
+            release_name='trade-mysql',
+            version='8.0',
+            status='running',
+            env_config={},
+        )
+        ServiceDeployment.objects.create(
+            template=redis_template,
+            deploy_mode='docker_compose',
+            host=compose_host,
+            version='7.2',
+            status='running',
+            env_config={},
+        )
+        Deployment.objects.create(
+            app_name='checkout',
+            version='v2.3.1',
+            environment='prod',
+            business_line='电商',
+            deploy_mode='k8s',
+            status='running',
+            is_current=True,
+            cluster=cluster,
+            namespace='trade-prod',
+            release_name='checkout-v231',
+        )
         GrafanaSetting.objects.create(
             name='default',
             enabled=True,
@@ -232,6 +295,15 @@ class AIOpsApiTests(TestCase):
             enabled=True,
             status=EventSource.STATUS_HEALTHY,
         )
+        EventSource.objects.create(
+            code='builtin-k8s',
+            name='平台 K8s 事件',
+            source_kind=EventSource.KIND_BUILTIN,
+            source_type=EventSource.TYPE_BUILTIN_K8S,
+            enabled=False,
+            status=EventSource.STATUS_DISABLED,
+            config={'resource_types': ['deployment']},
+        )
         AIOpsKnowledgeEnvironment.objects.create(
             name='交易生产',
             event_environments=['event-prod'],
@@ -239,6 +311,8 @@ class AIOpsApiTests(TestCase):
             log_datasource_ids=[log_source.id],
             tracing_datasource_ids=[trace_source.id],
             alert_environments=['alert-prod'],
+            k8s_cluster_ids=[cluster.id],
+            docker_host_ids=[docker_host.id],
             is_enabled=True,
             created_by='aiops_user',
             updated_by='aiops_user',
@@ -288,6 +362,19 @@ class AIOpsApiTests(TestCase):
             application='other',
             metadata={'event_source_code': 'gitlab'},
         )
+        EventRecord.objects.create(
+            module='k8s',
+            category='runtime',
+            action='update',
+            title='K8s checkout deployment scaled',
+            source_type=EventRecord.SOURCE_SYSTEM,
+            business_line='电商',
+            environment='event-prod',
+            application='checkout',
+            resource_module='ops',
+            resource_type='deployment',
+            resource_name='checkout',
+        )
 
         options_response = self.client.get('/api/aiops/knowledge-graph/')
         self.assertEqual(options_response.status_code, 200)
@@ -302,6 +389,11 @@ class AIOpsApiTests(TestCase):
         self.assertIn('service:交易生产:电商:checkout', node_ids)
         self.assertIn('trade-loki', node_labels)
         self.assertIn('trade-tempo', node_labels)
+        self.assertIn('trade-prod-k8s', node_labels)
+        self.assertIn('trade-docker-01', node_labels)
+        self.assertIn('node-01', node_labels)
+        self.assertIn('Trade MySQL / trade-mysql', node_labels)
+        self.assertIn('Trade Redis', node_labels)
         self.assertIn('交易系统', node_labels)
         self.assertNotIn('交易总览', node_labels)
         self.assertNotIn('交易系统/服务明细', node_labels)
@@ -312,10 +404,22 @@ class AIOpsApiTests(TestCase):
         self.assertNotIn('其他总览', node_labels)
         self.assertNotIn('alert-prod', node_labels)
         self.assertIn('Jenkins', node_labels)
+        self.assertIn('平台 K8s 事件', node_labels)
         self.assertNotIn('GitLab', node_labels)
         checkout_node = next(node for node in response.data['nodes'] if node['id'] == 'service:交易生产:电商:checkout')
         self.assertIn('alerts', {item['name'] for item in checkout_node['capabilities']})
         self.assertIn('external_events', {item['name'] for item in checkout_node['capabilities']})
+        self.assertIn('internal_events', {item['name'] for item in checkout_node['capabilities']})
+        self.assertTrue(any(node['kind'] == 'infrastructure' for node in response.data['nodes']))
+        runtime_nodes = [node for node in response.data['nodes'] if node['kind'] == 'runtime_component']
+        self.assertTrue(runtime_nodes)
+        self.assertIn('DB', {node.get('runtime_type') for node in runtime_nodes})
+        self.assertIn('中间件', {node.get('runtime_type') for node in runtime_nodes})
+        relation_types = {edge['relation'] for edge in response.data['edges']}
+        self.assertIn('service_deployment', relation_types)
+        self.assertIn('infrastructure_member', relation_types)
+        self.assertIn('environment_infrastructure', relation_types)
+        self.assertNotIn('infrastructure_runtime', relation_types)
 
         catalog_response = self.client.get('/api/aiops/knowledge-environments/catalog/')
         self.assertEqual(catalog_response.status_code, 200)
@@ -325,7 +429,672 @@ class AIOpsApiTests(TestCase):
         self.assertIn('交易系统', catalog_folder_keys)
         self.assertNotIn('交易总览', catalog_folder_keys)
         self.assertIn('trade-loki', {item['name'] for item in catalog_response.data['log_datasources']})
+        self.assertIn('trade-prod-k8s', {item['name'] for item in catalog_response.data['k8s_clusters']})
+        self.assertIn('trade-docker-01', {item['name'] for item in catalog_response.data['docker_hosts']})
         self.assertNotIn('ELK 演示（API Key 模板）', {item['name'] for item in catalog_response.data['log_datasources']})
+
+        knowledge_env = AIOpsKnowledgeEnvironment.objects.get(name='交易生产')
+        self.assertIsNotNone(knowledge_env.snapshot_generated_at)
+        self.assertTrue(any(edge['relation'] == 'service_deployment' for edge in knowledge_env.association_snapshot.get('edges', [])))
+        self.assertTrue(knowledge_env.child_node_snapshot.get('children'))
+
+    def test_knowledge_graph_infers_service_host_from_infrastructure_inventory(self):
+        cluster = K8sCluster.objects.create(
+            name='retail-prod-k8s',
+            api_server='https://retail-prod-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        docker_host = DockerHost.objects.create(
+            name='app-release-test',
+            ip_address='192.168.1.120',
+            status='connected',
+            docker_api_version='24.0',
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='零售生产',
+            event_environments=['retail-event'],
+            alert_environments=['retail-alert'],
+            k8s_cluster_ids=[cluster.id],
+            docker_host_ids=[docker_host.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+        EventRecord.objects.create(
+            module='k8s',
+            category='runtime',
+            action='observe',
+            title='api-server pod running',
+            source_type=EventRecord.SOURCE_SYSTEM,
+            business_line='零售',
+            environment='retail-event',
+            application='api-server',
+            resource_module='ops',
+            resource_type='pod',
+            resource_name='api-server',
+        )
+        EventRecord.objects.create(
+            module='docker',
+            category='runtime',
+            action='observe',
+            title='order-center container running',
+            source_type=EventRecord.SOURCE_SYSTEM,
+            business_line='零售',
+            environment='retail-event',
+            application='order-center',
+            resource_module='ops',
+            resource_type='container',
+            resource_name='order-center',
+        )
+
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': '零售生产', 'system': '零售'})
+
+        self.assertEqual(response.status_code, 200)
+        node_ids = {node['id'] for node in response.data['nodes']}
+        self.assertIn('service:零售生产:零售:api-server', node_ids)
+        self.assertIn('service:零售生产:零售:order-center', node_ids)
+
+        api_server_edges = [
+            edge for edge in response.data['edges']
+            if edge['source'] == 'service:零售生产:零售:api-server' and edge['relation'] == 'service_deployment'
+        ]
+        order_center_edges = [
+            edge for edge in response.data['edges']
+            if edge['source'] == 'service:零售生产:零售:order-center' and edge['relation'] == 'service_deployment'
+        ]
+        self.assertTrue(any(edge['target'].startswith('infrastructure:k8s_host:') for edge in api_server_edges))
+        self.assertIn(f'infrastructure:docker:{docker_host.id}', {edge['target'] for edge in order_center_edges})
+
+    def test_knowledge_graph_discovers_services_from_infrastructure_without_events(self):
+        cluster = K8sCluster.objects.create(
+            name='retail-runtime-k8s',
+            api_server='https://retail-runtime-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        docker_host = DockerHost.objects.create(
+            name='app-release-test',
+            ip_address='192.168.1.120',
+            status='connected',
+            docker_api_version='24.0',
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='retail-runtime',
+            k8s_cluster_ids=[cluster.id],
+            docker_host_ids=[docker_host.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'retail-runtime'})
+
+        self.assertEqual(response.status_code, 200)
+        node_ids = {node['id'] for node in response.data['nodes']}
+        api_service_id = 'service:retail-runtime:未归属系统:api-server'
+        order_service_id = 'service:retail-runtime:未归属系统:order-center'
+        self.assertIn(api_service_id, node_ids)
+        self.assertIn(order_service_id, node_ids)
+        self.assertTrue(any(
+            edge['source'] == api_service_id
+            and edge['relation'] == 'service_deployment'
+            and edge['target'].startswith('infrastructure:k8s_host:')
+            for edge in response.data['edges']
+        ))
+        self.assertTrue(any(
+            edge['source'] == order_service_id
+            and edge['relation'] == 'service_deployment'
+            and edge['target'] == f'infrastructure:docker:{docker_host.id}'
+            for edge in response.data['edges']
+        ))
+
+    def test_knowledge_graph_discovers_services_from_tracing_without_events(self):
+        trace_source = TracingDataSource.objects.create(
+            name='checkout-tempo',
+            provider='tempo',
+            is_enabled=True,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='checkout-prod',
+            tracing_datasource_ids=[trace_source.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        with mock.patch('aiops.knowledge_graph.load_tracing_catalog') as catalog_loader:
+            catalog_loader.return_value = {
+                'services': [{'id': 'checkout', 'name': 'checkout'}],
+            }
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'checkout-prod'})
+
+        self.assertEqual(response.status_code, 200)
+        service_id = 'service:checkout-prod:未归属系统:checkout'
+        service_node = next((node for node in response.data['nodes'] if node['id'] == service_id), None)
+        self.assertIsNotNone(service_node)
+        capability_names = {item['name'] for item in service_node.get('capabilities', [])}
+        self.assertIn('tracing', capability_names)
+
+    def test_knowledge_graph_prefers_tracing_service_catalog_over_infrastructure_discovery(self):
+        cluster = K8sCluster.objects.create(
+            name='trace-first-k8s',
+            api_server='https://trace-first-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        trace_source = TracingDataSource.objects.create(
+            name='trace-first-tempo',
+            provider='tempo',
+            is_enabled=True,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='trace-first-prod',
+            k8s_cluster_ids=[cluster.id],
+            tracing_datasource_ids=[trace_source.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        with mock.patch('aiops.knowledge_graph.load_tracing_catalog') as catalog_loader:
+            catalog_loader.return_value = {
+                'services': [{'id': 'checkout', 'name': 'checkout'}],
+            }
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'trace-first-prod'})
+
+        self.assertEqual(response.status_code, 200)
+        service_labels = {node['label'] for node in response.data['nodes'] if node['kind'] == 'service'}
+        self.assertIn('checkout', service_labels)
+        self.assertNotIn('api-server', service_labels)
+        self.assertNotIn('redis-master', service_labels)
+
+    def test_knowledge_graph_maps_tracing_service_to_system_by_service_alias(self):
+        trace_source = TracingDataSource.objects.create(
+            name='order-tempo',
+            provider='tempo',
+            is_enabled=True,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='order-prod-env',
+            event_environments=['order-events'],
+            tracing_datasource_ids=[trace_source.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+        EventRecord.objects.create(
+            module='deploy',
+            category='release',
+            action='finish',
+            title='order released',
+            source_type=EventRecord.SOURCE_SYSTEM,
+            business_line='交易系统',
+            environment='order-events',
+            application='order',
+            resource_type='deployment',
+            resource_name='order',
+        )
+
+        with mock.patch('aiops.knowledge_graph.load_tracing_catalog') as catalog_loader:
+            catalog_loader.return_value = {
+                'services': [{'id': 'order-service', 'name': 'order-service'}],
+            }
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'order-prod-env'})
+
+        self.assertEqual(response.status_code, 200)
+        node_ids = {node['id'] for node in response.data['nodes']}
+        self.assertIn('service:order-prod-env:交易系统:order-service', node_ids)
+        self.assertNotIn('service:order-prod-env:未归属系统:order-service', node_ids)
+
+    def test_knowledge_graph_does_not_duplicate_tracing_service_when_deployment_has_system(self):
+        cluster = K8sCluster.objects.create(
+            name='checkout-prod-k8s',
+            api_server='https://checkout-prod-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        trace_source = TracingDataSource.objects.create(
+            name='checkout-prod-tempo',
+            provider='tempo',
+            is_enabled=True,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='checkout-prod-env',
+            k8s_cluster_ids=[cluster.id],
+            tracing_datasource_ids=[trace_source.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+        Deployment.objects.create(
+            app_name='checkout',
+            version='v1.0.0',
+            environment='prod',
+            business_line='电商',
+            deploy_mode='k8s',
+            status='running',
+            is_current=True,
+            cluster=cluster,
+            namespace='production',
+            release_name='checkout',
+        )
+
+        with mock.patch('aiops.knowledge_graph.load_tracing_catalog') as catalog_loader:
+            catalog_loader.return_value = {
+                'services': [{'id': 'checkout', 'name': 'checkout'}],
+            }
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'checkout-prod-env'})
+
+        self.assertEqual(response.status_code, 200)
+        service_nodes = [node for node in response.data['nodes'] if node['kind'] == 'service' and node['label'] == 'checkout']
+        self.assertEqual(len(service_nodes), 1)
+        self.assertEqual(service_nodes[0]['system_name'], '电商')
+
+    def test_knowledge_graph_maps_tracing_service_to_system_by_service_tags(self):
+        trace_source = TracingDataSource.objects.create(
+            name='checkout-tempo-owned',
+            provider='tempo',
+            is_enabled=True,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='checkout-trace-owned-env',
+            tracing_datasource_ids=[trace_source.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        with mock.patch('aiops.knowledge_graph.load_tracing_catalog') as catalog_loader:
+            catalog_loader.return_value = {
+                'services': [{
+                    'id': 'checkout',
+                    'name': 'checkout',
+                    'tags': [{'key': 'system', 'value': '电商'}],
+                }],
+            }
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'checkout-trace-owned-env'})
+
+        self.assertEqual(response.status_code, 200)
+        node_ids = {node['id'] for node in response.data['nodes']}
+        self.assertIn('service:checkout-trace-owned-env:电商:checkout', node_ids)
+        self.assertNotIn('service:checkout-trace-owned-env:未归属系统:checkout', node_ids)
+
+    def test_knowledge_graph_maps_k8s_workload_label_to_system_without_cmdb(self):
+        cluster = K8sCluster.objects.create(
+            name='checkout-label-k8s',
+            api_server='https://checkout-label-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='checkout-label-env',
+            k8s_cluster_ids=[cluster.id],
+            k8s_namespaces={str(cluster.id): ['production']},
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        with mock.patch('aiops.knowledge_graph._k8s_cluster_workloads') as workload_loader:
+            workload_loader.return_value = [{
+                'name': 'checkout',
+                'namespace': 'production',
+                'workload_type': 'deployment',
+                'labels': {'app.kubernetes.io/part-of': '电商'},
+                'images': 'registry.example.com/checkout:v1',
+            }]
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'checkout-label-env'})
+
+        self.assertEqual(response.status_code, 200)
+        node_ids = {node['id'] for node in response.data['nodes']}
+        self.assertIn('service:checkout-label-env:电商:checkout', node_ids)
+        self.assertNotIn('service:checkout-label-env:未归属系统:checkout', node_ids)
+
+    def test_knowledge_graph_discovers_runtime_components_from_tracing_spans(self):
+        trace_source = TracingDataSource.objects.create(
+            name='checkout-runtime-tempo',
+            provider='tempo',
+            is_enabled=True,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='checkout-runtime-env',
+            tracing_datasource_ids=[trace_source.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        with (
+            mock.patch('aiops.knowledge_graph.load_tracing_catalog') as catalog_loader,
+            mock.patch('ops.tracing_providers.load_trace_detail') as detail_loader,
+        ):
+            catalog_loader.return_value = {
+                'tracing': {'source': 'tempo'},
+                'services': [{'id': 'checkout', 'name': 'checkout'}],
+                'recent_traces': [{'trace_id': 'trace-runtime-001'}],
+            }
+            detail_loader.return_value = {
+                'spans': [{
+                    'service_code': 'checkout',
+                    'component': 'MySQL',
+                    'peer': 'checkout-mysql:3306',
+                    'endpoint_name': 'OrderRepository.save',
+                    'tags': [{'key': 'db.type', 'value': 'mysql'}],
+                }],
+            }
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'checkout-runtime-env'})
+
+        self.assertEqual(response.status_code, 200)
+        runtime_nodes = [node for node in response.data['nodes'] if node['kind'] == 'runtime_component']
+        self.assertTrue(any(node.get('technology') == 'MySQL' for node in runtime_nodes))
+        self.assertIn('service_runtime', {edge['relation'] for edge in response.data['edges']})
+
+    def test_knowledge_graph_discovers_runtime_components_from_k8s_workloads(self):
+        cluster = K8sCluster.objects.create(
+            name='runtime-k8s',
+            api_server='https://runtime-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='runtime-k8s-env',
+            k8s_cluster_ids=[cluster.id],
+            k8s_namespaces={str(cluster.id): ['production']},
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        with (
+            mock.patch('aiops.knowledge_graph._k8s_cluster_workloads') as workload_loader,
+            mock.patch('aiops.knowledge_graph._k8s_cluster_pods') as pod_loader,
+        ):
+            workload_loader.return_value = [{
+                'name': 'redis-master',
+                'namespace': 'production',
+                'workload_type': 'statefulset',
+                'images': 'redis:7.2-alpine',
+            }]
+            pod_loader.return_value = []
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'runtime-k8s-env'})
+
+        self.assertEqual(response.status_code, 200)
+        runtime_nodes = [node for node in response.data['nodes'] if node['kind'] == 'runtime_component']
+        self.assertTrue(any(node.get('technology') == 'Redis' for node in runtime_nodes))
+        relation_types = {edge['relation'] for edge in response.data['edges']}
+        self.assertIn('service_deployment', relation_types)
+        self.assertNotIn('infrastructure_runtime', relation_types)
+
+    def test_knowledge_graph_links_service_to_runtime_component_from_configmap(self):
+        cluster = K8sCluster.objects.create(
+            name='configmap-runtime-k8s',
+            api_server='https://configmap-runtime-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        trace_source = TracingDataSource.objects.create(
+            name='configmap-runtime-tempo',
+            provider='tempo',
+            is_enabled=True,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='configmap-runtime-env',
+            k8s_cluster_ids=[cluster.id],
+            k8s_namespaces={str(cluster.id): ['production']},
+            tracing_datasource_ids=[trace_source.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        with (
+            mock.patch('aiops.knowledge_graph.load_tracing_catalog') as catalog_loader,
+            mock.patch('aiops.knowledge_graph._k8s_cluster_workloads') as workload_loader,
+            mock.patch('aiops.knowledge_graph._k8s_cluster_pods') as pod_loader,
+            mock.patch('aiops.knowledge_graph._k8s_cluster_configmaps') as configmap_loader,
+        ):
+            catalog_loader.return_value = {
+                'tracing': {'source': 'tempo'},
+                'services': [{'id': 'checkout', 'name': 'checkout'}],
+                'recent_traces': [],
+            }
+            workload_loader.return_value = [{
+                'name': 'redis-master',
+                'namespace': 'production',
+                'workload_type': 'statefulset',
+                'images': 'redis:7.2-alpine',
+            }]
+            pod_loader.return_value = [{
+                'name': 'redis-master-0',
+                'namespace': 'production',
+                'node': 'node-02',
+                'status': 'Running',
+                'containers': [{'name': 'redis', 'image': 'redis:7.2-alpine'}],
+            }]
+            configmap_loader.return_value = [{
+                'name': 'checkout-config',
+                'namespace': 'production',
+                'data': {'REDIS_URL': 'redis://redis-master:6379', 'SERVICE_NAME': 'checkout'},
+            }]
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'configmap-runtime-env'})
+
+        self.assertEqual(response.status_code, 200)
+        runtime_node_ids = {node['id'] for node in response.data['nodes'] if node['kind'] == 'runtime_component'}
+        self.assertTrue(runtime_node_ids)
+        self.assertTrue(any(
+            edge['source'].startswith('service:configmap-runtime-env:')
+            and edge['source'].endswith(':checkout')
+            and edge['target'] in runtime_node_ids
+            and edge['relation'] == 'service_runtime'
+            for edge in response.data['edges']
+        ))
+        self.assertTrue(any(
+            edge['source'] in runtime_node_ids
+            and edge['target'].startswith(f'infrastructure:k8s_host:{cluster.id}:')
+            and edge['relation'] == 'service_deployment'
+            and edge['label'] == '部署在'
+            for edge in response.data['edges']
+        ))
+
+    def test_knowledge_graph_does_not_fan_out_shared_configmap_runtime_dependencies(self):
+        cluster = K8sCluster.objects.create(
+            name='shared-configmap-k8s',
+            api_server='https://shared-configmap-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        trace_source = TracingDataSource.objects.create(
+            name='shared-configmap-tempo',
+            provider='tempo',
+            is_enabled=True,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='shared-configmap-env',
+            k8s_cluster_ids=[cluster.id],
+            k8s_namespaces={str(cluster.id): ['production']},
+            tracing_datasource_ids=[trace_source.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        with (
+            mock.patch('aiops.knowledge_graph.load_tracing_catalog') as catalog_loader,
+            mock.patch('aiops.knowledge_graph._k8s_cluster_workloads') as workload_loader,
+            mock.patch('aiops.knowledge_graph._k8s_cluster_pods') as pod_loader,
+            mock.patch('aiops.knowledge_graph._k8s_cluster_configmaps') as configmap_loader,
+        ):
+            catalog_loader.return_value = {
+                'tracing': {'source': 'tempo'},
+                'services': [{'id': 'checkout', 'name': 'checkout'}, {'id': 'order', 'name': 'order'}],
+                'recent_traces': [],
+            }
+            workload_loader.return_value = [{
+                'name': 'redis-master',
+                'namespace': 'production',
+                'workload_type': 'statefulset',
+                'images': 'redis:7.2-alpine',
+            }]
+            pod_loader.return_value = []
+            configmap_loader.return_value = [{
+                'name': 'platform-runtime',
+                'namespace': 'production',
+                'data': {'REDIS_URL': 'redis://redis-master:6379', 'SERVICE_NAME': 'checkout'},
+            }]
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'shared-configmap-env'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(any(edge['relation'] == 'service_runtime' for edge in response.data['edges']))
+
+    def test_knowledge_graph_discovers_runtime_components_from_posture_dependencies(self):
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='posture-runtime-env',
+            alert_environments=['posture-prod'],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+        SystemPostureSystem.objects.create(
+            name='电商',
+            environment='posture-prod',
+            service_specs=[{'id': 'checkout', 'name': 'checkout'}],
+            dependencies=[{'id': 'order-db', 'name': '订单数据库', 'kind': '数据库', 'role': 'downstream'}],
+            is_enabled=True,
+        )
+
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'posture-runtime-env'})
+
+        self.assertEqual(response.status_code, 200)
+        runtime_nodes = [node for node in response.data['nodes'] if node['kind'] == 'runtime_component']
+        self.assertTrue(any(node['label'] == '订单数据库' for node in runtime_nodes))
+        self.assertIn('system_runtime', {edge['relation'] for edge in response.data['edges']})
+
+    def test_knowledge_graph_filters_k8s_services_by_configured_namespaces(self):
+        cluster = K8sCluster.objects.create(
+            name='retail-namespace-k8s',
+            api_server='https://retail-namespace-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='retail-production-only',
+            k8s_cluster_ids=[cluster.id],
+            k8s_namespaces={str(cluster.id): ['production']},
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'retail-production-only'})
+
+        self.assertEqual(response.status_code, 200)
+        service_labels = {node['label'] for node in response.data['nodes'] if node['kind'] == 'service'}
+        self.assertIn('api-server', service_labels)
+        self.assertNotIn('web-frontend', service_labels)
+
+    def test_knowledge_graph_discovers_k8s_services_from_workloads_only(self):
+        cluster = K8sCluster.objects.create(
+            name='retail-workload-k8s',
+            api_server='https://retail-workload-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='retail-workloads',
+            k8s_cluster_ids=[cluster.id],
+            k8s_namespaces={str(cluster.id): ['production']},
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+
+        with mock.patch('aiops.knowledge_graph._k8s_cluster_workloads') as workload_loader, \
+                mock.patch('aiops.knowledge_graph._k8s_cluster_pods') as pod_loader:
+            workload_loader.return_value = [
+                {'name': 'redis', 'namespace': 'production', 'workload_type': 'deployment'},
+            ]
+            pod_loader.return_value = [
+                {
+                    'name': 'inventory-restocker-28418210-x9z2p',
+                    'namespace': 'production',
+                    'node': 'node-01',
+                    'containers': [{'name': 'python', 'image': 'python:3.12'}],
+                },
+            ]
+            response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'retail-workloads'})
+
+        self.assertEqual(response.status_code, 200)
+        service_labels = {node['label'] for node in response.data['nodes'] if node['kind'] == 'service'}
+        self.assertIn('redis', service_labels)
+        self.assertNotIn('python', service_labels)
+        self.assertNotIn('inventory-restocker', service_labels)
+
+    def test_knowledge_graph_keeps_builtin_event_sources_visible_for_seed_internal_events(self):
+        cluster = K8sCluster.objects.create(
+            name='demo-ops-k8s',
+            api_server='https://demo-ops-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        EventSource.objects.create(
+            code='builtin-task-center',
+            name='任务中心',
+            source_kind=EventSource.KIND_BUILTIN,
+            source_type=EventSource.TYPE_BUILTIN_TASK,
+            enabled=True,
+            status=EventSource.STATUS_HEALTHY,
+            config={'resource_types': ['host_task_schedule']},
+        )
+        EventSource.objects.create(
+            code='builtin-workorder',
+            name='工单系统',
+            source_kind=EventSource.KIND_BUILTIN,
+            source_type=EventSource.TYPE_BUILTIN_WORKORDER,
+            enabled=True,
+            status=EventSource.STATUS_HEALTHY,
+            config={'resource_types': ['transaction_ticket']},
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='演练环境',
+            event_environments=['演练环境-k3s'],
+            alert_environments=['演练环境-alert'],
+            k8s_cluster_ids=[cluster.id],
+            is_enabled=True,
+            created_by='aiops_user',
+            updated_by='aiops_user',
+        )
+        EventRecord.objects.create(
+            module='ops',
+            category='task',
+            action='schedule',
+            title='节点巡检任务执行完成',
+            source_type=EventRecord.SOURCE_SEED,
+            business_line='平台运维',
+            environment='演练环境-k3s',
+            resource_type='host_task_schedule',
+            resource_name='agent-check',
+            metadata={'event_category': 'task_center'},
+        )
+        EventRecord.objects.create(
+            module='ops',
+            category='change',
+            action='approve',
+            title='配置变更工单审批完成',
+            source_type=EventRecord.SOURCE_SEED,
+            business_line='平台运维',
+            environment='演练环境-k3s',
+            resource_type='transaction_ticket',
+            resource_name='change-ticket-01',
+            metadata={'event_category': 'ops_transaction'},
+        )
+
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': '演练环境'})
+
+        self.assertEqual(response.status_code, 200)
+        node_labels = {node['label'] for node in response.data['nodes'] if node['kind'] == 'event_source'}
+        self.assertIn('内置-事件中心', node_labels)
+        self.assertIn('内置-工单系统', node_labels)
 
     def test_get_agent_config_creates_n9e_mcp_preset(self):
         get_agent_config()

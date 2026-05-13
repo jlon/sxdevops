@@ -318,6 +318,11 @@ const routes = [
         meta: { hidden: true, permission: 'ops.trace.datasource.view' },
       },
       {
+        path: 'observability/tracing/topology',
+        redirect: (to) => ({ path: '/observability/tracing', query: { ...to.query, topology: '1' } }),
+        meta: { hidden: true, permission: 'ops.trace.view' },
+      },
+      {
         path: 'observability/datasource-links',
         redirect: { path: '/observability/overview' },
         meta: { hidden: true, permission: 'ops.observability.link.view' },

@@ -9,6 +9,7 @@ import os
 import copy
 import base64
 import difflib
+import ssl
 import yaml
 from django.core.cache import cache
 from rest_framework import viewsets, status
@@ -26,6 +27,54 @@ K8S_DEMO_STATE_CACHE_TTL = 86400
 
 def _is_demo(cluster):
     return cluster.kubeconfig.strip() == 'demo'
+
+
+def _prepare_kubeconfig(cluster):
+    kubeconfig_text = cluster.kubeconfig or ''
+    api_server = (cluster.api_server or '').strip()
+    if not api_server:
+        return kubeconfig_text
+
+    try:
+        kubeconfig = yaml.safe_load(kubeconfig_text) or {}
+    except Exception:
+        return kubeconfig_text
+
+    if not isinstance(kubeconfig, dict):
+        return kubeconfig_text
+
+    current_context_name = kubeconfig.get('current-context')
+    contexts = kubeconfig.get('contexts') or []
+    clusters = kubeconfig.get('clusters') or []
+    context_cluster_name = ''
+
+    for context in contexts:
+        if not isinstance(context, dict):
+            continue
+        if context.get('name') != current_context_name:
+            continue
+        context_data = context.get('context') or {}
+        context_cluster_name = context_data.get('cluster') or ''
+        break
+
+    if not context_cluster_name and clusters:
+        first_cluster = clusters[0] if isinstance(clusters[0], dict) else {}
+        context_cluster_name = first_cluster.get('name') or ''
+
+    if not context_cluster_name:
+        return kubeconfig_text
+
+    for cluster_item in clusters:
+        if not isinstance(cluster_item, dict):
+            continue
+        if cluster_item.get('name') != context_cluster_name:
+            continue
+        cluster_data = cluster_item.setdefault('cluster', {})
+        if isinstance(cluster_data, dict):
+            cluster_data['server'] = api_server
+            return yaml.safe_dump(kubeconfig, sort_keys=False, allow_unicode=True)
+
+    return kubeconfig_text
 
 
 # ====== Demo 模拟数据 ======
@@ -152,7 +201,7 @@ def _get_k8s_client(cluster):
     from kubernetes import client, config
 
     tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
-    tmp.write(cluster.kubeconfig)
+    tmp.write(_prepare_kubeconfig(cluster))
     tmp.flush()
     tmp.close()
 
@@ -486,7 +535,15 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             cluster.status = 'error'
             cluster.save(update_fields=['status'])
             _clear_summary_cache(cluster)
-            return Response({'success': False, 'message': f'连接失败: {str(e)}'})
+            error_text = str(e)
+            if isinstance(e, ssl.SSLCertVerificationError) or 'CERTIFICATE_VERIFY_FAILED' in error_text or 'certificate verify failed' in error_text.lower():
+                error_text = (
+                    '证书校验失败：当前 API Server 地址与 kubeconfig 证书不匹配。'
+                    '请改用证书 SAN 中的域名或 IP，'
+                    '或者在 apiserver 证书中加入该 IP 的 SAN，'
+                    '也可以在 kubeconfig 中启用 insecure-skip-tls-verify。'
+                )
+            return Response({'success': False, 'message': f'连接失败: {error_text}'})
 
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):

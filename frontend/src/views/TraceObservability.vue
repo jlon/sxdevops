@@ -6,8 +6,8 @@
           <span class="hero-icon">
             <el-icon><Connection /></el-icon>
           </span>
-          <h2>链路追踪</h2>
-          <p class="page-inline-desc">支持接入 SkyWalking 与 OpenTelemetry 生态下的 Zipkin、Jaeger、Tempo 等链路数据</p>
+          <h2>{{ topologyOnly ? 'Trace 调用拓扑' : '链路追踪' }}</h2>
+          <p class="page-inline-desc">{{ topologyOnly ? '基于链路 Span 采样聚合服务间与服务到中间件 / DB 的调用关系' : '支持接入 SkyWalking 与 OpenTelemetry 生态下的 Zipkin、Jaeger、Tempo 等链路数据' }}</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -21,7 +21,7 @@
       </div>
     </section>
 
-    <div class="neo-tabs theme-blue log-center-tabs trace-center-tabs">
+    <div v-if="!topologyOnly" class="neo-tabs theme-blue log-center-tabs trace-center-tabs">
       <button
         v-if="canViewTrace"
         class="neo-tab-btn"
@@ -43,7 +43,7 @@
     </div>
 
     <template v-if="activeTraceTab === 'traces' && canViewTrace">
-    <div class="trace-query-layout">
+    <div v-if="!topologyOnly" class="trace-query-layout">
       <section class="panel trace-query-unified-card">
         <div class="trace-query-unified-head">
           <div class="trace-query-title-block">
@@ -242,7 +242,7 @@
       </div>
     </section>
 
-    <div class="content-grid" :class="{ 'has-selected-trace': Boolean(selectedTraceId) }">
+    <div v-if="!topologyOnly" class="content-grid" :class="{ 'has-selected-trace': Boolean(selectedTraceId) }">
       <section class="panel traces-panel">
         <div class="section-head">
           <h3>链路列表</h3>
@@ -643,6 +643,7 @@ let topologyChart = null
 const DEFAULT_DURATION_MINUTES = 30
 const TRACE_LIST_PAGE_SIZE = 15
 const TOPOLOGY_LIST_PAGE_SIZE = 6
+const topologyOnly = computed(() => route.query.topology === '1')
 
 function buildRelativeTimeRange(minutes = DEFAULT_DURATION_MINUTES) {
   const safeMinutes = Math.max(5, Number(minutes || DEFAULT_DURATION_MINUTES))
@@ -1901,11 +1902,14 @@ function renderTopology() {
 
   const nodes = rawNodes.map((item, index) => {
     const nodeId = String(item.id || '')
+    const isRuntimeNode = item.type === 'RUNTIME_COMPONENT' || String(item.id || '').startsWith('runtime:')
     const position = nodeId === selectedNodeId
       ? { x: chartWidth * 0.5, y: chartHeight * 0.5 }
       : upstreamPositions.get(nodeId) || downstreamPositions.get(nodeId) || middlePositions.get(nodeId) || { x: chartWidth * 0.5, y: chartHeight * 0.5 }
     const color = nodeId === selectedNodeId
       ? '#2563eb'
+      : isRuntimeNode
+        ? '#0891b2'
       : upstreamIds.includes(nodeId)
         ? '#0f766e'
         : downstreamIds.includes(nodeId)
@@ -1917,7 +1921,8 @@ function renderTopology() {
       value: item.name,
       x: position.x,
       y: position.y,
-      symbolSize: nodeId === selectedNodeId ? 54 : 40,
+      symbol: isRuntimeNode ? 'roundRect' : 'circle',
+      symbolSize: nodeId === selectedNodeId ? 54 : isRuntimeNode ? [74, 36] : 40,
       itemStyle: {
         color,
         borderColor: nodeId === selectedNodeId ? 'rgba(191, 219, 254, 0.95)' : '#ffffff',
@@ -2047,6 +2052,9 @@ onMounted(async () => {
     activeTraceTab.value = canViewTraceDataSources.value ? 'datasources' : 'traces'
     return
   }
+  if (topologyOnly.value) {
+    topologyExpanded.value = true
+  }
   filters.provider = typeof route.query.provider === 'string' ? route.query.provider : ''
   filters.datasourceId = typeof route.query.datasourceId === 'string' ? route.query.datasourceId : ''
   await loadTracingDataSources()
@@ -2062,9 +2070,12 @@ onMounted(async () => {
 })
 
 watch(
-  () => [route.query.provider || '', route.query.datasourceId || '', route.query.traceId || '', route.query.service || '', route.query.keyword || '', route.query.window || '', route.query.from || '', route.query.to || ''].join('|'),
+  () => [route.query.provider || '', route.query.datasourceId || '', route.query.traceId || '', route.query.service || '', route.query.keyword || '', route.query.window || '', route.query.from || '', route.query.to || '', route.query.topology || ''].join('|'),
   async (value, previous) => {
     if (!value || value === previous) return
+    if (topologyOnly.value) {
+      topologyExpanded.value = true
+    }
     await applyRouteTracePreset()
   }
 )

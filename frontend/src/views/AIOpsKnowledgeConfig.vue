@@ -82,6 +82,9 @@
         <el-table-column label="告警环境" min-width="160">
           <template #default="{ row }"><TagList :items="row.alert_environments" /></template>
         </el-table-column>
+        <el-table-column label="基础设施" min-width="190">
+          <template #default="{ row }"><TagList :items="infrastructureNames(row)" /></template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
             <el-tag :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag>
@@ -129,6 +132,36 @@
             <el-option v-for="item in catalog.alert_environments" :key="item" :label="item" :value="item" />
           </el-select>
         </el-form-item>
+        <el-form-item label="K8s 集群">
+          <el-select v-model="form.k8s_cluster_ids" multiple filterable clearable placeholder="选择此图谱所在的 K8s 集群">
+            <el-option v-for="item in catalog.k8s_clusters" :key="item.id" :label="k8sClusterLabel(item)" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <div v-if="selectedK8sClusters.length" class="namespace-config">
+          <div class="namespace-config-title">K8s 命名空间范围</div>
+          <div v-for="cluster in selectedK8sClusters" :key="cluster.id" class="namespace-row">
+            <div class="namespace-cluster">
+              <strong>{{ cluster.name }}</strong>
+              <span>不选则读取该集群全部命名空间</span>
+            </div>
+            <el-select
+              v-model="form.k8s_namespaces[String(cluster.id)]"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              clearable
+              placeholder="选择业务服务所在命名空间"
+            >
+              <el-option v-for="namespace in namespaceOptionsForCluster(cluster)" :key="namespace" :label="namespace" :value="namespace" />
+            </el-select>
+          </div>
+        </div>
+        <el-form-item label="Docker 环境">
+          <el-select v-model="form.docker_host_ids" multiple filterable clearable placeholder="选择此图谱所在的 Docker 环境">
+            <el-option v-for="item in catalog.docker_hosts" :key="item.id" :label="dockerHostLabel(item)" :value="item.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.is_enabled" />
         </el-form-item>
@@ -142,7 +175,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue'
+import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 import { InfoFilled, Plus, RefreshRight, Setting } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
@@ -186,6 +219,8 @@ const catalog = reactive({
   log_datasources: [],
   tracing_datasources: [],
   alert_environments: [],
+  k8s_clusters: [],
+  docker_hosts: [],
 })
 const dialog = reactive({ visible: false, editingId: null })
 const form = reactive({
@@ -196,6 +231,9 @@ const form = reactive({
   log_datasource_ids: [],
   tracing_datasource_ids: [],
   alert_environments: [],
+  k8s_cluster_ids: [],
+  k8s_namespaces: {},
+  docker_host_ids: [],
   is_enabled: true,
 })
 
@@ -209,7 +247,14 @@ const totalBindingCount = computed(() => environments.value.reduce((total, item)
   + (item.grafana_folder_keys?.length || 0)
   + (item.log_datasource_ids?.length || 0)
   + (item.tracing_datasource_ids?.length || 0)
-  + (item.alert_environments?.length || 0), 0))
+  + (item.alert_environments?.length || 0)
+  + (item.k8s_cluster_ids?.length || 0)
+  + (item.docker_host_ids?.length || 0), 0))
+
+const selectedK8sClusters = computed(() => {
+  const selected = new Set((form.k8s_cluster_ids || []).map(id => Number(id)))
+  return catalog.k8s_clusters.filter(item => selected.has(Number(item.id)))
+})
 
 function resetForm(row = null) {
   dialog.editingId = row?.id || null
@@ -220,6 +265,9 @@ function resetForm(row = null) {
   form.log_datasource_ids = [...(row?.log_datasource_ids || [])]
   form.tracing_datasource_ids = [...(row?.tracing_datasource_ids || [])]
   form.alert_environments = [...(row?.alert_environments || [])]
+  form.k8s_cluster_ids = [...(row?.k8s_cluster_ids || [])]
+  form.k8s_namespaces = { ...(row?.k8s_namespaces || {}) }
+  form.docker_host_ids = [...(row?.docker_host_ids || [])]
   form.is_enabled = row?.is_enabled ?? true
 }
 
@@ -230,6 +278,8 @@ function hasAnyBinding() {
     form.log_datasource_ids,
     form.tracing_datasource_ids,
     form.alert_environments,
+    form.k8s_cluster_ids,
+    form.docker_host_ids,
   ].some(items => items.length)
 }
 
@@ -247,6 +297,31 @@ function datasourceNames(ids = [], type = 'log') {
   return ids.map(id => nameMap.get(Number(id)) || `ID ${id}`)
 }
 
+function k8sClusterLabel(item) {
+  return item.api_server ? `${item.name} / ${item.api_server}` : item.name
+}
+
+function namespaceOptionsForCluster(cluster) {
+  return cluster.namespaces || []
+}
+
+function dockerHostLabel(item) {
+  return item.ip_address ? `${item.name} / ${item.ip_address}` : item.name
+}
+
+function infrastructureNames(row) {
+  const k8sMap = new Map(catalog.k8s_clusters.map(item => [Number(item.id), `K8s: ${item.name}`]))
+  const dockerMap = new Map(catalog.docker_hosts.map(item => [Number(item.id), `Docker: ${item.name}`]))
+  return [
+    ...(row.k8s_cluster_ids || []).map((id) => {
+      const namespaces = row.k8s_namespaces?.[String(id)] || []
+      const suffix = namespaces.length ? ` / ${namespaces.join(', ')}` : ''
+      return `${k8sMap.get(Number(id)) || `K8s ID ${id}`}${suffix}`
+    }),
+    ...(row.docker_host_ids || []).map(id => dockerMap.get(Number(id)) || `Docker ID ${id}`),
+  ]
+}
+
 async function loadData() {
   loading.value = true
   try {
@@ -261,6 +336,8 @@ async function loadData() {
       log_datasources: options.log_datasources || [],
       tracing_datasources: options.tracing_datasources || [],
       alert_environments: options.alert_environments || [],
+      k8s_clusters: options.k8s_clusters || [],
+      docker_hosts: options.docker_hosts || [],
     })
   } finally {
     loading.value = false
@@ -275,7 +352,7 @@ function openDialog(row = null) {
 async function submitForm() {
   await formRef.value?.validate()
   if (!hasAnyBinding()) {
-    ElMessage.warning('请至少选择一个事件中心、看板目录、日志、链路或告警来源')
+    ElMessage.warning('请至少选择一个事件中心、看板目录、日志、链路、告警、K8s 集群或 Docker 环境来源')
     return
   }
   saving.value = true
@@ -288,6 +365,9 @@ async function submitForm() {
       log_datasource_ids: form.log_datasource_ids,
       tracing_datasource_ids: form.tracing_datasource_ids,
       alert_environments: form.alert_environments,
+      k8s_cluster_ids: form.k8s_cluster_ids,
+      k8s_namespaces: form.k8s_namespaces,
+      docker_host_ids: form.docker_host_ids,
       is_enabled: form.is_enabled,
     }
     if (dialog.editingId) {
@@ -311,6 +391,21 @@ async function removeEnvironment(row) {
 }
 
 onMounted(loadData)
+
+watch(() => [...form.k8s_cluster_ids], (ids) => {
+  const selected = new Set(ids.map(id => String(id)))
+  Object.keys(form.k8s_namespaces || {}).forEach((clusterId) => {
+    if (!selected.has(clusterId)) {
+      delete form.k8s_namespaces[clusterId]
+    }
+  })
+  ids.forEach((id) => {
+    const key = String(id)
+    if (!Array.isArray(form.k8s_namespaces[key])) {
+      form.k8s_namespaces[key] = []
+    }
+  })
+})
 </script>
 
 <style scoped>
@@ -402,6 +497,45 @@ onMounted(loadData)
   color: #0f766e;
 }
 
+.namespace-config {
+  margin: -4px 0 16px 128px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.78);
+}
+
+.namespace-config-title {
+  margin-bottom: 8px;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.namespace-row {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.namespace-row + .namespace-row {
+  margin-top: 8px;
+}
+
+.namespace-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.namespace-cluster strong {
+  color: #0f172a;
+  font-size: 12px;
+}
+
 .env-name {
   color: #0f172a;
   font-weight: 700;
@@ -452,6 +586,14 @@ onMounted(loadData)
   .hero {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .namespace-config {
+    margin-left: 0;
+  }
+
+  .namespace-row {
+    grid-template-columns: 1fr;
   }
 
   .config-actionbar {
