@@ -378,6 +378,87 @@ body {
   /* 给内容区也加上换行收口 */
 }
 
+@media (max-width: 760px) {
+  .sidebar {
+    width: var(--sidebar-collapsed-width);
+    overflow: hidden;
+  }
+
+  .sidebar .logo-copy {
+    display: none !important;
+  }
+
+  .sidebar-nav {
+    width: var(--sidebar-collapsed-width);
+    padding: 10px 8px 14px;
+  }
+
+  .sidebar .el-menu-item,
+  .sidebar .el-sub-menu__title {
+    width: 40px;
+    height: 40px;
+    margin: 2px auto;
+    padding: 0 !important;
+    justify-content: center;
+    border-radius: 12px;
+  }
+
+  .sidebar .el-menu-item span,
+  .sidebar .el-sub-menu__title span,
+  .sidebar .nav-divider {
+    display: none !important;
+  }
+
+  .sidebar .el-menu-item .el-icon,
+  .sidebar .el-sub-menu__title .el-icon {
+    margin-right: 0 !important;
+  }
+
+  .sidebar .el-sub-menu .el-icon.el-sub-menu__icon-arrow {
+    display: none !important;
+  }
+
+  .main-area,
+  .sidebar.collapsed~.main-area {
+    margin-left: var(--sidebar-collapsed-width);
+    width: calc(100% - var(--sidebar-collapsed-width));
+  }
+
+  .header {
+    padding: 0 12px;
+  }
+
+  .header-left {
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .header-left .breadcrumb {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .header-right {
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .promo-trigger span,
+  .user-meta {
+    display: none !important;
+  }
+
+  .promo-trigger {
+    width: 36px !important;
+    min-width: 36px !important;
+    padding: 0 !important;
+  }
+
+  .content {
+    padding: 10px 12px;
+  }
+}
+
 /* ========== 仪表盘 ========== */
 .stats-grid {
   display: grid;

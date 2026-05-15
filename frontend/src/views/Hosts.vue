@@ -36,9 +36,7 @@
 
     <div class="host-center-content">
       <CmdbHostsPanel v-if="activeTab === 'assets'" :resource-tree="resourceTree" />
-      <CmdbHostTaskCenter v-else-if="activeTab === 'task-center'" :resource-tree="resourceTree" />
       <CmdbHostScheduleCenter v-else-if="activeTab === 'schedule-center'" :resource-tree="resourceTree" />
-      <CmdbRequestsPanel v-else-if="activeTab === 'requests'" :resource-tree="resourceTree" />
     </div>
   </div>
 </template>
@@ -46,14 +44,12 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Monitor, Operation, Ticket, Timer } from '@element-plus/icons-vue'
+import { Monitor, Timer } from '@element-plus/icons-vue'
 import CmdbHostsPanel from '@/components/cmdb/CmdbHostsPanel.vue'
 import CmdbHostScheduleCenter from '@/components/cmdb/CmdbHostScheduleCenter.vue'
-import CmdbHostTaskCenter from '@/components/cmdb/CmdbHostTaskCenter.vue'
-import CmdbRequestsPanel from '@/components/cmdb/CmdbRequestsPanel.vue'
 import { useAuthStore } from '@/stores/auth'
-import { getResourceNodeTree, getResourceRequests } from '@/api/modules/cmdb'
-import { getHosts, getHostTaskScheduleStats, getHostTaskStats } from '@/api/modules/ops'
+import { getResourceNodeTree } from '@/api/modules/cmdb'
+import { getHosts, getHostTaskScheduleStats } from '@/api/modules/ops'
 
 const route = useRoute()
 const router = useRouter()
@@ -62,36 +58,26 @@ const authStore = useAuthStore()
 const resourceTree = ref([])
 const hostSummary = ref({ total: 0, online: 0, offline: 0, warning: 0 })
 const scheduleSummary = ref({ total: 0, enabled: 0, due_soon: 0, success_rate: 0 })
-const taskSummary = ref({ total: 0, running: 0, success_rate: 0 })
-const requestSummary = ref({ total: 0, pending: 0, approved: 0 })
 const overviewLoading = ref(false)
 
 const canViewAssets = computed(() => authStore.hasAnyPermission(['ops.host.view', 'ops.host.manage', 'ops.host.terminal']))
 const canViewSchedules = computed(() => authStore.hasAnyPermission(['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute']))
-const canViewTasks = computed(() => authStore.hasPermission('ops.host.execute'))
-const canViewRequests = computed(() => authStore.hasAnyPermission(['cmdb.request.submit', 'cmdb.request.approve']))
 
 const tabs = computed(() => [
   canViewAssets.value && { key: 'assets', label: '主机资产', icon: Monitor, path: '/hosts/assets' },
-  canViewTasks.value && { key: 'task-center', label: '任务中心', icon: Operation, path: '/hosts/tasks' },
   canViewSchedules.value && { key: 'schedule-center', label: '定时任务', icon: Timer, path: '/hosts/schedules' },
-  canViewRequests.value && { key: 'requests', label: '主机申请', icon: Ticket, path: '/hosts/requests' },
 ].filter(Boolean))
 
 const routeTabMap = {
   HostsAssets: 'assets',
   HostSchedules: 'schedule-center',
-  HostTasks: 'task-center',
-  HostRequests: 'requests',
 }
 
 const activeTab = computed(() => routeTabMap[route.name] || tabs.value[0]?.key || 'assets')
 const activeTabMeta = computed(() => tabs.value.find(item => item.key === activeTab.value))
 const heroSubtitle = computed(() => {
   if (activeTab.value === 'schedule-center') return '支持 SSH 与 Ansible 两种执行方式，可按 Cron、间隔或单次触发。'
-  if (activeTab.value === 'task-center') return '支持批量巡检、命令分发与 Playbook 执行。'
-  if (activeTab.value === 'requests') return '承接主机申请、审批与资产落库流程。'
-  return '统一查看主机状态、归属、任务与申请流转。'
+  return '统一查看主机状态、归属与基础运行信息。'
 })
 
 const summaryCards = computed(() => {
@@ -100,20 +86,6 @@ const summaryCards = computed(() => {
       { label: '编排总数', value: scheduleSummary.value.total, desc: '定时任务中心当前纳管的自动化编排数量', tone: '' },
       { label: '已启用', value: scheduleSummary.value.enabled, desc: '正在等待调度器触发的编排任务数量', tone: 'success-card' },
       { label: '1 小时内到点', value: scheduleSummary.value.due_soon, desc: '未来 1 小时内即将触发的编排数量', tone: 'warning-card' },
-    ]
-  }
-  if (activeTab.value === 'task-center' && canViewTasks.value) {
-    return [
-      { label: '任务总数', value: taskSummary.value.total, desc: '任务中心累计执行次数', tone: '' },
-      { label: '执行中', value: taskSummary.value.running, desc: '当前仍在运行的批量任务', tone: 'warning-card' },
-      { label: '任务成功率', value: `${taskSummary.value.success_rate || 0}%`, desc: '成功与部分成功任务占比', tone: 'success-card' },
-    ]
-  }
-  if (activeTab.value === 'requests' && canViewRequests.value) {
-    return [
-      { label: '申请总数', value: requestSummary.value.total, desc: '主机申请累计单量', tone: '' },
-      { label: '待审批', value: requestSummary.value.pending, desc: '建议优先处理待审批申请', tone: 'warning-card' },
-      { label: '待转资产', value: requestSummary.value.approved, desc: '已批准但尚未完成落库的申请', tone: 'success-card' },
     ]
   }
   if (canViewAssets.value) {
@@ -153,27 +125,6 @@ async function fetchScheduleSummary() {
   try { scheduleSummary.value = await getHostTaskScheduleStats() } catch (error) {}
 }
 
-async function fetchTaskSummary() {
-  if (!canViewTasks.value) return
-  try { taskSummary.value = await getHostTaskStats() } catch (error) {}
-}
-
-async function fetchRequestSummary() {
-  if (!canViewRequests.value) return
-  try {
-    const [totalRes, pendingRes, approvedRes] = await Promise.all([
-      getResourceRequests(),
-      getResourceRequests({ status: 'pending' }),
-      getResourceRequests({ status: 'approved' }),
-    ])
-    requestSummary.value = {
-      total: totalRes.count || (totalRes.results || totalRes).length,
-      pending: pendingRes.count || (pendingRes.results || pendingRes).length,
-      approved: approvedRes.count || (approvedRes.results || approvedRes).length,
-    }
-  } catch (error) {}
-}
-
 function switchTab(tabKey) {
   const matched = tabs.value.find(item => item.key === tabKey)
   if (matched && matched.path !== route.path) router.push(matched.path)
@@ -195,8 +146,6 @@ async function reloadOverview() {
       fetchResourceTree(),
       fetchHostSummary(),
       fetchScheduleSummary(),
-      fetchTaskSummary(),
-      fetchRequestSummary(),
     ])
   } finally {
     overviewLoading.value = false

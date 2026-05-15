@@ -36,55 +36,50 @@ const routes = [
       },
       {
         path: 'hosts',
-        redirect: () => {
-          const authStore = useAuthStore(pinia)
-          if (authStore.hasAnyPermission(['ops.host.view', 'ops.host.manage', 'ops.host.terminal'])) {
-            return '/hosts/assets'
-          }
-          if (authStore.hasAnyPermission(['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute'])) {
-            return '/hosts/schedules'
-          }
-          if (authStore.hasPermission('ops.host.execute')) {
-            return '/hosts/tasks'
-          }
-          if (authStore.hasAnyPermission(['cmdb.request.submit', 'cmdb.request.approve'])) {
-            return '/hosts/requests'
-          }
-          return '/403'
-        },
+        redirect: '/tasks?tab=assets',
         meta: { hidden: true },
       },
       {
         path: 'hosts/assets',
-        name: 'HostsAssets',
-        component: () => import('@/views/Hosts.vue'),
-        meta: {
-          title: '主机资产',
-          icon: 'Monitor',
-          anyPermissions: ['ops.host.view', 'ops.host.manage', 'ops.host.terminal'],
-        },
+        redirect: '/tasks?tab=assets',
+        meta: { hidden: true, title: '主机资产', icon: 'Monitor', anyPermissions: ['ops.host.view', 'ops.host.manage', 'ops.host.terminal'] },
       },
       {
         path: 'hosts/schedules',
-        name: 'HostSchedules',
-        component: () => import('@/views/Hosts.vue'),
-        meta: {
-          title: '定时任务',
-          icon: 'Timer',
-          anyPermissions: ['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute'],
-        },
+        redirect: '/tasks?tab=schedules',
+        meta: { hidden: true, title: '定时任务', icon: 'Timer', anyPermissions: ['ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute'] },
       },
       {
         path: 'hosts/tasks',
-        name: 'HostTasks',
-        component: () => import('@/views/Hosts.vue'),
-        meta: { title: '任务中心', icon: 'Operation', permission: 'ops.host.execute' },
+        redirect: '/tasks',
+        meta: { hidden: true, title: '任务中心', icon: 'Operation', permission: 'ops.task.execute' },
+      },
+      {
+        path: 'tasks',
+        name: 'TaskCenter',
+        component: () => import('@/views/TaskCenter.vue'),
+        meta: {
+          title: '任务中心',
+          icon: 'Operation',
+          anyPermissions: [
+            'ops.task.execute',
+            'ops.task.resource.view',
+            'ops.task.resource.manage',
+            'ops.host.execute',
+            'ops.host.view',
+            'ops.host.manage',
+            'ops.host.terminal',
+            'ops.host.schedule.view',
+            'ops.host.schedule.manage',
+            'ops.host.schedule.execute',
+          ],
+        },
       },
       {
         path: 'hosts/requests',
-        name: 'HostRequests',
-        component: () => import('@/views/Hosts.vue'),
+        redirect: '/cmdb?tab=requests',
         meta: {
+          hidden: true,
           title: '主机申请',
           icon: 'Ticket',
           anyPermissions: ['cmdb.request.submit', 'cmdb.request.approve'],
@@ -97,7 +92,7 @@ const routes = [
         meta: {
           title: 'CMDB',
           icon: 'Files',
-          anyPermissions: ['cmdb.ci.view', 'cmdb.topology.view', 'cmdb.cost.view'],
+          anyPermissions: ['cmdb.ci.view', 'cmdb.topology.view', 'cmdb.cost.view', 'cmdb.request.submit', 'cmdb.request.approve'],
         },
       },
       {

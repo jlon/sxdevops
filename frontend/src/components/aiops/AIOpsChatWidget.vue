@@ -1234,7 +1234,7 @@ function resolveReusablePrompt(index, message) {
 }
 
 function openTaskCenter() {
-  router.push('/hosts/tasks')
+  router.push('/tasks')
   closePanel()
 }
 

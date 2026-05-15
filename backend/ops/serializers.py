@@ -46,6 +46,8 @@ from .models import (
     ObservabilityDataSourceLink,
     TracingDataSource,
     TransactionTicket,
+    TaskResource,
+    TaskResourceGroup,
 )
 
 
@@ -75,6 +77,18 @@ def validate_host_task_payload(task_type, payload):
         raise serializers.ValidationError({'payload': '请填写 Playbook 内容'})
     if task_type == HostTask.TASK_SERVICE_STATUS and not (payload.get('service_name') or '').strip():
         raise serializers.ValidationError({'payload': '请填写需要巡检的服务名'})
+    if task_type == HostTask.TASK_K8S_POD_EXEC and not (payload.get('command') or '').strip():
+        raise serializers.ValidationError({'payload': '请填写需要在 Pod 内执行的命令'})
+    if task_type == HostTask.TASK_K8S_SCALE_WORKLOAD:
+        workload_type = (payload.get('workload_type') or '').strip().lower()
+        if workload_type not in ('deployment', 'statefulset'):
+            raise serializers.ValidationError({'payload': 'K8s 伸缩任务仅支持 Deployment 或 StatefulSet'})
+        try:
+            replicas = int(payload.get('replicas'))
+        except (TypeError, ValueError):
+            raise serializers.ValidationError({'payload': '请填写合法的副本数'})
+        if replicas < 0:
+            raise serializers.ValidationError({'payload': '副本数不能小于 0'})
     return payload
 
 
@@ -152,6 +166,150 @@ class HostSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class TaskResourceGroupSerializer(serializers.ModelSerializer):
+    group_type_display = serializers.CharField(source='get_group_type_display', read_only=True)
+    parent_name = serializers.CharField(source='parent.name', read_only=True)
+
+    class Meta:
+        model = TaskResourceGroup
+        fields = [
+            'id',
+            'name',
+            'code',
+            'group_type',
+            'group_type_display',
+            'parent',
+            'parent_name',
+            'description',
+            'sort_order',
+            'created_by',
+            'updated_by',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        group_type = attrs.get('group_type') or getattr(self.instance, 'group_type', '')
+        parent = attrs.get('parent') if 'parent' in attrs else getattr(self.instance, 'parent', None)
+        name = (attrs.get('name') if 'name' in attrs else getattr(self.instance, 'name', '')) or ''
+        attrs['name'] = name.strip()
+        attrs['code'] = ((attrs.get('code') if 'code' in attrs else getattr(self.instance, 'code', '')) or '').strip()
+        if not attrs['name']:
+            raise serializers.ValidationError({'name': '请填写节点名称'})
+        if group_type == TaskResourceGroup.GROUP_ENVIRONMENT:
+            attrs['parent'] = None
+        elif group_type == TaskResourceGroup.GROUP_SYSTEM:
+            if not parent:
+                raise serializers.ValidationError({'parent': '系统必须归属到一个环境'})
+            if parent.group_type != TaskResourceGroup.GROUP_ENVIRONMENT:
+                raise serializers.ValidationError({'parent': '系统的上级节点必须是环境'})
+        else:
+            raise serializers.ValidationError({'group_type': '不支持的节点类型'})
+        return attrs
+
+
+class TaskResourceSerializer(serializers.ModelSerializer):
+    resource_type_display = serializers.CharField(source='get_resource_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    environment_name = serializers.CharField(source='environment.name', read_only=True)
+    system_name = serializers.CharField(source='system.name', read_only=True)
+    cluster_name = serializers.CharField(source='cluster.name', read_only=True)
+    endpoint = serializers.SerializerMethodField()
+    hostname = serializers.CharField(source='name', read_only=True)
+    business_line = serializers.CharField(source='system.name', read_only=True)
+    admin_user = serializers.CharField(source='owner', read_only=True)
+    environment_display = serializers.CharField(source='environment.name', read_only=True)
+
+    class Meta:
+        model = TaskResource
+        fields = [
+            'id',
+            'name',
+            'hostname',
+            'resource_type',
+            'resource_type_display',
+            'environment',
+            'environment_name',
+            'environment_display',
+            'system',
+            'system_name',
+            'business_line',
+            'status',
+            'status_display',
+            'ip_address',
+            'ssh_port',
+            'ssh_user',
+            'ssh_password',
+            'cluster',
+            'cluster_name',
+            'namespace',
+            'endpoint',
+            'owner',
+            'admin_user',
+            'description',
+            'metadata',
+            'created_by',
+            'updated_by',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'name': {'required': False, 'allow_blank': True},
+            'ssh_password': {'write_only': True, 'required': False, 'allow_blank': True},
+        }
+
+    def to_internal_value(self, data):
+        if data.get('resource_type') == TaskResource.RESOURCE_K8S and data.get('ip_address') in ('', None):
+            data = data.copy()
+            data['ip_address'] = None
+        return super().to_internal_value(data)
+
+    def get_endpoint(self, obj):
+        if obj.resource_type == TaskResource.RESOURCE_K8S:
+            return obj.cluster.name if obj.cluster else ''
+        return str(obj.ip_address or '')
+
+    def validate(self, attrs):
+        resource_type = attrs.get('resource_type') or getattr(self.instance, 'resource_type', TaskResource.RESOURCE_HOST)
+        environment = attrs.get('environment') if 'environment' in attrs else getattr(self.instance, 'environment', None)
+        system = attrs.get('system') if 'system' in attrs else getattr(self.instance, 'system', None)
+        name = (attrs.get('name') if 'name' in attrs else getattr(self.instance, 'name', '')) or ''
+        if resource_type == TaskResource.RESOURCE_K8S and not name.strip():
+            cluster_for_name = attrs.get('cluster') if 'cluster' in attrs else getattr(self.instance, 'cluster', None)
+            if cluster_for_name:
+                name = cluster_for_name.name
+        attrs['name'] = name.strip()
+        if not attrs['name']:
+            raise serializers.ValidationError({'name': '请填写资源名称'})
+        if not environment or environment.group_type != TaskResourceGroup.GROUP_ENVIRONMENT:
+            raise serializers.ValidationError({'environment': '请选择环境'})
+        if system:
+            if system.group_type != TaskResourceGroup.GROUP_SYSTEM:
+                raise serializers.ValidationError({'system': '请选择系统'})
+            if system.parent_id != environment.id:
+                raise serializers.ValidationError({'system': '系统必须归属到所选环境'})
+        if resource_type == TaskResource.RESOURCE_HOST:
+            ip_address = attrs.get('ip_address') if 'ip_address' in attrs else getattr(self.instance, 'ip_address', None)
+            if not ip_address:
+                raise serializers.ValidationError({'ip_address': '请填写主机 IP'})
+            attrs['cluster'] = None
+            attrs['namespace'] = ''
+        elif resource_type == TaskResource.RESOURCE_K8S:
+            cluster = attrs.get('cluster') if 'cluster' in attrs else getattr(self.instance, 'cluster', None)
+            if not cluster:
+                raise serializers.ValidationError({'cluster': '请选择 K8s 集群'})
+            attrs['name'] = cluster.name
+            attrs['ip_address'] = None
+            attrs['ssh_password'] = ''
+            attrs['namespace'] = ''
+            attrs['owner'] = ''
+        else:
+            raise serializers.ValidationError({'resource_type': '不支持的资源类型'})
+        return attrs
+
+
 class HostTaskExecutionSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
 
@@ -159,9 +317,14 @@ class HostTaskExecutionSerializer(serializers.ModelSerializer):
         model = HostTaskExecution
         fields = [
             'id',
+            'target_type',
             'host',
             'host_name',
             'host_ip',
+            'target_id',
+            'target_name',
+            'target_namespace',
+            'target_kind',
             'status',
             'status_display',
             'command',
@@ -175,8 +338,11 @@ class HostTaskExecutionSerializer(serializers.ModelSerializer):
 
 
 class HostTaskSerializer(serializers.ModelSerializer):
+    target_type_display = serializers.CharField(source='get_target_type_display', read_only=True)
     task_type_display = serializers.CharField(source='get_task_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    lifecycle_status_display = serializers.CharField(source='get_lifecycle_status_display', read_only=True)
+    risk_level_display = serializers.CharField(source='get_risk_level_display', read_only=True)
     execution_mode_display = serializers.CharField(source='get_execution_mode_display', read_only=True)
     trigger_source_display = serializers.CharField(source='get_trigger_source_display', read_only=True)
     success_rate = serializers.SerializerMethodField()
@@ -186,12 +352,20 @@ class HostTaskSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'name',
+            'target_type',
+            'target_type_display',
             'task_type',
             'task_type_display',
             'execution_mode',
             'execution_mode_display',
             'trigger_source',
             'trigger_source_display',
+            'lifecycle_status',
+            'lifecycle_status_display',
+            'risk_level',
+            'risk_level_display',
+            'correlation_id',
+            'source_context',
             'status',
             'status_display',
             'description',
@@ -230,6 +404,7 @@ class HostTaskDetailSerializer(HostTaskSerializer):
 
 
 class HostTaskTemplateSerializer(serializers.ModelSerializer):
+    target_type_display = serializers.CharField(source='get_target_type_display', read_only=True)
     task_type_display = serializers.CharField(source='get_task_type_display', read_only=True)
     execution_mode_display = serializers.CharField(source='get_execution_mode_display', read_only=True)
 
@@ -238,6 +413,8 @@ class HostTaskTemplateSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'name',
+            'target_type',
+            'target_type_display',
             'task_type',
             'task_type_display',
             'execution_mode',
@@ -258,7 +435,13 @@ class HostTaskTemplateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         task_type = attrs.get('task_type') or getattr(self.instance, 'task_type', '')
+        target_type = attrs.get('target_type') or getattr(self.instance, 'target_type', HostTask.TARGET_HOST)
         validate_host_task_payload(task_type, attrs.get('payload') or {})
+        if task_type.startswith('k8s_'):
+            attrs['target_type'] = HostTask.TARGET_K8S
+            attrs['execution_mode'] = HostTask.EXECUTION_MODE_K8S_API
+        elif target_type == HostTask.TARGET_K8S:
+            raise serializers.ValidationError({'task_type': 'K8s 资源仅支持 K8s 类型任务'})
         if task_type == HostTask.TASK_RUN_PLAYBOOK:
             attrs['execution_mode'] = HostTask.EXECUTION_MODE_ANSIBLE
         return attrs
@@ -266,9 +449,12 @@ class HostTaskTemplateSerializer(serializers.ModelSerializer):
 
 class HostTaskSubmitSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=128)
+    target_type = serializers.ChoiceField(choices=HostTask.TARGET_TYPE_CHOICES, default=HostTask.TARGET_HOST)
     task_type = serializers.ChoiceField(choices=HostTask.TASK_TYPE_CHOICES)
     description = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
-    host_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=False)
+    host_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=True, required=False, default=list)
+    resource_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=True, required=False, default=list)
+    k8s_targets = serializers.ListField(child=serializers.DictField(), allow_empty=True, required=False, default=list)
     payload = serializers.JSONField(required=False, default=dict)
     selection_filters = serializers.JSONField(required=False, default=dict)
     execution_mode = serializers.ChoiceField(choices=HostTask.EXECUTION_MODE_CHOICES, default=HostTask.EXECUTION_MODE_SSH)
@@ -277,8 +463,10 @@ class HostTaskSubmitSerializer(serializers.Serializer):
 
     def validate_host_ids(self, value):
         deduplicated = list(dict.fromkeys(value))
-        if not deduplicated:
-            raise serializers.ValidationError('\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u53f0\u4e3b\u673a')
+        return deduplicated
+
+    def validate_resource_ids(self, value):
+        deduplicated = list(dict.fromkeys(value))
         return deduplicated
 
     def validate_payload(self, value):
@@ -286,7 +474,39 @@ class HostTaskSubmitSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         task_type = attrs.get('task_type')
+        target_type = attrs.get('target_type') or HostTask.TARGET_HOST
         validate_host_task_payload(task_type, attrs.get('payload') or {})
+        if target_type == HostTask.TARGET_HOST:
+            if task_type.startswith('k8s_'):
+                raise serializers.ValidationError({'task_type': '主机资源不支持 K8s 类型任务'})
+            if not attrs.get('host_ids') and not attrs.get('resource_ids'):
+                raise serializers.ValidationError({'resource_ids': '请至少选择一个主机资源'})
+        elif target_type == HostTask.TARGET_K8S:
+            if not task_type.startswith('k8s_'):
+                raise serializers.ValidationError({'task_type': 'K8s 资源仅支持 K8s 类型任务'})
+            targets = attrs.get('k8s_targets') or []
+            if not targets:
+                raise serializers.ValidationError({'k8s_targets': '请至少选择一个 K8s 目标'})
+            normalized_targets = []
+            for item in targets:
+                cluster_id = item.get('cluster_id')
+                namespace = (item.get('namespace') or 'default').strip() or 'default'
+                name = (item.get('name') or item.get('pod_name') or '').strip()
+                if not cluster_id:
+                    raise serializers.ValidationError({'k8s_targets': '请选择 K8s 集群'})
+                if task_type in [HostTask.TASK_K8S_RESTART_POD, HostTask.TASK_K8S_POD_EXEC] and not name:
+                    raise serializers.ValidationError({'k8s_targets': '请填写 Pod 名称'})
+                if task_type == HostTask.TASK_K8S_SCALE_WORKLOAD and not name:
+                    raise serializers.ValidationError({'k8s_targets': '请填写工作负载名称'})
+                normalized_targets.append({
+                    'cluster_id': int(cluster_id),
+                    'namespace': namespace,
+                    'name': name,
+                    'kind': (item.get('kind') or item.get('resource_type') or '').strip(),
+                    'container': (item.get('container') or '').strip(),
+                })
+            attrs['k8s_targets'] = normalized_targets
+            attrs['execution_mode'] = HostTask.EXECUTION_MODE_K8S_API
         if task_type == HostTask.TASK_RUN_PLAYBOOK:
             attrs['execution_mode'] = HostTask.EXECUTION_MODE_ANSIBLE
         return attrs
@@ -436,6 +656,8 @@ class HostTaskScheduleSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         task_type = attrs.get('task_type') or getattr(self.instance, 'task_type', '')
+        if str(task_type).startswith('k8s_'):
+            raise serializers.ValidationError({'task_type': '当前计划任务仍使用主机资源底座，K8s 调度请先通过任务工作台下发'})
         validate_host_task_payload(task_type, attrs.get('payload') if 'payload' in attrs else getattr(self.instance, 'payload', {}))
         if task_type == HostTask.TASK_RUN_PLAYBOOK:
             attrs['execution_mode'] = HostTask.EXECUTION_MODE_ANSIBLE
@@ -468,6 +690,8 @@ class HostTaskSchedulePreviewSerializer(serializers.Serializer):
         return normalize_schedule_hosts(value)
 
     def validate(self, attrs):
+        if str(attrs.get('task_type') or '').startswith('k8s_'):
+            raise serializers.ValidationError({'task_type': '当前计划任务仍使用主机资源底座，K8s 调度请先通过任务工作台下发'})
         validate_host_task_payload(attrs.get('task_type'), attrs.get('payload') or {})
         if attrs.get('task_type') == HostTask.TASK_RUN_PLAYBOOK:
             attrs['execution_mode'] = HostTask.EXECUTION_MODE_ANSIBLE

@@ -11,8 +11,8 @@
     </section>
 
     <div v-if="canViewHosts" class="cmdb-host-entry-strip">
-      <span>主机能力已独立到一级菜单，CMDB 继续承载关系、拓扑、成本与优化视图。</span>
-      <el-button link type="primary" size="small" @click="router.push('/hosts/assets')">查看主机中心</el-button>
+      <span>主机资产已作为任务中心的资源底座，CMDB 继续承载关系、拓扑、成本、优化与申请流转。</span>
+      <el-button link type="primary" size="small" @click="router.push('/tasks?tab=assets')">查看任务中心资源底座</el-button>
     </div>
 
     <!-- 主 Tab 栏 (Pill Tab Theme: Purple) -->
@@ -156,6 +156,10 @@
         :can-manage="canManageCi"
         @edit-ci="openTopologyItemEditor"
       />
+    </div>
+
+    <div v-if="activeTab === 'requests'" class="tab-content">
+      <CmdbRequestsPanel :resource-tree="resourceTree" />
     </div>
 
     <!-- ============ Tab 3: 成本分析 ============ -->
@@ -702,6 +706,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, CircleCheck, Files, Monitor, Edit, Delete, Connection } from '@element-plus/icons-vue'
 import CmdbTopologyPanel from '@/components/cmdb/CmdbTopologyPanel.vue'
+import CmdbRequestsPanel from '@/components/cmdb/CmdbRequestsPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 import {
   getCITypes, createCIType, deleteCIType,
@@ -725,6 +730,7 @@ const canViewHosts = computed(() => authStore.hasAnyPermission(['ops.host.view',
 const mainTabs = computed(() => [
   canViewCi.value && { key: 'items', label: '配置项管理', icon: 'Grid' },
   canViewTopology.value && { key: 'topology', label: '资源地图', icon: 'Share' },
+  (canSubmitRequests.value || canApproveRequests.value) && { key: 'requests', label: '主机申请', icon: 'Ticket' },
   canViewCost.value && { key: 'cost', label: '成本分析', icon: 'TrendCharts' },
   canViewCost.value && { key: 'optimize', label: '资源优化', icon: 'Lightning' },
 ].filter(Boolean))
@@ -1443,14 +1449,12 @@ function syncTabStateFromRoute() {
   if (!mainTabs.value.length) return
   const routeTab = typeof route.query.tab === 'string' ? route.query.tab : ''
   const routeHostTab = typeof route.query.hostTab === 'string' ? route.query.hostTab : ''
-  if (routeTab === 'host-manage' || routeTab === 'hosts' || routeTab === 'requests') {
-    const legacyTarget = routeTab === 'requests'
-      ? '/hosts/requests'
-      : routeHostTab === 'task-center'
-        ? '/hosts/tasks'
-        : routeHostTab === 'requests'
-          ? '/hosts/requests'
-          : '/hosts/assets'
+  if (routeTab === 'host-manage' || routeTab === 'hosts') {
+    const legacyTarget = routeHostTab === 'task-center'
+      ? '/tasks'
+      : routeHostTab === 'requests'
+        ? '/cmdb?tab=requests'
+        : '/tasks?tab=assets'
     router.replace(legacyTarget)
     return
   }

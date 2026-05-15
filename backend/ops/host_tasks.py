@@ -17,7 +17,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
 
-from .models import Host, HostTask, HostTaskExecution
+from .models import Host, HostTask, HostTaskExecution, K8sCluster, TaskResource
 
 _TASK_THREADS = {}
 _TASK_THREADS_LOCK = threading.Lock()
@@ -25,6 +25,89 @@ _TASK_THREADS_LOCK = threading.Lock()
 
 class AnsibleControllerError(RuntimeError):
     pass
+
+
+class TaskResourceHostTarget:
+    def __init__(self, resource):
+        self.source = 'task_resource'
+        self.resource_id = resource.id
+        self.id = resource.id
+        self.hostname = resource.name
+        self.ip_address = str(resource.ip_address or '')
+        self.business_line = resource.system.name if resource.system_id else ''
+        self.system_name = self.business_line
+        self.environment = resource.environment.name if resource.environment_id else ''
+        self.status = 'online' if resource.status == TaskResource.STATUS_ACTIVE else 'offline'
+        self.ssh_port = resource.ssh_port or 22
+        self.ssh_user = resource.ssh_user or 'root'
+        self.ssh_password = resource.ssh_password or ''
+        self.admin_user = resource.owner or ''
+
+    def save(self, update_fields=None):
+        status = TaskResource.STATUS_ACTIVE if self.status == 'online' else TaskResource.STATUS_INACTIVE
+        TaskResource.objects.filter(pk=self.resource_id).update(status=status, updated_at=timezone.now())
+
+
+def normalize_host_execution_targets(hosts):
+    normalized = []
+    for host in hosts or []:
+        if isinstance(host, TaskResource):
+            normalized.append(TaskResourceHostTarget(host))
+        else:
+            normalized.append(host)
+    return normalized
+
+
+def _execution_host_fk(host):
+    return host if isinstance(host, Host) else None
+
+
+def _host_source_ref(host):
+    if isinstance(host, TaskResourceHostTarget):
+        return {'source': 'task_resource', 'id': host.resource_id}
+    return {'source': 'host', 'id': host.id}
+
+
+def resolve_host_source_refs(refs):
+    if refs and isinstance(refs[0], int):
+        refs = [{'source': 'host', 'id': item} for item in refs]
+    host_ids = [item.get('id') for item in refs if item.get('source') == 'host' and item.get('id')]
+    resource_ids = [item.get('id') for item in refs if item.get('source') == 'task_resource' and item.get('id')]
+    host_map = {host.id: host for host in Host.objects.filter(id__in=host_ids)}
+    resource_map = {
+        resource.id: TaskResourceHostTarget(resource)
+        for resource in TaskResource.objects.select_related('environment', 'system').filter(
+            id__in=resource_ids,
+            resource_type=TaskResource.RESOURCE_HOST,
+        )
+    }
+    targets = []
+    for item in refs:
+        source = item.get('source') or 'host'
+        target_id = item.get('id')
+        if source == 'task_resource' and target_id in resource_map:
+            targets.append(resource_map[target_id])
+        elif source == 'host' and target_id in host_map:
+            targets.append(host_map[target_id])
+    return targets
+
+
+def build_host_target_snapshot(hosts):
+    snapshot = []
+    for host in hosts:
+        source = 'task_resource' if isinstance(host, TaskResourceHostTarget) else 'host'
+        snapshot.append({
+            'id': host.id,
+            'source': source,
+            'resource_id': host.resource_id if source == 'task_resource' else None,
+            'hostname': host.hostname,
+            'ip_address': host.ip_address,
+            'business_line': getattr(host, 'business_line', ''),
+            'system_name': getattr(host, 'system_name', getattr(host, 'business_line', '')),
+            'environment': host.environment,
+            'status': host.status,
+        })
+    return snapshot
 
 
 def build_host_target_queryset(filters=None):
@@ -176,7 +259,7 @@ def _should_mark_host_offline(message):
 def _create_skipped_execution(task, host, message):
     HostTaskExecution.objects.create(
         task=task,
-        host=host,
+        host=_execution_host_fk(host),
         host_name=host.hostname,
         host_ip=host.ip_address,
         status='skipped',
@@ -193,7 +276,7 @@ def _create_skipped_execution(task, host, message):
 def _create_failed_execution(task, host, command_text, message):
     return HostTaskExecution.objects.create(
         task=task,
-        host=host,
+        host=_execution_host_fk(host),
         host_name=host.hostname,
         host_ip=host.ip_address,
         status='failed',
@@ -398,7 +481,7 @@ def _run_single_task_with_ssh(task, host):
     duration_ms = int((time.monotonic() - monotonic_started) * 1000)
     return HostTaskExecution.objects.create(
         task=task,
-        host=host,
+        host=_execution_host_fk(host),
         host_name=host.hostname,
         host_ip=host.ip_address,
         status=status,
@@ -456,7 +539,7 @@ def _run_single_task_with_ansible(task, host):
     duration_ms = int((time.monotonic() - monotonic_started) * 1000)
     return HostTaskExecution.objects.create(
         task=task,
-        host=host,
+        host=_execution_host_fk(host),
         host_name=host.hostname,
         host_ip=host.ip_address,
         status=status,
@@ -475,26 +558,312 @@ def _run_single_task(task, host, execution_mode):
     return _run_single_task_with_ssh(task, host)
 
 
+def _task_result_for_event(status):
+    try:
+        from eventwall.models import EventRecord
+    except Exception:
+        return 'success'
+    if status == HostTask.STATUS_FAILED:
+        return EventRecord.RESULT_FAILED
+    if status == HostTask.STATUS_PARTIAL:
+        return EventRecord.RESULT_PARTIAL
+    if status == HostTask.STATUS_CANCELED:
+        return EventRecord.RESULT_FAILED
+    if status == HostTask.STATUS_PENDING:
+        return EventRecord.RESULT_PENDING
+    return EventRecord.RESULT_SUCCESS
+
+
+def _task_severity_for_event(task):
+    try:
+        from eventwall.models import EventRecord
+    except Exception:
+        return 'info'
+    if task.risk_level in [HostTask.RISK_CRITICAL, HostTask.RISK_HIGH]:
+        return EventRecord.SEVERITY_DANGER
+    if task.status in [HostTask.STATUS_FAILED, HostTask.STATUS_PARTIAL] or task.risk_level == HostTask.RISK_MEDIUM:
+        return EventRecord.SEVERITY_WARNING
+    return EventRecord.SEVERITY_INFO
+
+
+def record_task_center_event(task, action, title, summary='', request=None, actor_username='', source_type=''):
+    try:
+        from eventwall.models import EventRecord
+        from eventwall.services import record_event
+    except Exception:
+        return None
+    return record_event(
+        request=request,
+        module='ops',
+        category='execution',
+        action=action,
+        title=title,
+        summary=summary or task.summary or title,
+        result=_task_result_for_event(task.status),
+        severity=_task_severity_for_event(task),
+        actor_username=actor_username or task.created_by,
+        actor_type=EventRecord.ACTOR_USER if (actor_username or task.created_by) != 'system' else EventRecord.ACTOR_SYSTEM,
+        source_type=source_type or (EventRecord.SOURCE_SCHEDULER if task.trigger_source == HostTask.TRIGGER_SOURCE_SCHEDULE else ''),
+        resource_type='host_task',
+        resource_id=task.id,
+        resource_name=task.name,
+        correlation_id=task.correlation_id or f'host-task:{task.id}',
+        metadata={
+            'event_category': 'task_center',
+            'target_type': task.target_type,
+            'task_type': task.task_type,
+            'trigger_source': task.trigger_source,
+            'lifecycle_status': task.lifecycle_status,
+            'risk_level': task.risk_level,
+            'target_count': task.target_count,
+            **(task.source_context or {}),
+        },
+    )
+
+
+def build_k8s_target_snapshot(targets):
+    cluster_ids = [item.get('cluster_id') for item in targets if item.get('cluster_id')]
+    clusters = {cluster.id: cluster for cluster in K8sCluster.objects.filter(id__in=cluster_ids)}
+    snapshot = []
+    for item in targets:
+        cluster_id = int(item.get('cluster_id'))
+        cluster = clusters.get(cluster_id)
+        namespace = item.get('namespace') or 'default'
+        name = item.get('name') or ''
+        kind = item.get('kind') or ''
+        snapshot.append({
+            'id': f'k8s:{cluster_id}:{namespace}:{kind}:{name}',
+            'cluster_id': cluster_id,
+            'cluster_name': cluster.name if cluster else f'Cluster {cluster_id}',
+            'namespace': namespace,
+            'name': name,
+            'kind': kind,
+            'container': item.get('container') or '',
+            'status': cluster.status if cluster else 'unknown',
+        })
+    return snapshot
+
+
+def _create_k8s_execution(task, target, status_value, command, output='', error_message='', started_at=None, finished_at=None):
+    started_at = started_at or timezone.now()
+    finished_at = finished_at or timezone.now()
+    return HostTaskExecution.objects.create(
+        task=task,
+        target_type=HostTask.TARGET_K8S,
+        host_name=target.get('cluster_name') or '',
+        host_ip='',
+        target_id=str(target.get('id') or ''),
+        target_name=target.get('name') or target.get('cluster_name') or '',
+        target_namespace=target.get('namespace') or '',
+        target_kind=target.get('kind') or '',
+        status=status_value,
+        command=command,
+        output=output or '',
+        error_message=error_message or '',
+        duration_ms=max(int((finished_at - started_at).total_seconds() * 1000), 0),
+        started_at=started_at,
+        finished_at=finished_at,
+    )
+
+
+def _run_k8s_restart_pod(task, cluster, target):
+    from . import k8s_views
+
+    namespace = target.get('namespace') or 'default'
+    pod_name = target.get('name') or ''
+    if not pod_name:
+        raise RuntimeError('缺少 Pod 名称')
+    if k8s_views._is_demo(cluster):
+        k8s_views._invalidate_cluster_runtime_cache(cluster)
+        return f'Pod {pod_name} 正在重启 [演示模式]'
+    k8s = k8s_views._get_k8s_client(cluster)
+    v1 = k8s.CoreV1Api()
+    v1.delete_namespaced_pod(name=pod_name, namespace=namespace)
+    k8s_views._invalidate_cluster_runtime_cache(cluster)
+    return f'Pod {pod_name} 正在重启'
+
+
+def _run_k8s_pod_exec(task, cluster, target):
+    from . import k8s_views
+
+    namespace = target.get('namespace') or 'default'
+    pod_name = target.get('name') or ''
+    container = target.get('container') or (task.payload or {}).get('container') or ''
+    command = (task.payload or {}).get('command') or 'pwd'
+    if not pod_name:
+        raise RuntimeError('缺少 Pod 名称')
+    if k8s_views._is_demo(cluster):
+        return '\n'.join([
+            f'$ {command}',
+            f'demo-exec on {pod_name} ({namespace})',
+            'uid=1000 gid=1000 groups=1000',
+            '/app',
+        ])
+    from kubernetes.stream import stream
+
+    k8s = k8s_views._get_k8s_client(cluster)
+    v1 = k8s.CoreV1Api()
+    kwargs = {
+        'name': pod_name,
+        'namespace': namespace,
+        'command': ['/bin/sh', '-lc', command],
+        'stderr': True,
+        'stdin': False,
+        'stdout': True,
+        'tty': False,
+    }
+    if container:
+        kwargs['container'] = container
+    return stream(v1.connect_get_namespaced_pod_exec, **kwargs) or ''
+
+
+def _run_k8s_scale_workload(task, cluster, target):
+    from . import k8s_views
+
+    payload = task.payload or {}
+    namespace = target.get('namespace') or 'default'
+    name = target.get('name') or ''
+    workload_type = (payload.get('workload_type') or target.get('kind') or '').lower()
+    replicas = int(payload.get('replicas'))
+    if workload_type not in ('deployment', 'statefulset'):
+        raise RuntimeError('仅支持 Deployment 或 StatefulSet 伸缩')
+    if not name:
+        raise RuntimeError('缺少工作负载名称')
+    if k8s_views._is_demo(cluster):
+        cache_name = 'deployments' if workload_type == 'deployment' else 'statefulsets'
+        defaults = k8s_views.DEMO_DEPLOYMENTS if workload_type == 'deployment' else k8s_views.DEMO_STATEFULSETS
+        items = k8s_views._get_demo_state(cluster.id, cache_name, defaults)
+        for item in items:
+            if item.get('name') == name and item.get('namespace') == namespace:
+                item['replicas'] = replicas
+                item['ready_replicas'] = min(item.get('ready_replicas', 0), replicas)
+                if workload_type == 'deployment':
+                    item['available_replicas'] = min(item.get('available_replicas', item.get('ready_replicas', 0)), replicas)
+                k8s_views._set_demo_state(cluster.id, cache_name, items)
+                k8s_views._invalidate_cluster_runtime_cache(cluster)
+                return f'{name} scaled to {replicas} replicas [演示模式]'
+        raise RuntimeError(f'未找到资源：{workload_type}/{namespace}/{name}')
+    k8s = k8s_views._get_k8s_client(cluster)
+    apps_v1 = k8s.AppsV1Api()
+    body = {'spec': {'replicas': replicas}}
+    if workload_type == 'deployment':
+        apps_v1.patch_namespaced_deployment_scale(name=name, namespace=namespace, body=body)
+    else:
+        apps_v1.patch_namespaced_stateful_set_scale(name=name, namespace=namespace, body=body)
+    k8s_views._invalidate_cluster_runtime_cache(cluster)
+    return f'{name} scaled to {replicas} replicas'
+
+
+def _k8s_command_text(task, target):
+    payload = task.payload or {}
+    if task.task_type == HostTask.TASK_K8S_RESTART_POD:
+        return f"kubectl delete pod {target.get('name')} -n {target.get('namespace') or 'default'}"
+    if task.task_type == HostTask.TASK_K8S_POD_EXEC:
+        return f"kubectl exec {target.get('name')} -n {target.get('namespace') or 'default'} -- {payload.get('command') or ''}"
+    if task.task_type == HostTask.TASK_K8S_SCALE_WORKLOAD:
+        return f"kubectl scale {payload.get('workload_type')}/{target.get('name')} -n {target.get('namespace') or 'default'} --replicas={payload.get('replicas')}"
+    return task.task_type
+
+
+def _run_single_k8s_task(task, target):
+    cluster = K8sCluster.objects.get(pk=target.get('cluster_id'))
+    started_at = timezone.now()
+    command = _k8s_command_text(task, target)
+    try:
+        if task.task_type == HostTask.TASK_K8S_RESTART_POD:
+            output = _run_k8s_restart_pod(task, cluster, target)
+        elif task.task_type == HostTask.TASK_K8S_POD_EXEC:
+            output = _run_k8s_pod_exec(task, cluster, target)
+        elif task.task_type == HostTask.TASK_K8S_SCALE_WORKLOAD:
+            output = _run_k8s_scale_workload(task, cluster, target)
+        else:
+            raise RuntimeError('不支持的 K8s 任务类型')
+        return _create_k8s_execution(task, target, 'success', command, output=output, started_at=started_at)
+    except Exception as exc:
+        return _create_k8s_execution(task, target, 'failed', command, error_message=str(exc), started_at=started_at)
+
+
+def execute_k8s_task(task, targets):
+    targets = list(targets)
+    task.refresh_from_db()
+    task.status = HostTask.STATUS_RUNNING
+    task.lifecycle_status = HostTask.LIFECYCLE_RUNNING
+    task.started_at = timezone.now()
+    task.target_type = HostTask.TARGET_K8S
+    task.execution_mode = HostTask.EXECUTION_MODE_K8S_API
+    task.target_count = len(targets)
+    task.target_snapshot = build_k8s_target_snapshot(targets)
+    task.success_count = 0
+    task.failed_count = 0
+    task.skipped_count = 0
+    task.summary = '任务执行中，正在通过 K8s API 处理目标资源'
+    task.save(update_fields=['status', 'lifecycle_status', 'started_at', 'target_type', 'execution_mode', 'target_count', 'target_snapshot', 'success_count', 'failed_count', 'skipped_count', 'summary'])
+
+    stop_on_error = task.execution_strategy == HostTask.STRATEGY_STOP_ON_ERROR
+    canceled = False
+    halted = False
+    failure_targets = []
+    snapshot = task.target_snapshot or []
+    for index, target in enumerate(snapshot):
+        task.refresh_from_db(fields=['cancel_requested'])
+        if task.cancel_requested:
+            canceled = True
+            for remaining in snapshot[index:]:
+                _create_k8s_execution(task, remaining, 'skipped', _k8s_command_text(task, remaining), error_message='任务已收到终止请求，剩余 K8s 目标已跳过')
+                task.skipped_count += 1
+            break
+        if halted:
+            _create_k8s_execution(task, target, 'skipped', _k8s_command_text(task, target), error_message='前序目标执行失败，策略为失败即停，当前 K8s 目标已跳过')
+            task.skipped_count += 1
+            continue
+        execution = _run_single_k8s_task(task, target)
+        if execution.status == 'success':
+            task.success_count += 1
+        else:
+            task.failed_count += 1
+            failure_targets.append(execution.target_name or execution.host_name)
+            if stop_on_error:
+                halted = True
+
+    task.finished_at = timezone.now()
+    if canceled:
+        task.status = HostTask.STATUS_CANCELED
+    elif task.failed_count and task.success_count:
+        task.status = HostTask.STATUS_PARTIAL
+    elif task.failed_count:
+        task.status = HostTask.STATUS_FAILED
+    else:
+        task.status = HostTask.STATUS_SUCCESS
+    task.lifecycle_status = {
+        HostTask.STATUS_SUCCESS: HostTask.LIFECYCLE_SUCCESS,
+        HostTask.STATUS_PARTIAL: HostTask.LIFECYCLE_PARTIAL,
+        HostTask.STATUS_FAILED: HostTask.LIFECYCLE_FAILED,
+        HostTask.STATUS_CANCELED: HostTask.LIFECYCLE_CANCELED,
+    }.get(task.status, HostTask.LIFECYCLE_PENDING_EXECUTION)
+    summary = f'共 {task.target_count} 个 K8s 目标，成功 {task.success_count}，失败 {task.failed_count}'
+    if task.skipped_count:
+        summary += f'，跳过 {task.skipped_count}'
+    if failure_targets:
+        summary += f'，失败目标：{", ".join(failure_targets[:5])}'
+    if canceled:
+        summary += '，任务已按申请终止'
+    task.summary = summary[:255]
+    task.save(update_fields=['status', 'lifecycle_status', 'success_count', 'failed_count', 'skipped_count', 'finished_at', 'summary'])
+    record_task_center_event(task, 'task_finished', '任务中心执行完成')
+    return task
+
+
 def execute_host_task(task, hosts):
-    hosts = list(hosts)
+    hosts = normalize_host_execution_targets(hosts)
     task.refresh_from_db()
     requested_mode = task.execution_mode or HostTask.EXECUTION_MODE_SSH
     active_mode = requested_mode
     fallback_message = ''
     task.status = HostTask.STATUS_RUNNING
+    task.lifecycle_status = HostTask.LIFECYCLE_RUNNING
     task.started_at = timezone.now()
     task.target_count = len(hosts)
-    task.target_snapshot = [
-        {
-            'id': host.id,
-            'hostname': host.hostname,
-            'ip_address': host.ip_address,
-            'business_line': host.business_line,
-            'environment': host.environment,
-            'status': host.status,
-        }
-        for host in hosts
-    ]
+    task.target_snapshot = build_host_target_snapshot(hosts)
     task.success_count = 0
     task.failed_count = 0
     task.skipped_count = 0
@@ -505,6 +874,7 @@ def execute_host_task(task, hosts):
     task.save(
         update_fields=[
             'status',
+            'lifecycle_status',
             'started_at',
             'target_count',
             'target_snapshot',
@@ -562,6 +932,12 @@ def execute_host_task(task, hosts):
         task.status = HostTask.STATUS_FAILED
     else:
         task.status = HostTask.STATUS_SUCCESS
+    task.lifecycle_status = {
+        HostTask.STATUS_SUCCESS: HostTask.LIFECYCLE_SUCCESS,
+        HostTask.STATUS_PARTIAL: HostTask.LIFECYCLE_PARTIAL,
+        HostTask.STATUS_FAILED: HostTask.LIFECYCLE_FAILED,
+        HostTask.STATUS_CANCELED: HostTask.LIFECYCLE_CANCELED,
+    }.get(task.status, HostTask.LIFECYCLE_PENDING_EXECUTION)
 
     summary = f'\u5171 {task.target_count} \u53f0\uff0c\u6210\u529f {task.success_count}\uff0c\u5931\u8d25 {task.failed_count}'
     if task.skipped_count:
@@ -583,6 +959,7 @@ def execute_host_task(task, hosts):
     task.save(
         update_fields=[
             'status',
+            'lifecycle_status',
             'success_count',
             'failed_count',
             'skipped_count',
@@ -594,6 +971,7 @@ def execute_host_task(task, hosts):
         from .host_task_schedules import sync_schedule_after_task
 
         sync_schedule_after_task(task)
+    record_task_center_event(task, 'task_finished', '任务中心执行完成')
     return task
 
 
@@ -604,12 +982,11 @@ def should_run_async():
     return 'test' not in sys.argv
 
 
-def _execute_host_task_thread(task_id, host_ids):
+def _execute_host_task_thread(task_id, host_refs):
     close_old_connections()
     try:
         task = HostTask.objects.get(pk=task_id)
-        host_map = {host.id: host for host in Host.objects.filter(id__in=host_ids)}
-        hosts = [host_map[item] for item in host_ids if item in host_map]
+        hosts = resolve_host_source_refs(host_refs)
         execute_host_task(task, hosts)
     finally:
         close_old_connections()
@@ -617,32 +994,54 @@ def _execute_host_task_thread(task_id, host_ids):
             _TASK_THREADS.pop(task_id, None)
 
 
+def _execute_k8s_task_thread(task_id, targets):
+    close_old_connections()
+    try:
+        task = HostTask.objects.get(pk=task_id)
+        execute_k8s_task(task, targets)
+    finally:
+        close_old_connections()
+        with _TASK_THREADS_LOCK:
+            _TASK_THREADS.pop(task_id, None)
+
+
 def start_host_task(task, hosts):
-    host_list = list(hosts)
+    host_list = normalize_host_execution_targets(hosts)
     task.target_count = len(host_list)
-    task.target_snapshot = [
-        {
-            'id': host.id,
-            'hostname': host.hostname,
-            'ip_address': host.ip_address,
-            'business_line': host.business_line,
-            'environment': host.environment,
-            'status': host.status,
-        }
-        for host in host_list
-    ]
+    task.lifecycle_status = HostTask.LIFECYCLE_PENDING_EXECUTION
+    task.target_snapshot = build_host_target_snapshot(host_list)
     if should_run_async():
         if task.execution_mode == HostTask.EXECUTION_MODE_ANSIBLE:
             task.summary = '\u4efb\u52a1\u5df2\u5165\u961f\uff0c\u7b49\u5f85\u540e\u53f0\u901a\u8fc7 Ansible \u6267\u884c'
         else:
             task.summary = '\u4efb\u52a1\u5df2\u5165\u961f\uff0c\u7b49\u5f85\u540e\u53f0\u6267\u884c'
-        task.save(update_fields=['target_count', 'target_snapshot', 'summary'])
-        host_ids = [host.id for host in host_list]
-        worker = threading.Thread(target=_execute_host_task_thread, args=(task.id, host_ids), daemon=True)
+        task.save(update_fields=['target_count', 'target_snapshot', 'lifecycle_status', 'summary'])
+        host_refs = [_host_source_ref(host) for host in host_list]
+        worker = threading.Thread(target=_execute_host_task_thread, args=(task.id, host_refs), daemon=True)
         with _TASK_THREADS_LOCK:
             _TASK_THREADS[task.id] = worker
         worker.start()
         return task
 
     execute_host_task(task, host_list)
+    return task
+
+
+def start_k8s_task(task, targets):
+    target_list = list(targets)
+    task.target_type = HostTask.TARGET_K8S
+    task.execution_mode = HostTask.EXECUTION_MODE_K8S_API
+    task.target_count = len(target_list)
+    task.lifecycle_status = HostTask.LIFECYCLE_PENDING_EXECUTION
+    task.target_snapshot = build_k8s_target_snapshot(target_list)
+    if should_run_async():
+        task.summary = '任务已入队，等待后台通过 K8s API 执行'
+        task.save(update_fields=['target_type', 'execution_mode', 'target_count', 'target_snapshot', 'lifecycle_status', 'summary'])
+        worker = threading.Thread(target=_execute_k8s_task_thread, args=(task.id, target_list), daemon=True)
+        with _TASK_THREADS_LOCK:
+            _TASK_THREADS[task.id] = worker
+        worker.start()
+        return task
+
+    execute_k8s_task(task, target_list)
     return task

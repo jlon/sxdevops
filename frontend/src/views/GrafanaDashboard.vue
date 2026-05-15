@@ -11,6 +11,7 @@
           </div>
           <span>{{ immersiveFolderLabel }}</span>
         </div>
+        <span class="immersive-toolbar__hint">注意：看板首次加载会比较慢</span>
         <div class="immersive-toolbar__actions">
           <el-button size="small" v-if="canViewTracing" type="success" plain @click="openTraceFromDashboard(selectedDashboard)">查链路</el-button>
           <el-button size="small" v-if="canQueryLogs" type="warning" plain @click="openLogsFromDashboard(selectedDashboard)">查日志</el-button>
@@ -2386,7 +2387,7 @@ onBeforeUnmount(() => {
 .immersive-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   flex-wrap: wrap;
   padding: 6px 8px;
@@ -2421,6 +2422,21 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+.immersive-toolbar__hint {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  margin-left: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  background: rgba(255, 247, 219, 0.92);
+  color: #a16207 !important;
+  font-size: 10px !important;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .immersive-toolbar__tags {
   gap: 5px;
 }
@@ -2430,6 +2446,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .immersive-stage {

@@ -6,6 +6,9 @@ PERMISSION_DEFINITIONS = [
     ('ops.host.manage', '管理主机', 'ops', '新增、编辑、删除、测试、刷新主机'),
     ('ops.host.terminal', '使用 WebShell', 'ops', '通过浏览器进入主机终端'),
     ('ops.host.execute', '执行主机任务', 'ops', '通过任务中心批量执行主机巡检与运维命令'),
+    ('ops.task.execute', '执行任务中心任务', 'ops', '通过任务中心执行主机、K8s 与自动化调度任务'),
+    ('ops.task.resource.view', '查看任务资源底座', 'ops', '查看任务中心独立执行资源、环境与系统树'),
+    ('ops.task.resource.manage', '管理任务资源底座', 'ops', '维护任务中心独立执行资源、环境与系统树'),
     ('ops.host.schedule.view', '查看定时任务', 'ops', '查看主机定时编排、执行记录与下次执行时间'),
     ('ops.host.schedule.manage', '管理定时任务', 'ops', '创建、编辑、启停和删除主机定时编排'),
     ('ops.host.schedule.execute', '执行定时任务', 'ops', '手动触发主机定时编排并复用 SSH/Ansible 执行链路'),
@@ -103,7 +106,7 @@ BUILTIN_ROLES = [
         'description': '负责主机、部署、容器、Nginx、日志与 CMDB 维护。',
         'permissions': [
             'aiops.knowledge.view', 'aiops.knowledge.manage',
-            'ops.dashboard.view', 'ops.host.view', 'ops.host.manage', 'ops.host.terminal', 'ops.host.execute',
+            'ops.dashboard.view', 'ops.host.view', 'ops.host.manage', 'ops.host.terminal', 'ops.host.execute', 'ops.task.execute', 'ops.task.resource.view', 'ops.task.resource.manage',
             'ops.host.schedule.view', 'ops.host.schedule.manage', 'ops.host.schedule.execute',
             'ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve',
             'ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve',
@@ -130,7 +133,7 @@ BUILTIN_ROLES = [
         'description': '可查看环境信息、日志并提交 SQL 与资源申请。',
         'permissions': [
             'aiops.knowledge.view',
-            'ops.dashboard.view', 'ops.host.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
+            'ops.dashboard.view', 'ops.host.view', 'ops.task.resource.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
             'ops.log.query', 'ops.log.datasource.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.system_posture.view', 'ops.observability.link.view', 'ops.grafana.view', 'ops.middleware.view',
             'ops.iac.view', 'ops.iac.manage', 'ops.iac.execute', 'ops.multicloud.view', 'eventwall.view', 'eventwall.source.view',
             'aiops.chat.view', 'aiops.chat.analyze', 'aiops.task.generate',
@@ -157,7 +160,7 @@ BUILTIN_ROLES = [
         'name': '只读访客',
         'description': '只能浏览各模块的只读信息。',
         'permissions': [
-            'ops.dashboard.view', 'ops.host.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
+            'ops.dashboard.view', 'ops.host.view', 'ops.task.resource.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
             'ops.log.entry.view', 'ops.log.datasource.view', 'ops.log.query', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.system_posture.view', 'ops.observability.link.view', 'ops.grafana.view', 'ops.k8s.view', 'ops.docker.view',
             'ops.middleware.view', 'ops.nginx.view', 'ops.iac.view', 'ops.multicloud.view',
             'cmdb.dashboard.view', 'cmdb.ci.view', 'cmdb.topology.view',

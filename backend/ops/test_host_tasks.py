@@ -5,7 +5,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from ops.host_tasks import AnsibleControllerError
-from ops.models import Host, HostTask, HostTaskTemplate
+from ops.models import Host, HostTask, HostTaskTemplate, K8sCluster
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -187,6 +187,38 @@ class HostTaskApiTests(TestCase):
         response = self.client.get('/api/host-tasks/')
 
         self.assertEqual(response.status_code, 403)
+
+    def test_k8s_pod_exec_task_records_non_host_execution(self):
+        cluster = K8sCluster.objects.create(name='demo-k8s', kubeconfig='demo', status='connected')
+
+        response = self.client.post(
+            '/api/host-tasks/',
+            {
+                'name': 'pod-diagnostic',
+                'target_type': HostTask.TARGET_K8S,
+                'task_type': HostTask.TASK_K8S_POD_EXEC,
+                'k8s_targets': [
+                    {
+                        'cluster_id': cluster.id,
+                        'namespace': 'production',
+                        'name': 'api-server-5f8b7c6d4-r9p2w',
+                        'kind': 'pod',
+                    },
+                ],
+                'payload': {'command': 'pwd'},
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload['target_type'], HostTask.TARGET_K8S)
+        self.assertEqual(payload['execution_mode'], HostTask.EXECUTION_MODE_K8S_API)
+        self.assertEqual(payload['status'], HostTask.STATUS_SUCCESS)
+        self.assertEqual(payload['success_count'], 1)
+        self.assertEqual(payload['executions'][0]['target_type'], HostTask.TARGET_K8S)
+        self.assertEqual(payload['executions'][0]['target_namespace'], 'production')
+        self.assertIn('demo-exec', payload['executions'][0]['output'])
 
     @patch('ops.host_tasks.open_ssh_client')
     def test_rerun_reuses_original_targets_and_mode(self, mock_open_ssh_client):

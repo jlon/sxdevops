@@ -10,6 +10,8 @@ from . import nginx_views
 from . import observability_views
 router = DefaultRouter()
 router.register(r'hosts', views.HostViewSet)
+router.register(r'task-resource-groups', views.TaskResourceGroupViewSet, basename='task-resource-group')
+router.register(r'task-resources', views.TaskResourceViewSet, basename='task-resource')
 router.register(r'host-tasks', views.HostTaskViewSet, basename='host-task')
 router.register(r'host-task-templates', views.HostTaskTemplateViewSet, basename='host-task-template')
 router.register(r'host-task-schedules', views.HostTaskScheduleViewSet, basename='host-task-schedule')

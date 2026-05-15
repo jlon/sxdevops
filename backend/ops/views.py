@@ -20,7 +20,7 @@ from .host_task_schedules import (
     resolve_schedule_hosts,
     trigger_schedule,
 )
-from .host_tasks import build_host_target_queryset, start_host_task
+from .host_tasks import build_host_target_queryset, record_task_center_event, resolve_host_source_refs, start_host_task, start_k8s_task
 from .models import (
     Alert,
     AlertAction,
@@ -43,6 +43,8 @@ from .models import (
     HostTaskScheduleExecution,
     HostTaskTemplate,
     LogEntry,
+    TaskResource,
+    TaskResourceGroup,
     TransactionTicket,
 )
 from .serializers import (
@@ -73,6 +75,8 @@ from .serializers import (
     HostTaskTargetSerializer,
     HostTaskTemplateSerializer,
     LogEntrySerializer,
+    TaskResourceGroupSerializer,
+    TaskResourceSerializer,
     TransactionTicketSerializer,
 )
 from .alerting import (
@@ -298,6 +302,157 @@ class HostViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mode
             return Response({'detail': f'\u83b7\u53d6\u4fe1\u606f\u5931\u8d25: {str(exc)}'}, status=400)
 
 
+class TaskResourceGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = TaskResourceGroup.objects.select_related('parent').prefetch_related('children').all()
+    serializer_class = TaskResourceGroupSerializer
+    pagination_class = None
+    event_module = 'ops'
+    event_resource_type = 'task_resource_group'
+    event_resource_label = '任务资源分组'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.task.resource.view'],
+        'retrieve': ['ops.task.resource.view'],
+        'create': ['ops.task.resource.manage'],
+        'update': ['ops.task.resource.manage'],
+        'partial_update': ['ops.task.resource.manage'],
+        'destroy': ['ops.task.resource.manage'],
+        'tree': ['ops.task.resource.view'],
+    }
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        group_type = self.request.query_params.get('group_type')
+        parent = self.request.query_params.get('parent')
+        if group_type:
+            queryset = queryset.filter(group_type=group_type)
+        if parent:
+            queryset = queryset.filter(parent_id=parent)
+        return queryset.order_by('group_type', 'sort_order', 'name', 'id')
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user.username)
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user.username)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.children.exists():
+            return Response({'detail': '请先删除该节点下的系统'}, status=status.HTTP_400_BAD_REQUEST)
+        if TaskResource.objects.filter(Q(environment=instance) | Q(system=instance)).exists():
+            return Response({'detail': '该节点下仍存在执行资源，不能删除'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=['get'])
+    def tree(self, request):
+        groups = list(TaskResourceGroup.objects.select_related('parent').order_by('group_type', 'sort_order', 'name', 'id'))
+        resources = TaskResource.objects.values('environment_id', 'system_id', 'resource_type').annotate(total=Count('id'))
+        env_counts = {}
+        system_counts = {}
+        for item in resources:
+            env_counts[item['environment_id']] = env_counts.get(item['environment_id'], 0) + item['total']
+            if item['system_id']:
+                system_counts[item['system_id']] = system_counts.get(item['system_id'], 0) + item['total']
+        systems_by_env = {}
+        for group in groups:
+            if group.group_type == TaskResourceGroup.GROUP_SYSTEM and group.parent_id:
+                systems_by_env.setdefault(group.parent_id, []).append(group)
+        tree = []
+        for group in groups:
+            if group.group_type != TaskResourceGroup.GROUP_ENVIRONMENT:
+                continue
+            children = [
+                {
+                    'id': system.id,
+                    'name': system.name,
+                    'code': system.code,
+                    'group_type': system.group_type,
+                    'parent': system.parent_id,
+                    'description': system.description,
+                    'sort_order': system.sort_order,
+                    'resource_count': system_counts.get(system.id, 0),
+                    'children': [],
+                }
+                for system in systems_by_env.get(group.id, [])
+            ]
+            tree.append({
+                'id': group.id,
+                'name': group.name,
+                'code': group.code,
+                'group_type': group.group_type,
+                'parent': None,
+                'description': group.description,
+                'sort_order': group.sort_order,
+                'resource_count': env_counts.get(group.id, 0),
+                'children': children,
+            })
+        return Response(tree)
+
+
+class TaskResourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    serializer_class = TaskResourceSerializer
+    search_fields = ['name', 'ip_address', 'description', 'cluster__name']
+    event_module = 'ops'
+    event_resource_type = 'task_resource'
+    event_resource_label = '任务执行资源'
+    event_resource_name_fields = ('name',)
+    event_exclude_fields = ('ssh_password',)
+    rbac_permissions = {
+        'list': ['ops.task.resource.view'],
+        'retrieve': ['ops.task.resource.view'],
+        'create': ['ops.task.resource.manage'],
+        'update': ['ops.task.resource.manage'],
+        'partial_update': ['ops.task.resource.manage'],
+        'destroy': ['ops.task.resource.manage'],
+        'stats': ['ops.task.resource.view'],
+    }
+
+    def get_queryset(self):
+        queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').all()
+        resource_type = self.request.query_params.get('resource_type')
+        status_value = self.request.query_params.get('status')
+        environment = self.request.query_params.get('environment')
+        system_value = self.request.query_params.get('system')
+        search = (self.request.query_params.get('search') or '').strip()
+        if resource_type:
+            queryset = queryset.filter(resource_type=resource_type)
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        else:
+            queryset = queryset.filter(status=TaskResource.STATUS_ACTIVE)
+        if environment:
+            queryset = queryset.filter(Q(environment_id=environment) | Q(environment__name=environment))
+        if system_value:
+            queryset = queryset.filter(Q(system_id=system_value) | Q(system__name=system_value))
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search)
+                | Q(ip_address__icontains=search)
+                | Q(description__icontains=search)
+                | Q(cluster__name__icontains=search)
+            )
+        return queryset.order_by('environment__sort_order', 'system__sort_order', 'resource_type', 'name', 'id')
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user.username)
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user.username)
+
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        queryset = self.filter_queryset(self.get_queryset())
+        return Response({
+            'total': queryset.count(),
+            'host': queryset.filter(resource_type=TaskResource.RESOURCE_HOST).count(),
+            'k8s': queryset.filter(resource_type=TaskResource.RESOURCE_K8S).count(),
+            'active': queryset.filter(status=TaskResource.STATUS_ACTIVE).count(),
+            'warning': queryset.filter(status=TaskResource.STATUS_WARNING).count(),
+            'inactive': queryset.filter(status=TaskResource.STATUS_INACTIVE).count(),
+        })
+
+
 class HostTaskTemplateViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = HostTaskTemplateSerializer
     search_fields = ['name', 'description', 'created_by']
@@ -307,12 +462,12 @@ class HostTaskTemplateViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, v
     event_resource_label = '主机任务模板'
     event_resource_name_fields = ('name',)
     rbac_permissions = {
-        'list': ['ops.host.execute'],
-        'retrieve': ['ops.host.execute'],
-        'create': ['ops.host.execute'],
-        'update': ['ops.host.execute'],
-        'partial_update': ['ops.host.execute'],
-        'destroy': ['ops.host.execute'],
+        'list': ['ops.task.execute'],
+        'retrieve': ['ops.task.execute'],
+        'create': ['ops.task.execute'],
+        'update': ['ops.task.execute'],
+        'partial_update': ['ops.task.execute'],
+        'destroy': ['ops.task.execute'],
     }
 
     def get_queryset(self):
@@ -352,17 +507,19 @@ class HostTaskTemplateViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, v
 class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = HostTask.objects.prefetch_related('executions').all()
     search_fields = ['name', 'description', 'created_by']
-    filterset_fields = ['task_type', 'status', 'created_by']
+    filterset_fields = ['target_type', 'task_type', 'status', 'created_by', 'trigger_source', 'lifecycle_status', 'risk_level']
     http_method_names = ['get', 'post', 'head', 'options']
     rbac_permissions = {
-        'list': ['ops.host.execute'],
-        'retrieve': ['ops.host.execute'],
-        'create': ['ops.host.execute'],
-        'rerun': ['ops.host.execute'],
-        'cancel': ['ops.host.execute'],
-        'batch_cancel': ['ops.host.execute'],
-        'stats': ['ops.host.execute'],
-        'host_options': ['ops.host.execute'],
+        'list': ['ops.task.execute'],
+        'retrieve': ['ops.task.execute'],
+        'create': ['ops.task.execute'],
+        'rerun': ['ops.task.execute'],
+        'cancel': ['ops.task.execute'],
+        'batch_cancel': ['ops.task.execute'],
+        'execute': ['ops.task.execute'],
+        'stats': ['ops.task.execute'],
+        'host_options': ['ops.task.execute'],
+        'resource_options': ['ops.task.execute'],
     }
 
     def get_serializer_class(self):
@@ -376,14 +533,38 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
-        host_ids = validated['host_ids']
-        host_map = {host.id: host for host in Host.objects.filter(id__in=host_ids)}
-        hosts = [host_map[item] for item in host_ids if item in host_map]
-        if len(hosts) != len(host_ids):
-            return Response({'detail': '\u5b58\u5728\u65e0\u6548\u7684\u76ee\u6807\u4e3b\u673a\uff0c\u8bf7\u5237\u65b0\u540e\u91cd\u8bd5'}, status=status.HTTP_400_BAD_REQUEST)
+        target_type = validated.get('target_type') or HostTask.TARGET_HOST
+        hosts = []
+        k8s_targets = []
+        target_label = ''
+        if target_type == HostTask.TARGET_K8S:
+            k8s_targets = validated.get('k8s_targets') or []
+            target_label = f'{len(k8s_targets)} 个 K8s 目标'
+        else:
+            resource_ids = validated.get('resource_ids') or []
+            if resource_ids:
+                resource_map = {
+                    resource.id: resource
+                    for resource in TaskResource.objects.select_related('environment', 'system').filter(
+                        id__in=resource_ids,
+                        resource_type=TaskResource.RESOURCE_HOST,
+                    )
+                }
+                hosts = [resource_map[item] for item in resource_ids if item in resource_map]
+                if len(hosts) != len(resource_ids):
+                    return Response({'detail': '存在无效的主机资源，请刷新后重试'}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                host_ids = validated['host_ids']
+                host_map = {host.id: host for host in Host.objects.filter(id__in=host_ids)}
+                hosts = [host_map[item] for item in host_ids if item in host_map]
+                if len(hosts) != len(host_ids):
+                    return Response({'detail': '\u5b58\u5728\u65e0\u6548\u7684\u76ee\u6807\u4e3b\u673a\uff0c\u8bf7\u5237\u65b0\u540e\u91cd\u8bd5'}, status=status.HTTP_400_BAD_REQUEST)
+            target_label = f'{len(hosts)} 台主机'
 
+        risk_level = self._infer_risk_level(validated, hosts, k8s_targets)
         task = HostTask.objects.create(
             name=validated['name'],
+            target_type=target_type,
             task_type=validated['task_type'],
             description=validated.get('description', ''),
             payload=validated.get('payload') or {},
@@ -391,34 +572,51 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             execution_mode=validated.get('execution_mode', HostTask.EXECUTION_MODE_SSH),
             execution_strategy=validated.get('execution_strategy', HostTask.STRATEGY_CONTINUE),
             timeout_seconds=validated.get('timeout_seconds', 15),
+            trigger_source=HostTask.TRIGGER_SOURCE_MANUAL,
+            lifecycle_status=HostTask.LIFECYCLE_PENDING_EXECUTION,
+            risk_level=risk_level,
+            source_context={'source': 'manual'},
             created_by=request.user.username,
             summary='\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u7b49\u5f85\u8c03\u5ea6\u6267\u884c',
         )
-        start_host_task(task, hosts)
-        record_event(
+        task.correlation_id = f'task-center:{task.id}'
+        task.save(update_fields=['correlation_id'])
+        if target_type == HostTask.TARGET_K8S:
+            start_k8s_task(task, k8s_targets)
+        else:
+            start_host_task(task, hosts)
+        record_task_center_event(
+            task,
             request=request,
-            module='ops',
-            category='execution',
             action='create_task',
-            title='\u521b\u5efa\u4e3b\u673a\u4efb\u52a1',
-            summary=f'\u4e3b\u673a\u4efb\u52a1 {task.name} \u5df2\u521b\u5efa\uff0c\u76ee\u6807\u4e3b\u673a {len(hosts)} \u53f0',
-            result=EventRecord.RESULT_PENDING,
-            resource_type='host_task',
-            resource_id=task.id,
-            resource_name=task.name,
-            correlation_id=f'host-task:{task.id}',
-            related_resources=[
-                build_resource('ops', 'host', host.id, host.hostname, environment=host.environment, business_line=host.business_line)
-                for host in hosts[:10]
-            ],
-            metadata={
-                'task_type': task.task_type,
-                'execution_mode': task.execution_mode,
-                'payload_preview': build_json_preview(task.payload),
-            },
+            title='创建任务中心任务',
+            summary=f'任务 {task.name} 已创建，目标 {target_label}',
         )
         data = HostTaskDetailSerializer(self.get_queryset().get(pk=task.pk)).data
         return Response(data, status=status.HTTP_201_CREATED)
+
+    def _infer_risk_level(self, validated, hosts=None, k8s_targets=None):
+        hosts = hosts or []
+        k8s_targets = k8s_targets or []
+        task_type = validated.get('task_type')
+        payload = validated.get('payload') or {}
+        command = str(payload.get('command') or payload.get('playbook_content') or '').lower()
+        destructive_keywords = ['rm -rf', 'mkfs', 'shutdown', 'reboot', 'systemctl restart', 'drop database', 'truncate', 'iptables -f']
+        if any(keyword in command for keyword in destructive_keywords):
+            return HostTask.RISK_CRITICAL
+        if task_type in [HostTask.TASK_RUN_COMMAND, HostTask.TASK_RUN_PLAYBOOK]:
+            if len(hosts) > 20 or any(host.environment == 'prod' for host in hosts):
+                return HostTask.RISK_HIGH
+            return HostTask.RISK_MEDIUM
+        if task_type == HostTask.TASK_K8S_SCALE_WORKLOAD:
+            return HostTask.RISK_HIGH
+        if task_type in [HostTask.TASK_K8S_RESTART_POD, HostTask.TASK_K8S_POD_EXEC]:
+            if any((target.get('namespace') or '') in ['prod', 'production'] for target in k8s_targets):
+                return HostTask.RISK_HIGH
+            return HostTask.RISK_MEDIUM
+        if any(host.environment == 'prod' for host in hosts):
+            return HostTask.RISK_MEDIUM
+        return HostTask.RISK_LOW
 
     @action(detail=False, methods=['get'])
     def stats(self, request):
@@ -430,6 +628,16 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         running = queryset.filter(status=HostTask.STATUS_RUNNING).count()
         pending = queryset.filter(status=HostTask.STATUS_PENDING).count()
         canceled = queryset.filter(status=HostTask.STATUS_CANCELED).count()
+        aiops_pending = queryset.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS, status=HostTask.STATUS_PENDING).count()
+        high_risk = queryset.filter(risk_level__in=[HostTask.RISK_HIGH, HostTask.RISK_CRITICAL]).count()
+        by_source = {
+            key: queryset.filter(trigger_source=key).count()
+            for key, _label in HostTask.TRIGGER_SOURCE_CHOICES
+        }
+        by_target_type = {
+            key: queryset.filter(target_type=key).count()
+            for key, _label in HostTask.TARGET_TYPE_CHOICES
+        }
         target_total = sum(item.target_count for item in queryset[:50]) if total else 0
         latest = queryset.first()
         rate_base = success + partial + failed + canceled
@@ -442,10 +650,72 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             'partial': partial,
             'failed': failed,
             'canceled': canceled,
+            'aiops_pending': aiops_pending,
+            'high_risk': high_risk,
+            'by_source': by_source,
+            'by_target_type': by_target_type,
             'target_total': target_total,
             'success_rate': success_rate,
             'latest_finished_at': latest.finished_at if latest else None,
         })
+
+    @action(detail=True, methods=['post'])
+    def execute(self, request, pk=None):
+        task = self.get_object()
+        if task.status != HostTask.STATUS_PENDING:
+            return Response({'detail': '仅待执行任务可以从任务中心发起执行'}, status=status.HTTP_400_BAD_REQUEST)
+        if task.target_type == HostTask.TARGET_K8S:
+            targets = self._k8s_targets_from_snapshot(task)
+            if not targets:
+                return Response({'detail': '没有找到有效的 K8s 目标'}, status=status.HTTP_400_BAD_REQUEST)
+            start_k8s_task(task, targets)
+            record_task_center_event(
+                task,
+                request=request,
+                action='start_task',
+                title='启动任务中心任务',
+                summary=f'任务 {task.name} 已从任务中心启动执行',
+            )
+            return Response(HostTaskDetailSerializer(self.get_queryset().get(pk=task.pk)).data)
+        hosts = self._host_targets_from_snapshot(task)
+        if not hosts:
+            return Response({'detail': '没有找到有效的目标主机'}, status=status.HTTP_400_BAD_REQUEST)
+        start_host_task(task, hosts)
+        record_task_center_event(
+            task,
+            request=request,
+            action='start_task',
+            title='启动任务中心任务',
+            summary=f'任务 {task.name} 已从任务中心启动执行',
+        )
+        return Response(HostTaskDetailSerializer(self.get_queryset().get(pk=task.pk)).data)
+
+    def _k8s_targets_from_snapshot(self, task):
+        return [
+            {
+                'cluster_id': item.get('cluster_id'),
+                'namespace': item.get('namespace') or 'default',
+                'name': item.get('name') or '',
+                'kind': item.get('kind') or '',
+                'container': item.get('container') or '',
+            }
+            for item in (task.target_snapshot or [])
+            if item.get('cluster_id')
+        ]
+
+    def _host_targets_from_snapshot(self, task):
+        refs = []
+        legacy_host_ids = []
+        for item in (task.target_snapshot or []):
+            source = item.get('source') or ''
+            if source == 'task_resource' or item.get('resource_id'):
+                refs.append({'source': 'task_resource', 'id': item.get('resource_id') or item.get('id')})
+            elif item.get('id'):
+                legacy_host_ids.append(item.get('id'))
+        if refs:
+            return resolve_host_source_refs(refs)
+        host_map = {host.id: host for host in Host.objects.filter(id__in=legacy_host_ids)}
+        return [host_map[item] for item in legacy_host_ids if item in host_map]
 
     @action(detail=False, methods=['get'])
     def host_options(self, request):
@@ -459,17 +729,49 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         data = HostTaskTargetSerializer(queryset[:200], many=True).data
         return Response(data)
 
+    @action(detail=False, methods=['get'])
+    def resource_options(self, request):
+        queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').all()
+        resource_type = request.query_params.get('resource_type') or ''
+        if resource_type:
+            queryset = queryset.filter(resource_type=resource_type)
+        environment = request.query_params.get('environment') or ''
+        system_value = request.query_params.get('system') or request.query_params.get('business_line') or ''
+        status_value = request.query_params.get('status') or ''
+        search = (request.query_params.get('search') or '').strip()
+        if environment:
+            queryset = queryset.filter(Q(environment_id=environment) | Q(environment__name=environment))
+        if system_value:
+            queryset = queryset.filter(Q(system_id=system_value) | Q(system__name=system_value))
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search)
+                | Q(ip_address__icontains=search)
+                | Q(description__icontains=search)
+                | Q(cluster__name__icontains=search)
+            )
+        data = TaskResourceSerializer(queryset[:200], many=True).data
+        return Response(data)
+
     @action(detail=True, methods=['post'])
     def rerun(self, request, pk=None):
         source = self.get_object()
-        host_ids = [item.get('id') for item in (source.target_snapshot or []) if item.get('id')]
-        host_map = {host.id: host for host in Host.objects.filter(id__in=host_ids)}
-        hosts = [host_map[item] for item in host_ids if item in host_map]
-        if not hosts:
-            return Response({'detail': '\u5df2\u63d0\u4ea4\u7ec8\u6b62\u8bf7\u6c42\uff0c\u7b49\u5f85\u6267\u884c\u5668\u505c\u6b62\u4efb\u52a1'}, status=status.HTTP_400_BAD_REQUEST)
+        hosts = []
+        k8s_targets = []
+        if source.target_type == HostTask.TARGET_K8S:
+            k8s_targets = self._k8s_targets_from_snapshot(source)
+            if not k8s_targets:
+                return Response({'detail': '没有找到有效的 K8s 目标'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            hosts = self._host_targets_from_snapshot(source)
+            if not hosts:
+                return Response({'detail': '\u6ca1\u6709\u627e\u5230\u6709\u6548\u7684\u76ee\u6807\u4e3b\u673a'}, status=status.HTTP_400_BAD_REQUEST)
 
         rerun_task = HostTask.objects.create(
             name=f'{source.name} / \u91cd\u8dd1',
+            target_type=source.target_type,
             task_type=source.task_type,
             description=source.description,
             payload=dict(source.payload or {}),
@@ -477,24 +779,27 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             execution_mode=source.execution_mode or HostTask.EXECUTION_MODE_SSH,
             execution_strategy=source.execution_strategy,
             timeout_seconds=source.timeout_seconds,
+            trigger_source=HostTask.TRIGGER_SOURCE_MANUAL,
+            lifecycle_status=HostTask.LIFECYCLE_PENDING_EXECUTION,
+            risk_level=source.risk_level,
+            source_context={'source': 'manual', 'rerun_source_task_id': source.id},
             created_by=request.user.username,
             summary='\u91cd\u8dd1\u4efb\u52a1\u5df2\u521b\u5efa\uff0c\u7b49\u5f85\u8c03\u5ea6\u6267\u884c',
         )
-        start_host_task(rerun_task, hosts)
-        record_event(
+        rerun_task.correlation_id = source.correlation_id or f'host-task:{source.id}'
+        rerun_task.save(update_fields=['correlation_id'])
+        if source.target_type == HostTask.TARGET_K8S:
+            start_k8s_task(rerun_task, k8s_targets)
+            target_label = f'{len(k8s_targets)} 个 K8s 目标'
+        else:
+            start_host_task(rerun_task, hosts)
+            target_label = f'{len(hosts)} 台主机'
+        record_task_center_event(
+            rerun_task,
             request=request,
-            module='ops',
-            category='execution',
             action='rerun_task',
-            title='\u91cd\u8dd1\u4e3b\u673a\u4efb\u52a1',
-            summary=f'\u4e3b\u673a\u4efb\u52a1 {source.name} \u5df2\u53d1\u8d77\u91cd\u8dd1',
-            result=EventRecord.RESULT_PENDING,
-            resource_type='host_task',
-            resource_id=rerun_task.id,
-            resource_name=rerun_task.name,
-            correlation_id=f'host-task:{source.id}',
-            related_resources=[build_resource('ops', 'host_task', source.id, source.name)],
-            metadata={'source_task_id': source.id, 'target_count': len(hosts)},
+            title='重跑任务中心任务',
+            summary=f'任务 {source.name} 已发起重跑，目标 {target_label}',
         )
         data = HostTaskDetailSerializer(self.get_queryset().get(pk=rerun_task.pk)).data
         return Response(data, status=status.HTTP_201_CREATED)
@@ -510,19 +815,16 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         task.cancel_requested_by = request.user.username
         task.cancel_requested_at = timezone.now()
         task.summary = '\u5df2\u63d0\u4ea4\u7ec8\u6b62\u8bf7\u6c42\uff0c\u7b49\u5f85\u6267\u884c\u5668\u505c\u6b62\u4efb\u52a1'
-        task.save(update_fields=['cancel_requested', 'cancel_requested_by', 'cancel_requested_at', 'summary'])
-        record_event(
+        if task.status == HostTask.STATUS_PENDING:
+            task.status = HostTask.STATUS_CANCELED
+            task.lifecycle_status = HostTask.LIFECYCLE_CANCELED
+        task.save(update_fields=['status', 'lifecycle_status', 'cancel_requested', 'cancel_requested_by', 'cancel_requested_at', 'summary'])
+        record_task_center_event(
+            task,
             request=request,
-            module='ops',
-            category='execution',
             action='cancel_task',
-            title='\u7ec8\u6b62\u4e3b\u673a\u4efb\u52a1',
-            summary=f'\u4e3b\u673a\u4efb\u52a1 {task.name} \u5df2\u63d0\u4ea4\u7ec8\u6b62\u8bf7\u6c42',
-            severity=EventRecord.SEVERITY_WARNING,
-            resource_type='host_task',
-            resource_id=task.id,
-            resource_name=task.name,
-            correlation_id=f'host-task:{task.id}',
+            title='终止任务中心任务',
+            summary=f'任务 {task.name} 已提交终止请求',
         )
         return Response(HostTaskSerializer(task).data)
 

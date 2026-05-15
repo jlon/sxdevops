@@ -327,9 +327,14 @@ def trigger_schedule(schedule, actor='system', trigger_source=HostTaskScheduleEx
             timeout_seconds=schedule.timeout_seconds,
             schedule=schedule,
             trigger_source=HostTask.TRIGGER_SOURCE_SCHEDULE,
+            lifecycle_status=HostTask.LIFECYCLE_PENDING_EXECUTION,
+            risk_level=HostTask.RISK_MEDIUM if schedule.task_type in [HostTask.TASK_RUN_COMMAND, HostTask.TASK_RUN_PLAYBOOK] else HostTask.RISK_LOW,
+            source_context={'source': 'schedule', 'schedule_id': schedule.id, 'trigger_source': trigger_source},
             created_by=actor,
             summary='定时任务已创建，等待后台执行',
         )
+        task.correlation_id = f'host-task-schedule:{schedule.id}'
+        task.save(update_fields=['correlation_id'])
         execution = HostTaskScheduleExecution.objects.create(
             schedule=schedule,
             host_task=task,

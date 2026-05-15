@@ -89,12 +89,18 @@
             </div>
 
             <section class="graph-layout">
-              <div class="graph-panel-shell">
+              <div ref="graphPanelShellRef" class="graph-panel-shell">
                 <div class="graph-source-note">
                   <el-icon><InfoFilled /></el-icon>
                   <span>当前图谱环境：{{ envLabel(filters.environment) || '未选择' }}</span>
                 </div>
-                <div class="graph-legend-card">
+                <div
+                  ref="graphLegendRef"
+                  class="graph-legend-card"
+                  :class="{ dragging: legendDrag.active }"
+                  :style="graphLegendStyle"
+                  @mousedown.stop.prevent="startLegendDrag"
+                >
                   <div class="legend-title">节点类型</div>
                   <div v-for="item in nodeCategoryStats" :key="item.kind" class="legend-row">
                     <span class="legend-dot" :style="{ background: item.color }"></span>
@@ -294,6 +300,8 @@ const route = useRoute()
 const router = useRouter()
 const chartRef = ref(null)
 const graphPanelRef = ref(null)
+const graphPanelShellRef = ref(null)
+const graphLegendRef = ref(null)
 const loading = ref(false)
 const graph = ref({ nodes: [], edges: [], summary: {}, filters: {}, relation_legend: [] })
 const selectedNodeId = ref('')
@@ -317,6 +325,8 @@ const LANE_LEFT_PADDING = 18
 const hiddenNodeKinds = new Set(['environment', 'external_event'])
 const graphZoom = ref(DEFAULT_GRAPH_ZOOM)
 const graphDrag = reactive({ active: false, moved: false, x: 0, y: 0, scrollLeft: 0, scrollTop: 0 })
+const legendPosition = reactive({ x: null, y: null })
+const legendDrag = reactive({ active: false, offsetX: 0, offsetY: 0 })
 let chart = null
 
 const graphNodes = computed(() => (graph.value.nodes || []).filter(node => {
@@ -356,6 +366,15 @@ const visibleSummary = computed(() => {
   }
 })
 const selectedNode = computed(() => graphNodes.value.find(item => item.id === selectedNodeId.value) || null)
+const graphLegendStyle = computed(() => {
+  if (legendPosition.x === null || legendPosition.y === null) {
+    return { top: '14px', right: '14px' }
+  }
+  return {
+    left: `${legendPosition.x}px`,
+    top: `${legendPosition.y}px`,
+  }
+})
 const relationLegendMap = computed(() => new Map((graph.value.relation_legend || []).map(item => [item.key, item.label])))
 const selectedFocus = computed(() => {
   const selectedId = selectedNodeId.value
@@ -1121,6 +1140,57 @@ function stopGraphDrag() {
   graphDrag.active = false
 }
 
+function clampLegendPosition(x, y) {
+  const shell = graphPanelShellRef.value
+  const card = graphLegendRef.value
+  if (!shell || !card) return { x, y }
+  const padding = 8
+  const maxX = Math.max(padding, shell.clientWidth - card.offsetWidth - padding)
+  const maxY = Math.max(padding, shell.clientHeight - card.offsetHeight - padding)
+  return {
+    x: Math.min(Math.max(padding, x), maxX),
+    y: Math.min(Math.max(padding, y), maxY),
+  }
+}
+
+function startLegendDrag(event) {
+  if (event.button !== 0) return
+  const shell = graphPanelShellRef.value
+  const card = graphLegendRef.value
+  if (!shell || !card) return
+  const shellRect = shell.getBoundingClientRect()
+  const cardRect = card.getBoundingClientRect()
+  const currentX = cardRect.left - shellRect.left
+  const currentY = cardRect.top - shellRect.top
+  const startPosition = clampLegendPosition(currentX, currentY)
+  legendPosition.x = startPosition.x
+  legendPosition.y = startPosition.y
+  legendDrag.active = true
+  legendDrag.offsetX = event.clientX - cardRect.left
+  legendDrag.offsetY = event.clientY - cardRect.top
+  window.addEventListener('mousemove', handleLegendDrag)
+  window.addEventListener('mouseup', stopLegendDrag)
+}
+
+function handleLegendDrag(event) {
+  if (!legendDrag.active) return
+  const shell = graphPanelShellRef.value
+  if (!shell) return
+  const shellRect = shell.getBoundingClientRect()
+  const next = clampLegendPosition(
+    event.clientX - shellRect.left - legendDrag.offsetX,
+    event.clientY - shellRect.top - legendDrag.offsetY,
+  )
+  legendPosition.x = next.x
+  legendPosition.y = next.y
+}
+
+function stopLegendDrag() {
+  legendDrag.active = false
+  window.removeEventListener('mousemove', handleLegendDrag)
+  window.removeEventListener('mouseup', stopLegendDrag)
+}
+
 function handleGraphPanelClick(event) {
   if (graphDrag.moved) {
     graphDrag.moved = false
@@ -1211,6 +1281,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeGraph)
+  stopLegendDrag()
   disposeGraph()
 })
 </script>
@@ -1886,6 +1957,14 @@ onBeforeUnmount(() => {
   color: #334155;
   box-shadow: 0 16px 34px rgba(15, 23, 42, 0.12);
   backdrop-filter: blur(8px);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.graph-legend-card.dragging {
+  cursor: grabbing;
+  box-shadow: 0 20px 42px rgba(15, 23, 42, 0.18);
 }
 
 .side-panel {

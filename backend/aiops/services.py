@@ -1812,7 +1812,7 @@ def query_host_tasks(session, user_message, user, query='', status='', limit=6):
     }] if tasks else []
     summary = {'count': len(tasks)}
     _finish_tool_invocation(invocation, summary, started_at, success=True)
-    return {'summary': summary, 'sections': sections, 'citations': [{'title': '任务中心', 'path': '/hosts/tasks'}], 'tasks': tasks}
+    return {'summary': summary, 'sections': sections, 'citations': [{'title': '任务中心', 'path': '/tasks'}], 'tasks': tasks}
 
 
 def query_cmdb_items(session, user_message, user, query='', environment='', limit=6):
@@ -3292,6 +3292,16 @@ def _create_host_task_record_from_draft(draft, user, session=None, request=None)
         execution_mode=payload.get('execution_mode') or HostTask.EXECUTION_MODE_SSH,
         execution_strategy=payload.get('execution_strategy') or HostTask.STRATEGY_CONTINUE,
         timeout_seconds=payload.get('timeout_seconds') or 30,
+        trigger_source=HostTask.TRIGGER_SOURCE_AIOPS,
+        lifecycle_status=HostTask.LIFECYCLE_PENDING_EXECUTION,
+        risk_level=payload.get('risk_level') or HostTask.RISK_LOW,
+        correlation_id=f'aiops-session:{session.id}' if session else '',
+        source_context={
+            'source': 'aiops',
+            'session_id': session.id if session else None,
+            'request_summary': payload.get('request_summary', ''),
+            'reason': payload.get('reason', ''),
+        },
         created_by=user.username,
         summary='任务已由 AIOps 智能助手创建，等待在任务中心执行',
     )
@@ -4577,7 +4587,7 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
                         '请补充目标主机名、应用名或 IP，例如：在生产环境对主机 order-api-ecs-02（10.10.1.11）生成 Redis 巡检任务。',
                     ],
                 }],
-                'citations': [{'title': '任务中心', 'path': '/hosts/tasks'}],
+                'citations': [{'title': '任务中心', 'path': '/tasks'}],
                 'message_type': AIOpsChatMessage.TYPE_ACTION,
             }
         summary = {'name': draft['name'], 'task_type': draft['task_type'], 'host_count': draft['host_count'], 'risk_level': draft['risk_level']}
@@ -4585,7 +4595,7 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
         return {
             'tool_output': {'draft': summary, 'requires_confirmation': True},
             'sections': _build_task_sections(draft),
-            'citations': [{'title': '任务中心', 'path': '/hosts/tasks'}],
+            'citations': [{'title': '任务中心', 'path': '/tasks'}],
             'message_type': AIOpsChatMessage.TYPE_ACTION,
             'pending_action_draft': draft,
         }

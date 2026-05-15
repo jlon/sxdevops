@@ -51,18 +51,135 @@ class Host(models.Model):
         return f'{self.hostname} ({self.ip_address})'
 
 
+class TaskResourceGroup(models.Model):
+    GROUP_ENVIRONMENT = 'environment'
+    GROUP_SYSTEM = 'system'
+    GROUP_TYPE_CHOICES = [
+        (GROUP_ENVIRONMENT, '环境'),
+        (GROUP_SYSTEM, '系统'),
+    ]
+
+    name = models.CharField('名称', max_length=80)
+    code = models.SlugField('编码', max_length=80, blank=True, default='')
+    group_type = models.CharField('节点类型', max_length=20, choices=GROUP_TYPE_CHOICES)
+    parent = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='children',
+        verbose_name='上级节点',
+    )
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    sort_order = models.PositiveIntegerField('排序', default=100)
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='system')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '任务资源分组'
+        verbose_name_plural = '任务资源分组'
+        ordering = ['group_type', 'sort_order', 'name', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['group_type', 'parent', 'name'], name='uniq_ops_task_resource_group_scope_name'),
+        ]
+        indexes = [
+            models.Index(fields=['group_type', 'parent', 'sort_order']),
+        ]
+
+    def __str__(self):
+        if self.parent_id:
+            return f'{self.parent.name} / {self.name}'
+        return self.name
+
+
+class TaskResource(models.Model):
+    RESOURCE_HOST = 'host'
+    RESOURCE_K8S = 'k8s'
+    RESOURCE_TYPE_CHOICES = [
+        (RESOURCE_HOST, '主机'),
+        (RESOURCE_K8S, 'K8s'),
+    ]
+
+    STATUS_ACTIVE = 'active'
+    STATUS_INACTIVE = 'inactive'
+    STATUS_WARNING = 'warning'
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, '可用'),
+        (STATUS_INACTIVE, '停用'),
+        (STATUS_WARNING, '异常'),
+    ]
+
+    name = models.CharField('资源名称', max_length=128)
+    resource_type = models.CharField('资源类型', max_length=16, choices=RESOURCE_TYPE_CHOICES, default=RESOURCE_HOST)
+    environment = models.ForeignKey(
+        TaskResourceGroup,
+        on_delete=models.PROTECT,
+        related_name='environment_resources',
+        verbose_name='环境',
+    )
+    system = models.ForeignKey(
+        TaskResourceGroup,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='system_resources',
+        verbose_name='系统',
+    )
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    ip_address = models.GenericIPAddressField('IP 地址', null=True, blank=True)
+    ssh_port = models.PositiveIntegerField('SSH 端口', default=22)
+    ssh_user = models.CharField('SSH 用户', max_length=64, blank=True, default='root')
+    ssh_password = models.CharField('SSH 密码', max_length=256, blank=True, default='')
+    cluster = models.ForeignKey('K8sCluster', on_delete=models.SET_NULL, null=True, blank=True, related_name='task_resources', verbose_name='K8s 集群')
+    namespace = models.CharField('命名空间', max_length=128, blank=True, default='default')
+    owner = models.CharField('负责人', max_length=64, blank=True, default='')
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    metadata = models.JSONField('扩展信息', default=dict, blank=True)
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='system')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '任务执行资源'
+        verbose_name_plural = '任务执行资源'
+        ordering = ['environment__sort_order', 'system__sort_order', 'resource_type', 'name', 'id']
+        indexes = [
+            models.Index(fields=['resource_type', 'status']),
+            models.Index(fields=['environment', 'system', 'resource_type']),
+        ]
+
+    def __str__(self):
+        return f'{self.get_resource_type_display()} / {self.name}'
+
+
 class HostTask(models.Model):
+    TARGET_HOST = 'host'
+    TARGET_K8S = 'k8s'
+    TARGET_TYPE_CHOICES = [
+        (TARGET_HOST, '主机资源'),
+        (TARGET_K8S, 'K8s 资源'),
+    ]
+
     TASK_CHECK_CONNECTION = 'check_connection'
     TASK_REFRESH_METRICS = 'refresh_metrics'
     TASK_RUN_COMMAND = 'run_command'
     TASK_SERVICE_STATUS = 'service_status'
     TASK_RUN_PLAYBOOK = 'run_playbook'
+    TASK_K8S_RESTART_POD = 'k8s_restart_pod'
+    TASK_K8S_POD_EXEC = 'k8s_pod_exec'
+    TASK_K8S_SCALE_WORKLOAD = 'k8s_scale_workload'
     TASK_TYPE_CHOICES = [
         (TASK_CHECK_CONNECTION, 'SSH 连通性检查'),
         (TASK_REFRESH_METRICS, '主机指标刷新'),
         (TASK_RUN_COMMAND, '批量命令执行'),
         (TASK_RUN_PLAYBOOK, 'Ansible Playbook 执行'),
         (TASK_SERVICE_STATUS, '服务状态巡检'),
+        (TASK_K8S_RESTART_POD, 'K8s Pod 重启'),
+        (TASK_K8S_POD_EXEC, 'K8s Pod 命令执行'),
+        (TASK_K8S_SCALE_WORKLOAD, 'K8s 工作负载伸缩'),
     ]
 
     STATUS_PENDING = 'pending'
@@ -80,6 +197,36 @@ class HostTask(models.Model):
         (STATUS_CANCELED, '已取消'),
     ]
 
+    LIFECYCLE_PENDING_CONFIRMATION = 'pending_confirmation'
+    LIFECYCLE_PENDING_APPROVAL = 'pending_approval'
+    LIFECYCLE_PENDING_EXECUTION = 'pending_execution'
+    LIFECYCLE_RUNNING = 'running'
+    LIFECYCLE_SUCCESS = 'success'
+    LIFECYCLE_PARTIAL = 'partial'
+    LIFECYCLE_FAILED = 'failed'
+    LIFECYCLE_CANCELED = 'canceled'
+    LIFECYCLE_CHOICES = [
+        (LIFECYCLE_PENDING_CONFIRMATION, '待确认'),
+        (LIFECYCLE_PENDING_APPROVAL, '待审批'),
+        (LIFECYCLE_PENDING_EXECUTION, '待执行'),
+        (LIFECYCLE_RUNNING, '执行中'),
+        (LIFECYCLE_SUCCESS, '执行成功'),
+        (LIFECYCLE_PARTIAL, '部分成功'),
+        (LIFECYCLE_FAILED, '执行失败'),
+        (LIFECYCLE_CANCELED, '已取消'),
+    ]
+
+    RISK_LOW = 'low'
+    RISK_MEDIUM = 'medium'
+    RISK_HIGH = 'high'
+    RISK_CRITICAL = 'critical'
+    RISK_CHOICES = [
+        (RISK_LOW, '低'),
+        (RISK_MEDIUM, '中'),
+        (RISK_HIGH, '高'),
+        (RISK_CRITICAL, '极高'),
+    ]
+
     STRATEGY_CONTINUE = 'continue'
     STRATEGY_STOP_ON_ERROR = 'stop_on_error'
     STRATEGY_CHOICES = [
@@ -89,19 +236,28 @@ class HostTask(models.Model):
 
     EXECUTION_MODE_SSH = 'ssh'
     EXECUTION_MODE_ANSIBLE = 'ansible'
+    EXECUTION_MODE_K8S_API = 'k8s_api'
     EXECUTION_MODE_CHOICES = [
         (EXECUTION_MODE_SSH, 'SSH'),
         (EXECUTION_MODE_ANSIBLE, 'Ansible'),
+        (EXECUTION_MODE_K8S_API, 'K8s API'),
     ]
 
     TRIGGER_SOURCE_MANUAL = 'manual'
     TRIGGER_SOURCE_SCHEDULE = 'schedule'
+    TRIGGER_SOURCE_AIOPS = 'aiops'
+    TRIGGER_SOURCE_EVENT_CENTER = 'event_center'
+    TRIGGER_SOURCE_API = 'api'
     TRIGGER_SOURCE_CHOICES = [
         (TRIGGER_SOURCE_MANUAL, '手动触发'),
         (TRIGGER_SOURCE_SCHEDULE, '定时触发'),
+        (TRIGGER_SOURCE_AIOPS, 'AIOps 生成'),
+        (TRIGGER_SOURCE_EVENT_CENTER, '事件中心触发'),
+        (TRIGGER_SOURCE_API, 'API 触发'),
     ]
 
     name = models.CharField('任务名称', max_length=128)
+    target_type = models.CharField('目标类型', max_length=16, choices=TARGET_TYPE_CHOICES, default=TARGET_HOST)
     task_type = models.CharField('任务类型', max_length=32, choices=TASK_TYPE_CHOICES)
     status = models.CharField('任务状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
     description = models.CharField('任务说明', max_length=255, blank=True, default='')
@@ -120,6 +276,10 @@ class HostTask(models.Model):
     cancel_requested_at = models.DateTimeField('取消时间', null=True, blank=True)
     schedule = models.ForeignKey('HostTaskSchedule', on_delete=models.SET_NULL, null=True, blank=True, related_name='generated_tasks', verbose_name='来源编排')
     trigger_source = models.CharField('触发来源', max_length=16, choices=TRIGGER_SOURCE_CHOICES, default=TRIGGER_SOURCE_MANUAL)
+    lifecycle_status = models.CharField('生命周期状态', max_length=32, choices=LIFECYCLE_CHOICES, default=LIFECYCLE_PENDING_EXECUTION)
+    risk_level = models.CharField('风险等级', max_length=16, choices=RISK_CHOICES, default=RISK_LOW)
+    correlation_id = models.CharField('关联链路', max_length=128, blank=True, default='', db_index=True)
+    source_context = models.JSONField('来源上下文', default=dict, blank=True)
     created_by = models.CharField('创建人', max_length=64, default='system')
     summary = models.CharField('执行摘要', max_length=255, blank=True, default='')
     started_at = models.DateTimeField('开始时间', null=True, blank=True)
@@ -138,6 +298,7 @@ class HostTask(models.Model):
 
 class HostTaskTemplate(models.Model):
     name = models.CharField('模板名称', max_length=128)
+    target_type = models.CharField('目标类型', max_length=16, choices=HostTask.TARGET_TYPE_CHOICES, default=HostTask.TARGET_HOST)
     task_type = models.CharField('任务类型', max_length=32, choices=HostTask.TASK_TYPE_CHOICES)
     description = models.CharField('模板说明', max_length=255, blank=True, default='')
     payload = models.JSONField('模板载荷', default=dict, blank=True)
@@ -254,9 +415,14 @@ class HostTaskExecution(models.Model):
     ]
 
     task = models.ForeignKey(HostTask, on_delete=models.CASCADE, related_name='executions', verbose_name='任务')
+    target_type = models.CharField('目标类型', max_length=16, choices=HostTask.TARGET_TYPE_CHOICES, default=HostTask.TARGET_HOST)
     host = models.ForeignKey(Host, on_delete=models.SET_NULL, null=True, blank=True, related_name='task_executions', verbose_name='主机')
     host_name = models.CharField('主机名', max_length=128, default='')
-    host_ip = models.GenericIPAddressField('主机 IP')
+    host_ip = models.CharField('主机 IP', max_length=128, blank=True, default='')
+    target_id = models.CharField('目标 ID', max_length=128, blank=True, default='')
+    target_name = models.CharField('目标名称', max_length=255, blank=True, default='')
+    target_namespace = models.CharField('目标命名空间', max_length=128, blank=True, default='')
+    target_kind = models.CharField('目标类型标识', max_length=64, blank=True, default='')
     status = models.CharField('执行状态', max_length=16, choices=STATUS_CHOICES, default='success')
     command = models.TextField('执行命令', blank=True, default='')
     output = models.TextField('执行输出', blank=True, default='')
