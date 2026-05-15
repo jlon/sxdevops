@@ -34,6 +34,7 @@ UNKNOWN_SERVICE = '未标记服务'
 UNASSIGNED_SYSTEM = '未归属系统'
 GRAPH_RESPONSE_CACHE_TTL = 20
 EXTERNAL_DISCOVERY_CACHE_TTL = 60
+EXTERNAL_DISCOVERY_STALE_CACHE_TTL = 300
 FAST_EXTERNAL_TIMEOUT = 4
 FAST_TRACE_DETAIL_TIMEOUT = 2
 MAX_TRACE_DETAIL_SAMPLES = 5
@@ -227,6 +228,22 @@ def _cache_set(key, value, ttl):
     cache.set(key, value, ttl)
 
 
+def _stale_cache_key(key):
+    return f'{key}:stale'
+
+
+def _cache_get_stale(key):
+    if not _cache_enabled():
+        return None
+    return cache.get(_stale_cache_key(key))
+
+
+def _cache_set_stale(key, value, ttl=EXTERNAL_DISCOVERY_STALE_CACHE_TTL):
+    if not _cache_enabled() or value is None:
+        return
+    cache.set(_stale_cache_key(key), value, ttl)
+
+
 def _cached_external_value(key, loader, ttl=EXTERNAL_DISCOVERY_CACHE_TTL, timeout=FAST_EXTERNAL_TIMEOUT, default=None):
     cached = _cache_get(key)
     if cached is not None:
@@ -234,7 +251,11 @@ def _cached_external_value(key, loader, ttl=EXTERNAL_DISCOVERY_CACHE_TTL, timeou
     value = _call_with_timeout(loader, timeout=timeout, default=default)
     if value is not None:
         _cache_set(key, value, ttl)
+        _cache_set_stale(key, value)
         return value
+    stale = _cache_get_stale(key)
+    if stale is not None:
+        return stale
     return default
 
 
@@ -268,10 +289,13 @@ def _cached_external_batch(items, ttl=EXTERNAL_DISCOVERY_CACHE_TTL, timeout=FAST
                 value = default
             results[result_key] = value
             _cache_set(cache_key, value, ttl)
+            _cache_set_stale(cache_key, value)
         for future in not_done:
-            result_key, _, default = future_map[future]
+            result_key, cache_key, default = future_map[future]
             future.cancel()
-            results[result_key] = default
+            results[result_key] = _cache_get_stale(cache_key)
+            if results[result_key] is None:
+                results[result_key] = default
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
     return results
@@ -457,8 +481,13 @@ def _k8s_cluster_nodes(cluster):
                 'cpu': (node.status.capacity or {}).get('cpu', ''),
                 'memory': (node.status.capacity or {}).get('memory', ''),
             })
+        _cache_set(cache_key, data, EXTERNAL_DISCOVERY_CACHE_TTL)
+        _cache_set_stale(cache_key, data)
         return data
     except Exception:
+        stale = _cache_get_stale(cache_key)
+        if stale is not None:
+            return stale
         return []
 
 
@@ -495,8 +524,12 @@ def _k8s_cluster_pods(cluster):
                 ],
             })
         _cache_set(cache_key, data, EXTERNAL_DISCOVERY_CACHE_TTL)
+        _cache_set_stale(cache_key, data)
         return data
     except Exception:
+        stale = _cache_get_stale(cache_key)
+        if stale is not None:
+            return stale
         return []
 
 
@@ -579,8 +612,12 @@ def _k8s_cluster_workloads(cluster):
                 'annotations': annotations,
             })
         _cache_set(cache_key, workloads, EXTERNAL_DISCOVERY_CACHE_TTL)
+        _cache_set_stale(cache_key, workloads)
         return workloads
     except Exception:
+        stale = _cache_get_stale(cache_key)
+        if stale is not None:
+            return stale
         return []
 
 
@@ -611,8 +648,12 @@ def _k8s_cluster_configmaps(cluster):
             for item in v1.list_config_map_for_all_namespaces().items
         ]
         _cache_set(cache_key, data, EXTERNAL_DISCOVERY_CACHE_TTL)
+        _cache_set_stale(cache_key, data)
         return data
     except Exception:
+        stale = _cache_get_stale(cache_key)
+        if stale is not None:
+            return stale
         return []
 
 

@@ -24,6 +24,41 @@ logger = logging.getLogger(__name__)
 K8S_SUMMARY_CACHE_TTL = 15
 K8S_RESOURCE_CACHE_TTL = 8
 K8S_DEMO_STATE_CACHE_TTL = 86400
+K8S_STALE_SUMMARY_CACHE_TTL = 300
+K8S_STALE_RESOURCE_CACHE_TTL = 300
+K8S_API_CONNECT_TIMEOUT = 1.5
+K8S_API_READ_TIMEOUT = 3
+
+
+class _K8sApiProxy:
+    def __init__(self, api):
+        self._api = api
+
+    def __getattr__(self, name):
+        attr = getattr(self._api, name)
+        if not callable(attr):
+            return attr
+
+        def wrapped(*args, **kwargs):
+            kwargs.setdefault('_request_timeout', (K8S_API_CONNECT_TIMEOUT, K8S_API_READ_TIMEOUT))
+            return attr(*args, **kwargs)
+
+        return wrapped
+
+
+class _K8sClientProxy:
+    def __init__(self, client_module, api_client):
+        self._client_module = client_module
+        self._api_client = api_client
+
+    def __getattr__(self, name):
+        if name == 'ApiClient':
+            return lambda *args, **kwargs: self._api_client
+
+        attr = getattr(self._client_module, name)
+        if name.endswith('Api') and isinstance(attr, type):
+            return lambda *args, _attr=attr, **kwargs: _K8sApiProxy(_attr(self._api_client, *args, **kwargs))
+        return attr
 
 
 def _is_demo(cluster):
@@ -207,8 +242,8 @@ def _get_k8s_client(cluster):
     tmp.close()
 
     try:
-        config.load_kube_config(config_file=tmp.name)
-        return client
+        api_client = config.new_client_from_config(config_file=tmp.name)
+        return _K8sClientProxy(client, api_client)
     finally:
         os.unlink(tmp.name)
 
@@ -221,6 +256,10 @@ def _filter_by_ns(data, namespace):
 
 def _summary_cache_key(cluster_id):
     return f'ops:k8s:summary:{cluster_id}'
+
+
+def _summary_stale_cache_key(cluster_id):
+    return f'ops:k8s:summary-stale:{cluster_id}'
 
 
 def _clear_summary_cache(cluster_or_id):
@@ -263,13 +302,43 @@ def _resource_cache_key(cluster_id, resource, namespace=''):
     return f'ops:k8s:list:{cluster_id}:{version}:{resource}:{scope}'
 
 
-def _get_or_set_resource_cache(cluster, resource, namespace, loader):
+def _resource_stale_cache_key(cluster_id, resource, namespace=''):
+    scope = namespace or '_cluster'
+    return f'ops:k8s:list-stale:{cluster_id}:{resource}:{scope}'
+
+
+def _get_or_set_resource_cache(cluster, resource, namespace, loader, default=None):
     cache_key = _resource_cache_key(cluster.id, resource, namespace)
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
-    data = loader()
+
+    stale_key = _resource_stale_cache_key(cluster.id, resource, namespace)
+    fallback = [] if default is None else default
+    try:
+        data = loader()
+    except Exception as exc:
+        stale = cache.get(stale_key)
+        if stale is not None:
+            logger.warning(
+                'K8s resource fallback to stale cache for cluster=%s resource=%s namespace=%s: %s',
+                cluster.id,
+                resource,
+                namespace or '_cluster',
+                exc,
+            )
+            return stale
+        logger.warning(
+            'K8s resource fallback to default for cluster=%s resource=%s namespace=%s: %s',
+            cluster.id,
+            resource,
+            namespace or '_cluster',
+            exc,
+        )
+        return fallback
+
     cache.set(cache_key, data, K8S_RESOURCE_CACHE_TTL)
+    cache.set(stale_key, data, K8S_STALE_RESOURCE_CACHE_TTL)
     return data
 
 
@@ -363,11 +432,13 @@ def _create_config_revision(cluster, resource_type, namespace, name, detail, use
     )
 
 
-def _safe_collection(label, loader, default=None):
+def _safe_collection(label, loader, default=None, issues=None):
     fallback = [] if default is None else default
     try:
         return loader()
     except Exception as exc:
+        if issues is not None:
+            issues.append(label)
         logger.warning('K8s summary skipped %s: %s', label, exc)
         return fallback
 
@@ -422,6 +493,67 @@ def _build_summary_alerts(ready_nodes, total_nodes, abnormal_pods, restarting_po
     return alerts
 
 
+def _build_degraded_summary_alerts(
+    ready_nodes,
+    total_nodes,
+    abnormal_pods,
+    restarting_pods,
+    total_restarts,
+    degraded_workloads,
+    pending_pvcs,
+    unavailable_resources=None,
+):
+    alerts = []
+    unavailable_resources = unavailable_resources or []
+    if unavailable_resources:
+        visible = ', '.join(unavailable_resources[:4])
+        if len(unavailable_resources) > 4:
+            visible = f'{visible} 等 {len(unavailable_resources)} 项'
+        alerts.append({'level': 'warning', 'message': f'部分 K8s 资源采集超时，已自动降级：{visible}'})
+    alerts.extend(
+        _build_summary_alerts(
+            ready_nodes,
+            total_nodes,
+            abnormal_pods,
+            restarting_pods,
+            total_restarts,
+            degraded_workloads,
+            pending_pvcs,
+        )
+    )
+    if unavailable_resources:
+        alerts = [item for item in alerts if item.get('level') != 'success']
+    return alerts or [{'level': 'warning', 'message': '部分 K8s 资源采集超时，已自动降级'}]
+
+
+def _build_unavailable_summary(cluster, reason=''):
+    message = '当前 K8s API 不可用，已返回降级结果'
+    if reason:
+        message = f'{message}：{reason}'
+    return {
+        'cluster_name': cluster.name,
+        'status': cluster.status or 'error',
+        'namespaces_total': 0,
+        'nodes_total': 0,
+        'nodes_ready': 0,
+        'pods_total': 0,
+        'pods_abnormal': 0,
+        'pods_restarting': 0,
+        'total_restarts': 0,
+        'services_total': 0,
+        'ingresses_total': 0,
+        'workloads_total': 0,
+        'workloads_degraded': 0,
+        'pvcs_total': 0,
+        'pvcs_pending': 0,
+        'configmaps_total': 0,
+        'secrets_total': 0,
+        'degraded': True,
+        'unavailable_resources': ['cluster'],
+        'alerts': [{'level': 'warning', 'message': message}],
+    }
+
+
 def _build_demo_summary(cluster):
     ready_nodes = _count_ready_nodes(DEMO_NODES)
     abnormal_pods, restarting_pods, total_restarts = _pod_status_summary(DEMO_PODS)
@@ -459,20 +591,21 @@ def _build_live_summary(cluster):
     apps_v1 = k8s.AppsV1Api()
     batch_v1 = k8s.BatchV1Api()
     net_v1 = k8s.NetworkingV1Api()
+    unavailable_resources = []
 
-    namespaces = _safe_collection('namespaces', lambda: v1.list_namespace().items)
-    nodes = _safe_collection('nodes', lambda: v1.list_node().items)
-    pods = _safe_collection('pods', lambda: v1.list_pod_for_all_namespaces().items)
-    services = _safe_collection('services', lambda: v1.list_service_for_all_namespaces().items)
-    ingresses = _safe_collection('ingresses', lambda: net_v1.list_ingress_for_all_namespaces().items)
-    pvcs = _safe_collection('pvcs', lambda: v1.list_persistent_volume_claim_for_all_namespaces().items)
-    configmaps = _safe_collection('configmaps', lambda: v1.list_config_map_for_all_namespaces().items)
-    secrets = _safe_collection('secrets', lambda: v1.list_secret_for_all_namespaces().items)
-    deployments = _safe_collection('deployments', lambda: apps_v1.list_deployment_for_all_namespaces().items)
-    statefulsets = _safe_collection('statefulsets', lambda: apps_v1.list_stateful_set_for_all_namespaces().items)
-    daemonsets = _safe_collection('daemonsets', lambda: apps_v1.list_daemon_set_for_all_namespaces().items)
-    jobs = _safe_collection('jobs', lambda: batch_v1.list_job_for_all_namespaces().items)
-    cronjobs = _safe_collection('cronjobs', lambda: batch_v1.list_cron_job_for_all_namespaces().items)
+    namespaces = _safe_collection('namespaces', lambda: v1.list_namespace().items, issues=unavailable_resources)
+    nodes = _safe_collection('nodes', lambda: v1.list_node().items, issues=unavailable_resources)
+    pods = _safe_collection('pods', lambda: v1.list_pod_for_all_namespaces().items, issues=unavailable_resources)
+    services = _safe_collection('services', lambda: v1.list_service_for_all_namespaces().items, issues=unavailable_resources)
+    ingresses = _safe_collection('ingresses', lambda: net_v1.list_ingress_for_all_namespaces().items, issues=unavailable_resources)
+    pvcs = _safe_collection('pvcs', lambda: v1.list_persistent_volume_claim_for_all_namespaces().items, issues=unavailable_resources)
+    configmaps = _safe_collection('configmaps', lambda: v1.list_config_map_for_all_namespaces().items, issues=unavailable_resources)
+    secrets = _safe_collection('secrets', lambda: v1.list_secret_for_all_namespaces().items, issues=unavailable_resources)
+    deployments = _safe_collection('deployments', lambda: apps_v1.list_deployment_for_all_namespaces().items, issues=unavailable_resources)
+    statefulsets = _safe_collection('statefulsets', lambda: apps_v1.list_stateful_set_for_all_namespaces().items, issues=unavailable_resources)
+    daemonsets = _safe_collection('daemonsets', lambda: apps_v1.list_daemon_set_for_all_namespaces().items, issues=unavailable_resources)
+    jobs = _safe_collection('jobs', lambda: batch_v1.list_job_for_all_namespaces().items, issues=unavailable_resources)
+    cronjobs = _safe_collection('cronjobs', lambda: batch_v1.list_cron_job_for_all_namespaces().items, issues=unavailable_resources)
 
     ready_nodes = _count_ready_nodes(nodes)
     abnormal_pods, restarting_pods, total_restarts = _pod_status_summary(pods)
@@ -483,7 +616,7 @@ def _build_live_summary(cluster):
     )
     pending_pvcs = sum(1 for pvc in pvcs if (pvc.status.phase or '') != 'Bound')
 
-    return {
+    summary = {
         'cluster_name': cluster.name,
         'status': cluster.status or 'connected',
         'namespaces_total': len(namespaces),
@@ -501,8 +634,21 @@ def _build_live_summary(cluster):
         'pvcs_pending': pending_pvcs,
         'configmaps_total': len(configmaps),
         'secrets_total': len(secrets),
-        'alerts': _build_summary_alerts(ready_nodes, len(nodes), abnormal_pods, restarting_pods, total_restarts, degraded_workloads, pending_pvcs),
+        'alerts': _build_degraded_summary_alerts(
+            ready_nodes,
+            len(nodes),
+            abnormal_pods,
+            restarting_pods,
+            total_restarts,
+            degraded_workloads,
+            pending_pvcs,
+            unavailable_resources=unavailable_resources,
+        ),
     }
+    if unavailable_resources:
+        summary['degraded'] = True
+        summary['unavailable_resources'] = unavailable_resources
+    return summary
 
 
 class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
@@ -597,7 +743,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
-        """获取集群概览摘要"""
+        """Get cluster summary."""
         cluster = self.get_object()
         cache_key = _summary_cache_key(cluster.id)
         cached = cache.get(cache_key)
@@ -610,13 +756,25 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 cluster.save(update_fields=['status'])
                 summary['status'] = cluster.status
             cache.set(cache_key, summary, K8S_SUMMARY_CACHE_TTL)
+            cache.set(_summary_stale_cache_key(cluster.id), summary, K8S_STALE_SUMMARY_CACHE_TTL)
             return Response(summary)
         except Exception as e:
             if cluster.status != 'error':
                 cluster.status = 'error'
                 cluster.save(update_fields=['status'])
             _clear_summary_cache(cluster)
-            return Response({'detail': f'获取集群概览失败: {str(e)}'}, status=400)
+            fallback = cache.get(_summary_stale_cache_key(cluster.id))
+            if fallback is not None:
+                payload = {
+                    **fallback,
+                    'degraded': True,
+                    'status': cluster.status or 'error',
+                    'alerts': [{'level': 'warning', 'message': 'K8s API is temporarily unavailable; returning the latest cached snapshot'}],
+                }
+            else:
+                payload = _build_unavailable_summary(cluster, str(e))
+            cache.set(cache_key, payload, K8S_SUMMARY_CACHE_TTL)
+            return Response(payload)
 
     @action(detail=True, methods=['get'])
     def namespaces(self, request, pk=None):
@@ -775,37 +933,40 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     # ====== 节点管理 ======
     @action(detail=True, methods=['get'])
     def nodes(self, request, pk=None):
-        """获取节点列表"""
+        """Get node list."""
         cluster = self.get_object()
         if _is_demo(cluster):
             return Response(DEMO_NODES)
         try:
-            k8s = _get_k8s_client(cluster)
-            v1 = k8s.CoreV1Api()
-            node_list = v1.list_node()
-            data = []
-            for node in node_list.items:
-                conditions = {c.type: c.status for c in (node.status.conditions or [])}
-                roles = ','.join([l.replace('node-role.kubernetes.io/', '') for l in (node.metadata.labels or {}) if l.startswith('node-role.kubernetes.io/')])
-                capacity = node.status.capacity or {}
-                data.append({
-                    'name': node.metadata.name,
-                    'status': 'Ready' if conditions.get('Ready') == 'True' else 'NotReady',
-                    'roles': roles or 'worker',
-                    'version': node.status.node_info.kubelet_version if node.status.node_info else '',
-                    'internal_ip': next((a.address for a in (node.status.addresses or []) if a.type == 'InternalIP'), ''),
-                    'os_image': node.status.node_info.os_image if node.status.node_info else '',
-                    'cpu': capacity.get('cpu', ''),
-                    'memory': capacity.get('memory', ''),
-                    'pods_count': 0,
-                    'age': '',
-                    'created': node.metadata.creation_timestamp.isoformat() if node.metadata.creation_timestamp else '',
-                })
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                v1 = k8s.CoreV1Api()
+                node_list = v1.list_node()
+                data = []
+                for node in node_list.items:
+                    conditions = {c.type: c.status for c in (node.status.conditions or [])}
+                    roles = ','.join([l.replace('node-role.kubernetes.io/', '') for l in (node.metadata.labels or {}) if l.startswith('node-role.kubernetes.io/')])
+                    capacity = node.status.capacity or {}
+                    data.append({
+                        'name': node.metadata.name,
+                        'status': 'Ready' if conditions.get('Ready') == 'True' else 'NotReady',
+                        'roles': roles or 'worker',
+                        'version': node.status.node_info.kubelet_version if node.status.node_info else '',
+                        'internal_ip': next((a.address for a in (node.status.addresses or []) if a.type == 'InternalIP'), ''),
+                        'os_image': node.status.node_info.os_image if node.status.node_info else '',
+                        'cpu': capacity.get('cpu', ''),
+                        'memory': capacity.get('memory', ''),
+                        'pods_count': 0,
+                        'age': '',
+                        'created': node.metadata.creation_timestamp.isoformat() if node.metadata.creation_timestamp else '',
+                    })
+                return data
+
+            data = _get_or_set_resource_cache(cluster, 'nodes', '_all', loader)
             return Response(data)
         except Exception as e:
-            return Response({'detail': f'获取节点失败: {str(e)}'}, status=400)
+            return Response({'detail': f'Failed to load nodes: {str(e)}'}, status=400)
 
-    # ====== 工作负载扩展 ======
     @action(detail=True, methods=['get'])
     def statefulsets(self, request, pk=None):
         cluster = self.get_object()
@@ -937,16 +1098,19 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if _is_demo(cluster):
             return Response(DEMO_PVS)
         try:
-            k8s = _get_k8s_client(cluster)
-            v1 = k8s.CoreV1Api()
-            items = v1.list_persistent_volume().items
-            data = [{'name': i.metadata.name, 'capacity': (i.spec.capacity or {}).get('storage', ''),
-                     'access_modes': ','.join(i.spec.access_modes or []),
-                     'reclaim_policy': i.spec.persistent_volume_reclaim_policy or '',
-                     'status': i.status.phase, 'claim': f'{i.spec.claim_ref.namespace}/{i.spec.claim_ref.name}' if i.spec.claim_ref else '',
-                     'storage_class': i.spec.storage_class_name or '',
-                     'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
-                     } for i in items]
+            def loader():
+                k8s = _get_k8s_client(cluster)
+                v1 = k8s.CoreV1Api()
+                items = v1.list_persistent_volume().items
+                return [{'name': i.metadata.name, 'capacity': (i.spec.capacity or {}).get('storage', ''),
+                         'access_modes': ','.join(i.spec.access_modes or []),
+                         'reclaim_policy': i.spec.persistent_volume_reclaim_policy or '',
+                         'status': i.status.phase, 'claim': f'{i.spec.claim_ref.namespace}/{i.spec.claim_ref.name}' if i.spec.claim_ref else '',
+                         'storage_class': i.spec.storage_class_name or '',
+                         'created': i.metadata.creation_timestamp.isoformat() if i.metadata.creation_timestamp else ''
+                         } for i in items]
+
+            data = _get_or_set_resource_cache(cluster, 'pvs', '_all', loader)
             return Response(data)
         except Exception as e:
             return Response({'detail': str(e)}, status=400)
@@ -1798,9 +1962,9 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 })
             return Response(pods)
         except Exception as e:
-            return Response({'detail': str(e)}, status=400)
+            logger.warning('K8s workload pods degraded for cluster=%s workload=%s/%s: %s', cluster.id, workload_type, workload_name, e)
+            return Response([])
 
-    # ------ Pod 日志 ------
     @action(detail=True, methods=['get'])
     def pod_logs(self, request, pk=None):
         cluster = self.get_object()
@@ -1841,7 +2005,7 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                         f'{ts} [Note] [MY-010131] [Server] mysqld: ready for connections. Version: 8.0.36',
                         f'{ts} [Note] [MY-012487] [InnoDB] DDL log recovery: begin',
                         f'{ts} [Note] [MY-012488] [InnoDB] DDL log recovery: end',
-                        f'{ts} [Note] [MY-010747] [Server] Plugin \'mysql_native_password\' is marked as deprecated',
+                        f"{ts} [Note] [MY-010747] [Server] Plugin 'mysql_native_password' is marked as deprecated",
                     ]
                 else:
                     msgs = [
@@ -1862,9 +2026,9 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             log_content = v1.read_namespaced_pod_log(**kwargs)
             return Response({'logs': log_content, 'container': container or ''})
         except Exception as e:
-            return Response({'detail': str(e)}, status=400)
+            logger.warning('K8s pod logs degraded for cluster=%s pod=%s namespace=%s: %s', cluster.id, pod_name, namespace, e)
+            return Response({'logs': '', 'container': container or '', 'degraded': True})
 
-    # ------ 资源事件 ------
     @action(detail=True, methods=['get'])
     def resource_events(self, request, pk=None):
         cluster = self.get_object()
@@ -1958,4 +2122,5 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             events.sort(key=lambda ev: ev['last_time'], reverse=True)
             return Response(events)
         except Exception as e:
-            return Response({'detail': str(e)}, status=400)
+            logger.warning('K8s resource events degraded for cluster=%s resource=%s/%s: %s', cluster.id, resource_type, resource_name, e)
+            return Response([])

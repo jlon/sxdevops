@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -52,6 +53,9 @@ from .services import (
     test_mcp_server_connection,
 )
 from .knowledge_graph import build_knowledge_graph
+
+K8S_NAMESPACE_OPTIONS_CACHE_TTL = 60
+K8S_NAMESPACE_OPTIONS_STALE_CACHE_TTL = 300
 
 
 DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
@@ -198,6 +202,10 @@ def _grafana_folder_key(value):
     return text
 
 
+def _k8s_namespace_options_cache_key(cluster_id):
+    return f'aiops:k8s:namespaces:{cluster_id}'
+
+
 def _k8s_namespace_options(cluster):
     try:
         from ops.k8s_views import DEMO_NAMESPACES, _get_k8s_client, _is_demo
@@ -210,14 +218,24 @@ def _k8s_namespace_options(cluster):
                 for item in DEMO_NAMESPACES
                 if item.get('name')
             ]
+        cache_key = _k8s_namespace_options_cache_key(cluster.id)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
         k8s = _get_k8s_client(cluster)
         v1 = k8s.CoreV1Api()
-        return sorted([
+        data = sorted([
             item.metadata.name
             for item in v1.list_namespace().items
             if item.metadata and item.metadata.name
         ])
+        cache.set(cache_key, data, K8S_NAMESPACE_OPTIONS_CACHE_TTL)
+        cache.set(f'{cache_key}:stale', data, K8S_NAMESPACE_OPTIONS_STALE_CACHE_TTL)
+        return data
     except Exception:
+        stale = cache.get(f"{_k8s_namespace_options_cache_key(cluster.id)}:stale")
+        if stale is not None:
+            return stale
         return []
 
 

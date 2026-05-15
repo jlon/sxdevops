@@ -5,6 +5,7 @@ import threading
 
 import paramiko
 import yaml
+from django.core.cache import cache
 from django.db import close_old_connections, transaction
 from django.utils import timezone
 from django.utils.text import slugify
@@ -21,6 +22,8 @@ from .models import Deployment
 logger = logging.getLogger(__name__)
 
 DEPLOY_BASE = '/opt/agdevops/apps'
+SERVICE_STATUS_CACHE_TTL = 8
+SERVICE_STATUS_STALE_CACHE_TTL = 300
 CMDB_ENV_MAP = {
     'production': 'prod',
     'staging': 'test',
@@ -38,6 +41,14 @@ def _app_slug(value):
 
 def _default_release_name(deployment):
     return f'{_app_slug(deployment.app_name)}-{deployment.environment}'
+
+
+def _service_status_cache_key(deployment):
+    return (
+        f'ops:deployment:status:{deployment.id}:'
+        f'{deployment.status}:{deployment.approval_status}:{int(bool(deployment.is_current))}:'
+        f'{deployment.batch_current or 0}:{deployment.batch_total or 0}'
+    )
 
 
 def _cmdb_environment(value):
@@ -918,10 +929,24 @@ def get_service_status(deployment):
     if deployment.status == 'removed':
         base.update({'summary': '当前版本已下线', 'items': []})
         return base
+    cache_key = _service_status_cache_key(deployment)
+    stale_key = f'{cache_key}:stale'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         runtime = _k8s_runtime_status(deployment) if deployment.deploy_mode == 'k8s' else _docker_runtime_status(deployment)
         base.update(runtime)
+        cache.set(cache_key, base, SERVICE_STATUS_CACHE_TTL)
+        cache.set(stale_key, base, SERVICE_STATUS_STALE_CACHE_TTL)
     except Exception as exc:
         logger.exception('get_service_status error')
-        base.update({'summary': '状态采集失败', 'items': [], 'message': str(exc)})
+        stale = cache.get(stale_key)
+        if stale is not None:
+            return {
+                **stale,
+                'degraded': True,
+                'message': '运行状态采集超时，已返回最近一次缓存结果',
+            }
+        base.update({'summary': '状态采集失败', 'items': [], 'message': str(exc), 'degraded': True})
     return base

@@ -1,6 +1,7 @@
 from unittest import mock
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
@@ -75,6 +76,23 @@ class AIOpsApiTests(TestCase):
         }.issubset(active_mcp_names))
         self.assertTrue(any(item['name'] == 'N9E 监控 MCP' for item in response.data['active_mcp_servers']))
         self.assertIn('回答整形器', active_skill_names)
+
+    @mock.patch('ops.k8s_views._get_k8s_client')
+    def test_knowledge_environment_catalog_uses_stale_k8s_namespace_cache(self, mock_get_client):
+        cluster = K8sCluster.objects.create(
+            name='trade-prod-k8s',
+            api_server='https://trade-prod-k8s.example.com:6443',
+            kubeconfig='apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\n',
+            status='connected',
+        )
+        cache.set(f'aiops:k8s:namespaces:{cluster.id}:stale', ['production', 'monitoring'], 300)
+        mock_get_client.side_effect = TimeoutError('connect timed out')
+
+        response = self.client.get('/api/aiops/knowledge-environments/catalog/')
+
+        self.assertEqual(response.status_code, 200)
+        entry = next(item for item in response.data['k8s_clusters'] if item['id'] == cluster.id)
+        self.assertEqual(entry['namespaces'], ['production', 'monitoring'])
 
     def test_knowledge_graph_only_links_observability_and_event_context(self):
         log_source = LogDataSource.objects.create(name='prod-loki', provider='loki', is_enabled=True)

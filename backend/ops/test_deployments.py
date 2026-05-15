@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -259,6 +260,7 @@ class AppReleaseApprovalFlowTests(TestCase):
 
 class AppReleaseRuntimeTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.biz_node = ResourceNode.objects.create(name='电商线', node_type='biz')
         ResourceNode.objects.create(name='prod', node_type='env', parent=self.biz_node)
         ResourceNode.objects.create(name='test', node_type='env', parent=self.biz_node)
@@ -321,6 +323,43 @@ class AppReleaseRuntimeTests(TestCase):
         self.assertIn('Demo Docker 环境', payload['summary'])
         self.assertEqual(payload['items'][0]['name'], deployment.release_name_display)
         mock_get_client.assert_not_called()
+
+    @patch('ops.deployer._k8s_runtime_status')
+    def test_get_service_status_returns_stale_cache_when_k8s_runtime_times_out(self, mock_k8s_runtime_status):
+        cluster = K8sCluster.objects.create(
+            name='runtime-k8s',
+            kubeconfig='apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\n',
+        )
+        deployment = Deployment.objects.create(
+            app_name='checkout',
+            business_line='retail',
+            version='2.8.0',
+            image='registry.internal/checkout:2.8.0',
+            environment='prod',
+            deploy_mode='k8s',
+            cluster=cluster,
+            namespace='production',
+            approval_status='approved',
+            status='running',
+            is_current=True,
+        )
+        mock_k8s_runtime_status.return_value = {
+            'mode': 'k8s',
+            'summary': '工作负载数量: 2',
+            'items': [{'kind': 'Deployment', 'name': 'checkout', 'state': 'Available', 'ready': '2/2'}],
+        }
+
+        first_payload = deployer.get_service_status(deployment)
+
+        self.assertEqual(first_payload['summary'], '工作负载数量: 2')
+
+        mock_k8s_runtime_status.side_effect = TimeoutError('connect timed out')
+        cache.delete(deployer._service_status_cache_key(deployment))
+        second_payload = deployer.get_service_status(deployment)
+
+        self.assertTrue(second_payload['degraded'])
+        self.assertEqual(second_payload['summary'], '工作负载数量: 2')
+        self.assertIn('缓存结果', second_payload['message'])
 
     def test_advance_batch_updates_progress(self):
         deployment = Deployment.objects.create(

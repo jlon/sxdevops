@@ -27,7 +27,7 @@ from ops.models import (
     ObservabilityDataSourceLink,
     TracingDataSource,
 )
-from ops.k8s_views import _prepare_kubeconfig
+from ops.k8s_views import _prepare_kubeconfig, _resource_stale_cache_key, _summary_stale_cache_key
 from ops.tracing_providers import _build_topology_from_trace_details, _tempo_flatten_trace, _trace_detail_from_spans
 
 
@@ -2705,6 +2705,145 @@ class ContainerManagementTests(TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
         self.assertEqual(mock_build_demo_summary.call_count, 1)
+
+    @patch('ops.k8s_views._get_k8s_client')
+    def test_k8s_summary_marks_payload_degraded_when_live_queries_timeout(self, mock_get_client):
+        cluster = K8sCluster.objects.create(
+            name='timeout-k8s',
+            kubeconfig='apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\n',
+            status='connected',
+        )
+
+        class FailingCoreV1Api:
+            def list_namespace(self):
+                raise TimeoutError('connect timed out')
+
+            def list_node(self):
+                raise TimeoutError('connect timed out')
+
+            def list_pod_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+            def list_service_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+            def list_persistent_volume_claim_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+            def list_config_map_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+            def list_secret_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+        class FailingAppsV1Api:
+            def list_deployment_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+            def list_stateful_set_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+            def list_daemon_set_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+        class FailingBatchV1Api:
+            def list_job_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+            def list_cron_job_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+        class FailingNetworkingV1Api:
+            def list_ingress_for_all_namespaces(self):
+                raise TimeoutError('connect timed out')
+
+        mock_get_client.return_value = MagicMock(
+            CoreV1Api=MagicMock(return_value=FailingCoreV1Api()),
+            AppsV1Api=MagicMock(return_value=FailingAppsV1Api()),
+            BatchV1Api=MagicMock(return_value=FailingBatchV1Api()),
+            NetworkingV1Api=MagicMock(return_value=FailingNetworkingV1Api()),
+        )
+
+        response = self.client.get(f'/api/k8s/clusters/{cluster.id}/summary/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['degraded'])
+        self.assertIn('pods', payload['unavailable_resources'])
+        self.assertTrue(any(item['level'] == 'warning' for item in payload['alerts']))
+        self.assertFalse(any(item['level'] == 'success' for item in payload['alerts']))
+
+    @patch('ops.k8s_views._get_k8s_client')
+    def test_k8s_pods_returns_stale_cache_when_cluster_times_out(self, mock_get_client):
+        cluster = K8sCluster.objects.create(
+            name='stale-cache-k8s',
+            kubeconfig='apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\n',
+            status='connected',
+        )
+        stale_items = [{'name': 'cached-pod', 'namespace': 'default', 'status': 'Running', 'node': 'node-01', 'ip': '10.0.0.5', 'containers': [], 'restarts': 0, 'created': ''}]
+        cache.set(_resource_stale_cache_key(cluster.id, 'pods', 'default'), stale_items, 300)
+        mock_get_client.side_effect = TimeoutError('connect timed out')
+
+        response = self.client.get(f'/api/k8s/clusters/{cluster.id}/pods/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), stale_items)
+
+    @patch('ops.k8s_views._get_k8s_client')
+    def test_k8s_summary_returns_stale_snapshot_when_build_fails(self, mock_get_client):
+        cluster = K8sCluster.objects.create(
+            name='summary-stale-k8s',
+            kubeconfig='apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\n',
+            status='connected',
+        )
+        cached_summary = {
+            'cluster_name': cluster.name,
+            'status': 'connected',
+            'nodes_total': 3,
+            'nodes_ready': 3,
+            'pods_total': 10,
+            'pods_abnormal': 0,
+            'pods_restarting': 0,
+            'total_restarts': 0,
+            'services_total': 4,
+            'ingresses_total': 1,
+            'workloads_total': 6,
+            'workloads_degraded': 0,
+            'pvcs_total': 2,
+            'pvcs_pending': 0,
+            'configmaps_total': 5,
+            'secrets_total': 4,
+            'alerts': [{'level': 'success', 'message': 'cached'}],
+        }
+        cache.set(_summary_stale_cache_key(cluster.id), cached_summary, 300)
+        mock_get_client.side_effect = RuntimeError('cluster unavailable')
+
+        response = self.client.get(f'/api/k8s/clusters/{cluster.id}/summary/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['degraded'])
+        self.assertEqual(payload['pods_total'], 10)
+        self.assertIn('cached snapshot', payload['alerts'][0]['message'])
+
+    @patch('ops.k8s_views._get_k8s_client')
+    def test_k8s_pod_logs_degrade_to_empty_payload_on_timeout(self, mock_get_client):
+        cluster = K8sCluster.objects.create(
+            name='pod-logs-timeout-k8s',
+            kubeconfig='apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\n',
+            status='connected',
+        )
+        mock_get_client.side_effect = TimeoutError('connect timed out')
+
+        response = self.client.get(
+            f'/api/k8s/clusters/{cluster.id}/pod_logs/',
+            {'pod_name': 'api-server-1', 'namespace': 'default'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['degraded'])
+        self.assertEqual(payload['logs'], '')
 
     @patch('ops.docker_views._get_ssh_client_from_docker_host')
     @patch('ops.docker_views._ssh_exec')
