@@ -1,7 +1,7 @@
 from django.core.cache import cache
 from django.db.models import Count
 from django.utils import timezone
-from rest_framework import status, viewsets
+from rest_framework import pagination, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -57,6 +57,7 @@ from .knowledge_graph import build_knowledge_graph
 
 K8S_NAMESPACE_OPTIONS_CACHE_TTL = 60
 K8S_NAMESPACE_OPTIONS_STALE_CACHE_TTL = 300
+AUDIT_RECENT_PAGE_SIZE = 10
 
 
 DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
@@ -186,6 +187,10 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         if instance.is_builtin:
             return Response({'detail': '内置 Skill 不允许删除'}, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
+
+
+class _AuditRecentPagination(pagination.PageNumberPagination):
+    page_size = AUDIT_RECENT_PAGE_SIZE
 
 
 def _clean_catalog_value(value):
@@ -641,6 +646,7 @@ class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsToolInvocationSerializer
+    pagination_class = _AuditRecentPagination
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
     rbac_permissions = {
         'list': ['aiops.audit.view'],
@@ -709,6 +715,7 @@ class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsPendingActionSerializer
+    pagination_class = _AuditRecentPagination
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
     rbac_permissions = {
         'list': ['aiops.audit.view'],

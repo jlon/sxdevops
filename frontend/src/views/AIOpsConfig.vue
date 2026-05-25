@@ -584,17 +584,17 @@ const selectedAuditToolIds = ref([])
 const selectedAuditActionIds = ref([])
 const auditSessionPagination = reactive({
   page: 1,
-  pageSize: 20,
+  pageSize: 10,
   total: 0,
 })
 const auditToolPagination = reactive({
   page: 1,
-  pageSize: 20,
+  pageSize: 10,
   total: 0,
 })
 const auditActionPagination = reactive({
   page: 1,
-  pageSize: 20,
+  pageSize: 10,
   total: 0,
 })
 
