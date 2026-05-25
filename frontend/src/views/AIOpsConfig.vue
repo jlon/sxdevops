@@ -307,24 +307,84 @@
           </div>
         </div>
         <div class="audit-section">
-          <div class="section-title">最近工具调用</div>
-          <el-table :data="auditTools.slice(0, 8)" stripe size="small" class="console-table">
+          <div class="section-toolbar audit-toolbar">
+            <div class="section-title" style="margin-bottom:0;">最近工具调用</div>
+            <div class="audit-toolbar-actions">
+              <span class="audit-hint">展示全部历史，可翻页查看</span>
+              <el-button
+                v-if="canManageAudit"
+                size="small"
+                type="danger"
+                plain
+                :disabled="!selectedAuditToolIds.length"
+                @click="handleBatchDeleteAuditTools"
+              >
+                批量删除
+              </el-button>
+            </div>
+          </div>
+          <el-table :data="auditTools" stripe size="small" class="console-table" @selection-change="handleAuditToolSelectionChange">
+            <el-table-column v-if="canManageAudit" type="selection" width="42" />
             <el-table-column prop="tool_name" label="工具" width="180" />
             <el-table-column prop="username" label="用户" width="120" />
             <el-table-column prop="status" label="状态" width="100" />
             <el-table-column prop="latency_ms" label="耗时(ms)" width="110" />
             <el-table-column prop="created_at" label="时间" min-width="180" />
+            <el-table-column v-if="canManageAudit" label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="danger" @click="handleDeleteAuditTool(row)">删除</el-button>
+              </template>
+            </el-table-column>
           </el-table>
+          <div class="pagination-row">
+            <el-pagination
+              v-model:current-page="auditToolPagination.page"
+              :page-size="auditToolPagination.pageSize"
+              :total="auditToolPagination.total"
+              layout="total, prev, pager, next"
+              @current-change="loadAuditTools"
+            />
+          </div>
         </div>
         <div class="audit-section">
-          <div class="section-title">最近动作</div>
-          <el-table :data="auditActions.slice(0, 8)" stripe size="small" class="console-table">
+          <div class="section-toolbar audit-toolbar">
+            <div class="section-title" style="margin-bottom:0;">最近动作</div>
+            <div class="audit-toolbar-actions">
+              <span class="audit-hint">展示全部历史，可翻页查看</span>
+              <el-button
+                v-if="canManageAudit"
+                size="small"
+                type="danger"
+                plain
+                :disabled="!selectedAuditActionIds.length"
+                @click="handleBatchDeleteAuditActions"
+              >
+                批量删除
+              </el-button>
+            </div>
+          </div>
+          <el-table :data="auditActions" stripe size="small" class="console-table" @selection-change="handleAuditActionSelectionChange">
+            <el-table-column v-if="canManageAudit" type="selection" width="42" />
             <el-table-column prop="title" label="动作标题" min-width="180" />
             <el-table-column prop="risk_level_display" label="风险" width="100" />
             <el-table-column prop="status_display" label="状态" width="120" />
             <el-table-column prop="confirmed_by" label="确认人" width="120" />
             <el-table-column prop="updated_at" label="更新时间" min-width="180" />
+            <el-table-column v-if="canManageAudit" label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="danger" @click="handleDeleteAuditAction(row)">删除</el-button>
+              </template>
+            </el-table-column>
           </el-table>
+          <div class="pagination-row">
+            <el-pagination
+              v-model:current-page="auditActionPagination.page"
+              :page-size="auditActionPagination.pageSize"
+              :total="auditActionPagination.total"
+              layout="total, prev, pager, next"
+              @current-change="loadAuditActions"
+            />
+          </div>
         </div>
       </template>
     </section>
@@ -479,7 +539,11 @@ import {
   createAIOpsProvider,
   createAIOpsSkill,
   bulkDeleteAIOpsAuditSessions,
+  bulkDeleteAIOpsAuditActions,
+  bulkDeleteAIOpsAuditToolInvocations,
   deleteAIOpsAuditSession,
+  deleteAIOpsAuditAction,
+  deleteAIOpsAuditToolInvocation,
   deleteAIOpsMcpServer,
   deleteAIOpsProvider,
   deleteAIOpsSkill,
@@ -516,7 +580,19 @@ const auditSessions = ref([])
 const auditTools = ref([])
 const auditActions = ref([])
 const selectedAuditSessionIds = ref([])
+const selectedAuditToolIds = ref([])
+const selectedAuditActionIds = ref([])
 const auditSessionPagination = reactive({
+  page: 1,
+  pageSize: 20,
+  total: 0,
+})
+const auditToolPagination = reactive({
+  page: 1,
+  pageSize: 20,
+  total: 0,
+})
+const auditActionPagination = reactive({
   page: 1,
   pageSize: 20,
   total: 0,
@@ -745,15 +821,13 @@ function applyConfig(payload = {}) {
 async function loadAll() {
   loading.page = true
   try {
-    const [config, providerData, presetData, mcpData, skillData, auditData, toolData, actionData] = await Promise.all([
+    const [config, providerData, presetData, mcpData, skillData, auditData] = await Promise.all([
       getAIOpsConfig(),
       getAIOpsProviders(),
       getAIOpsProviderPresets(),
       getAIOpsMcpServers(),
       getAIOpsSkills(),
       getAIOpsAuditOverview(),
-      getAIOpsAuditToolInvocations(),
-      getAIOpsAuditActions(),
     ])
     applyConfig(config)
     providers.value = providerData || []
@@ -761,9 +835,11 @@ async function loadAll() {
     mcpServers.value = mcpData || []
     skills.value = skillData || []
     auditOverview.value = auditData || {}
-    auditTools.value = toolData.results || toolData || []
-    auditActions.value = actionData.results || actionData || []
-    await loadAuditSessions(auditSessionPagination.page)
+    await Promise.all([
+      loadAuditSessions(auditSessionPagination.page),
+      loadAuditTools(auditToolPagination.page),
+      loadAuditActions(auditActionPagination.page),
+    ])
   } finally {
     loading.page = false
   }
@@ -780,6 +856,38 @@ async function loadAuditSessions(page = 1) {
     const message = String(error?.response?.data?.detail || '')
     if (page > 1 && message.includes('无效页面')) {
       return loadAuditSessions(page - 1)
+    }
+    throw error
+  }
+}
+
+async function loadAuditTools(page = 1) {
+  try {
+    const toolData = await getAIOpsAuditToolInvocations({ page, page_size: auditToolPagination.pageSize })
+    auditToolPagination.page = page
+    auditToolPagination.total = toolData.count || 0
+    auditTools.value = toolData.results || toolData || []
+    selectedAuditToolIds.value = []
+  } catch (error) {
+    const message = String(error?.response?.data?.detail || '')
+    if (page > 1 && message.includes('无效页面')) {
+      return loadAuditTools(page - 1)
+    }
+    throw error
+  }
+}
+
+async function loadAuditActions(page = 1) {
+  try {
+    const actionData = await getAIOpsAuditActions({ page, page_size: auditActionPagination.pageSize })
+    auditActionPagination.page = page
+    auditActionPagination.total = actionData.count || 0
+    auditActions.value = actionData.results || actionData || []
+    selectedAuditActionIds.value = []
+  } catch (error) {
+    const message = String(error?.response?.data?.detail || '')
+    if (page > 1 && message.includes('无效页面')) {
+      return loadAuditActions(page - 1)
     }
     throw error
   }
@@ -982,6 +1090,70 @@ async function handleBatchDeleteAuditSessions() {
       auditOverview.value = data || {}
     }),
     loadAuditSessions(shouldFallbackPage ? auditSessionPagination.page - 1 : auditSessionPagination.page),
+  ])
+}
+
+function handleAuditToolSelectionChange(rows) {
+  selectedAuditToolIds.value = rows.map((item) => item.id)
+}
+
+async function handleDeleteAuditTool(row) {
+  const shouldFallbackPage = auditTools.value.length === 1 && auditToolPagination.page > 1
+  await ElMessageBox.confirm(`确认删除工具调用《${row.tool_name}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
+  await deleteAIOpsAuditToolInvocation(row.id)
+  ElMessage.success('工具调用已删除')
+  await Promise.all([
+    getAIOpsAuditOverview().then((data) => {
+      auditOverview.value = data || {}
+    }),
+    loadAuditTools(shouldFallbackPage ? auditToolPagination.page - 1 : auditToolPagination.page),
+  ])
+}
+
+async function handleBatchDeleteAuditTools() {
+  if (!selectedAuditToolIds.value.length) return
+  const shouldFallbackPage = selectedAuditToolIds.value.length === auditTools.value.length && auditToolPagination.page > 1
+  const deletedCount = selectedAuditToolIds.value.length
+  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个工具调用吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
+  await bulkDeleteAIOpsAuditToolInvocations(selectedAuditToolIds.value)
+  ElMessage.success(`已删除 ${deletedCount} 个工具调用`)
+  await Promise.all([
+    getAIOpsAuditOverview().then((data) => {
+      auditOverview.value = data || {}
+    }),
+    loadAuditTools(shouldFallbackPage ? auditToolPagination.page - 1 : auditToolPagination.page),
+  ])
+}
+
+function handleAuditActionSelectionChange(rows) {
+  selectedAuditActionIds.value = rows.map((item) => item.id)
+}
+
+async function handleDeleteAuditAction(row) {
+  const shouldFallbackPage = auditActions.value.length === 1 && auditActionPagination.page > 1
+  await ElMessageBox.confirm(`确认删除动作《${row.title}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
+  await deleteAIOpsAuditAction(row.id)
+  ElMessage.success('动作已删除')
+  await Promise.all([
+    getAIOpsAuditOverview().then((data) => {
+      auditOverview.value = data || {}
+    }),
+    loadAuditActions(shouldFallbackPage ? auditActionPagination.page - 1 : auditActionPagination.page),
+  ])
+}
+
+async function handleBatchDeleteAuditActions() {
+  if (!selectedAuditActionIds.value.length) return
+  const shouldFallbackPage = selectedAuditActionIds.value.length === auditActions.value.length && auditActionPagination.page > 1
+  const deletedCount = selectedAuditActionIds.value.length
+  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个动作吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
+  await bulkDeleteAIOpsAuditActions(selectedAuditActionIds.value)
+  ElMessage.success(`已删除 ${deletedCount} 个动作`)
+  await Promise.all([
+    getAIOpsAuditOverview().then((data) => {
+      auditOverview.value = data || {}
+    }),
+    loadAuditActions(shouldFallbackPage ? auditActionPagination.page - 1 : auditActionPagination.page),
   ])
 }
 

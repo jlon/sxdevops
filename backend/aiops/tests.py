@@ -16,7 +16,15 @@ from ops.models import Alert, Deployment, DockerHost, GrafanaSetting, Host, Host
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
-from .models import AIOpsChatMessage, AIOpsChatSession, AIOpsKnowledgeEnvironment, AIOpsMCPServer, AIOpsModelProvider
+from .models import (
+    AIOpsChatMessage,
+    AIOpsChatSession,
+    AIOpsKnowledgeEnvironment,
+    AIOpsMCPServer,
+    AIOpsModelProvider,
+    AIOpsPendingAction,
+    AIOpsToolInvocation,
+)
 from .services import (
     AIOpsModelCallError,
     DEFAULT_SUGGESTED_QUESTIONS,
@@ -1525,6 +1533,52 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         keys = {item['key'] for item in response.data['presets']}
         self.assertTrue({'deepseek', 'zhipu_glm', 'minimax'}.issubset(keys))
+
+    def test_audit_tool_invocations_support_delete_and_bulk_delete(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='tool-audit-delete')
+        first = AIOpsToolInvocation.objects.create(session=session, tool_name='query_alerts', status=AIOpsToolInvocation.STATUS_SUCCESS)
+        second = AIOpsToolInvocation.objects.create(session=session, tool_name='query_logs', status=AIOpsToolInvocation.STATUS_FAILED)
+
+        response = self.client.delete(f'/api/aiops/admin/audit/tool-invocations/{first.id}/')
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(AIOpsToolInvocation.objects.filter(id=first.id).exists())
+
+        bulk_response = self.client.post(
+            '/api/aiops/admin/audit/tool-invocations/bulk-delete/',
+            {'invocation_ids': [second.id]},
+            format='json',
+        )
+        self.assertEqual(bulk_response.status_code, 200)
+        self.assertEqual(bulk_response.data['deleted'], 1)
+        self.assertFalse(AIOpsToolInvocation.objects.filter(id=second.id).exists())
+
+    def test_audit_actions_support_delete_and_bulk_delete(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='action-audit-delete')
+        first = AIOpsPendingAction.objects.create(
+            session=session,
+            action_type=AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK,
+            title='生成排障任务',
+            status=AIOpsPendingAction.STATUS_PENDING,
+        )
+        second = AIOpsPendingAction.objects.create(
+            session=session,
+            action_type=AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK,
+            title='生成变更任务',
+            status=AIOpsPendingAction.STATUS_FAILED,
+        )
+
+        response = self.client.delete(f'/api/aiops/admin/audit/actions/{first.id}/')
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(AIOpsPendingAction.objects.filter(id=first.id).exists())
+
+        bulk_response = self.client.post(
+            '/api/aiops/admin/audit/actions/bulk-delete/',
+            {'action_ids': [second.id]},
+            format='json',
+        )
+        self.assertEqual(bulk_response.status_code, 200)
+        self.assertEqual(bulk_response.data['deleted'], 1)
+        self.assertFalse(AIOpsPendingAction.objects.filter(id=second.id).exists())
 
     def test_mcp_and_skill_list_endpoints_bootstrap_builtin_assets(self):
         mcp_response = self.client.get('/api/aiops/admin/mcp-servers/')

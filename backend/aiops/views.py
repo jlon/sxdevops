@@ -639,26 +639,140 @@ class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         return Response({'deleted': deleted_count}, status=status.HTTP_200_OK)
 
 
-class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
+class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsToolInvocationSerializer
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
     rbac_permissions = {
         'list': ['aiops.audit.view'],
         'retrieve': ['aiops.audit.view'],
+        'destroy': ['aiops.audit.manage'],
     }
 
     def get_queryset(self):
         return AIOpsToolInvocation.objects.select_related('session', 'session__user', 'message').order_by('-created_at', '-id')
 
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        invocation_id = instance.id
+        tool_name = instance.tool_name
+        response = super().destroy(request, *args, **kwargs)
+        record_event(
+            request=request,
+            module='aiops',
+            category='audit',
+            action='delete_tool_invocation',
+            title='删除 AIOps 工具调用审计',
+            summary=f'已删除工具调用《{tool_name}》',
+            resource_type='aiops_tool_invocation',
+            resource_id=invocation_id,
+            resource_name=tool_name,
+            correlation_id=f'aiops-tool-invocation:{invocation_id}',
+        )
+        return response
 
-class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
+    @action(detail=False, methods=['post'], url_path='bulk-delete')
+    def bulk_delete(self, request):
+        invocation_ids = request.data.get('invocation_ids')
+        if not isinstance(invocation_ids, list):
+            return Response({'detail': 'invocation_ids 必须为数组'}, status=status.HTTP_400_BAD_REQUEST)
+        normalized_ids = [int(item) for item in invocation_ids if str(item).isdigit()]
+        if not normalized_ids:
+            return Response({'detail': '请至少选择一个工具调用'}, status=status.HTTP_400_BAD_REQUEST)
+
+        queryset = self.get_queryset().filter(id__in=normalized_ids)
+        invocations = list(queryset)
+        if not invocations:
+            return Response({'detail': '未找到可删除的工具调用'}, status=status.HTTP_404_NOT_FOUND)
+
+        deleted_count = len(invocations)
+        deleted_names = [item.tool_name for item in invocations[:5]]
+        invocation_meta = [
+            {'id': item.id, 'tool_name': item.tool_name, 'username': getattr(getattr(item.session, 'user', None), 'username', '')}
+            for item in invocations
+        ]
+        queryset.delete()
+        record_event(
+            request=request,
+            module='aiops',
+            category='audit',
+            action='bulk_delete_tool_invocations',
+            title='批量删除 AIOps 工具调用审计',
+            summary=f'已批量删除 {deleted_count} 个工具调用',
+            resource_type='aiops_tool_invocation',
+            resource_id=deleted_count,
+            resource_name='、'.join(deleted_names),
+            correlation_id=f'aiops-tool-invocation-bulk:{deleted_count}',
+            metadata={'tool_invocations': invocation_meta},
+        )
+        return Response({'deleted': deleted_count}, status=status.HTTP_200_OK)
+
+
+class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsPendingActionSerializer
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
     rbac_permissions = {
         'list': ['aiops.audit.view'],
         'retrieve': ['aiops.audit.view'],
+        'destroy': ['aiops.audit.manage'],
     }
 
     def get_queryset(self):
         return AIOpsPendingAction.objects.filter(mirror_source__isnull=True, session__mirror_source__isnull=True).select_related('session', 'session__user', 'message').order_by('-created_at', '-id')
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        action_id = instance.id
+        action_title = instance.title
+        response = super().destroy(request, *args, **kwargs)
+        record_event(
+            request=request,
+            module='aiops',
+            category='audit',
+            action='delete_pending_action',
+            title='删除 AIOps 动作审计',
+            summary=f'已删除动作《{action_title}》',
+            resource_type='aiops_pending_action',
+            resource_id=action_id,
+            resource_name=action_title,
+            correlation_id=f'aiops-pending-action:{action_id}',
+        )
+        return response
+
+    @action(detail=False, methods=['post'], url_path='bulk-delete')
+    def bulk_delete(self, request):
+        action_ids = request.data.get('action_ids')
+        if not isinstance(action_ids, list):
+            return Response({'detail': 'action_ids 必须为数组'}, status=status.HTTP_400_BAD_REQUEST)
+        normalized_ids = [int(item) for item in action_ids if str(item).isdigit()]
+        if not normalized_ids:
+            return Response({'detail': '请至少选择一个动作'}, status=status.HTTP_400_BAD_REQUEST)
+
+        queryset = self.get_queryset().filter(id__in=normalized_ids)
+        actions = list(queryset)
+        if not actions:
+            return Response({'detail': '未找到可删除的动作'}, status=status.HTTP_404_NOT_FOUND)
+
+        deleted_count = len(actions)
+        deleted_titles = [item.title for item in actions[:5]]
+        action_meta = [
+            {'id': item.id, 'title': item.title, 'username': getattr(getattr(item.session, 'user', None), 'username', '')}
+            for item in actions
+        ]
+        queryset.delete()
+        record_event(
+            request=request,
+            module='aiops',
+            category='audit',
+            action='bulk_delete_pending_actions',
+            title='批量删除 AIOps 动作审计',
+            summary=f'已批量删除 {deleted_count} 个动作',
+            resource_type='aiops_pending_action',
+            resource_id=deleted_count,
+            resource_name='、'.join(deleted_titles),
+            correlation_id=f'aiops-pending-action-bulk:{deleted_count}',
+            metadata={'actions': action_meta},
+        )
+        return Response({'deleted': deleted_count}, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])

@@ -27,7 +27,11 @@ export const getAIOpsAuditSessions = (params) => request.get('/aiops/admin/audit
 export const deleteAIOpsAuditSession = (id) => request.delete(`/aiops/admin/audit/sessions/${id}/`)
 export const bulkDeleteAIOpsAuditSessions = (session_ids) => request.post('/aiops/admin/audit/sessions/bulk-delete/', { session_ids })
 export const getAIOpsAuditToolInvocations = (params) => request.get('/aiops/admin/audit/tool-invocations/', { params })
+export const deleteAIOpsAuditToolInvocation = (id) => request.delete(`/aiops/admin/audit/tool-invocations/${id}/`)
+export const bulkDeleteAIOpsAuditToolInvocations = (invocation_ids) => request.post('/aiops/admin/audit/tool-invocations/bulk-delete/', { invocation_ids })
 export const getAIOpsAuditActions = (params) => request.get('/aiops/admin/audit/actions/', { params })
+export const deleteAIOpsAuditAction = (id) => request.delete(`/aiops/admin/audit/actions/${id}/`)
+export const bulkDeleteAIOpsAuditActions = (action_ids) => request.post('/aiops/admin/audit/actions/bulk-delete/', { action_ids })
 
 export const getAIOpsProviders = () => request.get('/aiops/admin/providers/')
 export const getAIOpsProviderPresets = () => request.get('/aiops/admin/providers/presets/')
