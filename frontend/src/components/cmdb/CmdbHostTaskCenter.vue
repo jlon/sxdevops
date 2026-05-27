@@ -14,18 +14,19 @@
       </button>
     </div>
 
-    <div v-if="activeTab === 'history'" class="task-source-grid">
+    <div v-if="activeTab === 'history'" class="audit-grid task-source-grid">
       <button
         v-for="item in sourceCards"
         :key="item.key"
         type="button"
         class="task-source-card"
-        :class="{ active: taskFilters.trigger_source === item.source && taskFilters.target_type === (item.targetType || '') }"
+        :class="[item.cardClass, { 'is-active': taskFilters.trigger_source === item.source && taskFilters.target_type === (item.targetType || '') }]"
         @click="applySourceFilter(item.source, item.targetType || '')"
       >
-        <span>{{ item.label }}</span>
-        <strong>{{ item.value }}</strong>
-        <small>{{ item.desc }}</small>
+        <div class="task-source-card__row">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+        </div>
       </button>
     </div>
 
@@ -1045,13 +1046,11 @@ const selectedK8sStats = computed(() => selectedK8sRows.value.reduce((summary, i
 }, { active: 0, inactive: 0, warning: 0 }))
 const sourceCards = computed(() => {
   const bySource = taskStats.value.by_source || {}
-  const byTargetType = taskStats.value.by_target_type || {}
   return [
-    { key: 'all', label: '\u5168\u90e8\u4efb\u52a1', source: '', value: taskStats.value.total || 0, desc: '\u7edf\u4e00\u4efb\u52a1\u6c60' },
-    { key: 'k8s', label: 'K8s', source: '', targetType: 'k8s', value: byTargetType.k8s || 0, desc: '非主机资源任务' },
-    { key: 'aiops', label: 'AIOps', source: 'aiops', value: bySource.aiops || 0, desc: '\u667a\u80fd\u52a9\u624b\u751f\u6210' },
-    { key: 'schedule', label: '\u8ba1\u5212\u4efb\u52a1', source: 'schedule', value: bySource.schedule || 0, desc: '\u5b9a\u65f6\u7f16\u6392\u89e6\u53d1' },
-    { key: 'manual', label: '\u4eba\u5de5\u4e0b\u53d1', source: 'manual', value: bySource.manual || 0, desc: '\u9875\u9762\u76f4\u63a5\u521b\u5efa' },
+    { key: 'all', label: '\u5168\u90e8\u4efb\u52a1', source: '', value: taskStats.value.total || 0, desc: '\u7edf\u4e00\u4efb\u52a1\u6c60', cardClass: '' },
+    { key: 'manual', label: '\u4eba\u5de5\u521b\u5efa', source: 'manual', value: bySource.manual || 0, desc: '\u9875\u9762\u76f4\u63a5\u521b\u5efa', cardClass: 'task-source-card--danger' },
+    { key: 'aiops', label: 'AIOps \u751f\u6210', source: 'aiops', value: bySource.aiops || 0, desc: '\u667a\u80fd\u52a9\u624b\u751f\u6210', cardClass: 'task-source-card--success' },
+    { key: 'schedule', label: '\u8ba1\u5212\u4efb\u52a1', source: 'schedule', value: bySource.schedule || 0, desc: '\u5b9a\u65f6\u7f16\u6392\u89e6\u53d1', cardClass: 'task-source-card--warning' },
   ]
 })
 function defaultPayload() { return { command: '', script_kind: 'shell', service_name: '', playbook_name: '', playbook_content: '', workload_type: 'deployment', replicas: 1 } }
@@ -1729,15 +1728,15 @@ watch(() => route.query.taskDraft, async (value, previousValue) => {
   --tc-primary-soft: rgba(37, 99, 235, 0.08);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .task-inner-tabs {
   display: flex;
   width: 100%;
   align-self: stretch;
-  margin-bottom: 2px;
-  padding: 4px;
+  margin-bottom: 0;
+  padding: 3px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
@@ -1775,51 +1774,71 @@ watch(() => route.query.taskDraft, async (value, previousValue) => {
 
 .task-source-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  margin: 2px 0 0;
+  margin: 0;
 }
 
 .task-source-card {
-  min-height: 78px;
-  padding: 12px 14px;
-  border: 1px solid var(--tc-border);
-  border-radius: 16px;
-  background: var(--tc-bg-panel);
+  min-height: 68px;
+  padding: 14px 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(252, 253, 255, 0.94) 100%);
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  justify-content: center;
+  align-items: center;
   cursor: pointer;
   text-align: left;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.03);
-  transition: 0.2s ease border-color, 0.2s ease transform, 0.2s ease box-shadow, 0.2s ease background;
+  transition: 0.2s ease border-color, 0.2s ease box-shadow, 0.2s ease background;
 }
 
-.task-source-card:hover,
-.task-source-card.active {
-  border-color: var(--tc-border-strong);
-  background: linear-gradient(180deg, #ffffff 0%, #f6faff 100%);
-  box-shadow: var(--tc-shadow-hover);
-  transform: translateY(-1px);
+.task-source-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.task-source-card:hover {
+  border-color: rgba(36, 91, 219, 0.16);
+  box-shadow: 0 10px 20px rgba(36, 91, 219, 0.06);
+}
+
+.task-source-card.is-active {
+  border-color: rgba(36, 91, 219, 0.26);
+  background: linear-gradient(180deg, #f4f7ff 0%, #ffffff 100%);
+  box-shadow:
+    0 0 0 1px rgba(36, 91, 219, 0.08),
+    0 12px 22px rgba(36, 91, 219, 0.08);
+}
+
+.task-source-card--warning {
+  background: linear-gradient(180deg, #fffdfa 0%, #ffffff 100%);
+}
+
+.task-source-card--success {
+  background: linear-gradient(180deg, #fbfffd 0%, #ffffff 100%);
+}
+
+.task-source-card--danger {
+  background: linear-gradient(180deg, #fffafb 0%, #ffffff 100%);
 }
 
 .task-source-card span {
-  color: #64748b;
-  font-size: 12px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .task-source-card strong {
-  color: #0f172a;
-  font-size: 22px;
+  color: #1f2329;
+  font-size: 24px;
   line-height: 1;
-  font-weight: 700;
-}
-
-.task-source-card small {
-  color: #94a3b8;
-  font-size: 11px;
-  line-height: 1.4;
+  font-weight: 600;
 }
 
 .k8s-cluster-tip {
