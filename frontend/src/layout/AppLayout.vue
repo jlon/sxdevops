@@ -38,7 +38,12 @@
             </el-menu-item>
           </el-sub-menu>
 
-          <el-menu-item v-else :index="item.menuKey || item.moduleKey || item.path" :route="item.route || item.path">
+          <el-menu-item
+            v-else
+            class="sidebar-direct-item"
+            :index="item.menuKey || item.moduleKey || item.path"
+            :route="item.route || item.path"
+          >
             <el-icon><component :is="item.icon" /></el-icon>
             <template #title>
               <span>{{ item.title }}</span>

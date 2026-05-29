@@ -17,7 +17,7 @@
   --sidebar-active: linear-gradient(180deg, #eaf2ff 0%, #deebff 100%);
   --sidebar-text: #5f6b7a;
   --sidebar-text-active: #2563eb;
-  --sidebar-width: 204px;
+  --sidebar-width: 188px;
   --sidebar-collapsed-width: 68px;
 
   /* 顶栏 */
@@ -114,7 +114,7 @@ body {
   min-height: 72px;
   display: flex;
   align-items: center;
-  padding: 0 16px 0 18px;
+  padding: 0 14px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.12);
   gap: 10px;
   flex-shrink: 0;
@@ -201,7 +201,7 @@ body {
 /* ========== Element-Plus 侧边栏菜单覆盖 (Industrial Utilitarian) ========== */
 .sidebar-nav {
   flex: 1;
-  padding: 10px 10px 14px;
+  padding: 10px 8px 14px;
   overflow-y: auto;
   border-right: none !important;
   /* 移除默认右边框 */
@@ -223,7 +223,7 @@ body {
   height: 40px;
   line-height: 40px;
   margin: 2px 0;
-  padding: 0 12px !important;
+  padding: 0 10px !important;
   border-radius: 10px;
   color: var(--sidebar-text) !important;
   font-size: 13px;
@@ -258,7 +258,7 @@ body {
 .sidebar .el-menu-item .el-icon,
 .sidebar .el-sub-menu__title .el-icon {
   color: #7b8794;
-  margin-right: 10px;
+  margin-right: 8px;
 }
 
 .sidebar .el-menu-item.is-active .el-icon,
@@ -276,8 +276,8 @@ body {
   min-height: 36px;
   height: 36px;
   line-height: 36px;
-  margin: 1px 0 1px 8px;
-  padding-left: 40px !important;
+  margin: 1px 0 1px 4px;
+  padding-left: 32px !important;
   border-radius: 9px;
   font-weight: 500;
 }
@@ -295,6 +295,35 @@ body {
 
 .sidebar.collapsed .el-sub-menu .el-icon.el-sub-menu__icon-arrow {
   display: none;
+}
+
+.sidebar.collapsed .el-menu-item .el-icon,
+.sidebar.collapsed .el-sub-menu__title .el-icon {
+  margin-right: 0;
+}
+
+.sidebar.collapsed .sidebar-direct-item.is-active {
+  background: transparent !important;
+  color: var(--sidebar-text) !important;
+  border-color: transparent !important;
+  border-bottom-color: var(--el-menu-active-color) !important;
+  box-shadow: none;
+  font-weight: 500;
+}
+
+.sidebar.collapsed .sidebar-direct-item,
+.sidebar.collapsed .sidebar-direct-item .el-tooltip__trigger {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar.collapsed .sidebar-direct-item.is-active .el-icon {
+  color: #7b8794;
+}
+
+.sidebar.collapsed .sidebar-direct-item span {
+  display: none !important;
 }
 
 /* 主内容区 */
