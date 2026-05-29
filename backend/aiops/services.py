@@ -109,8 +109,7 @@ def _repair_utf8_mojibake(value):
 
 
 DEFAULT_WELCOME_MESSAGE = (
-    '你好，我可以帮你结合平台上下文查询资源、分析告警、定位根因、'
-    '汇总日志/链路/事件证据，并生成待确认的运维任务草稿。'
+    '你好，我可以帮你结合平台上下文查询资源、根因分析、生成待执行任务等。'
 )
 
 DEFAULT_SUGGESTED_QUESTIONS = [
@@ -807,10 +806,15 @@ def get_agent_config():
     if (
         not config.welcome_message
         or config.welcome_message == '你好，我可以帮你查询资源、告警和生成运维任务。'
+        or config.welcome_message == '你好，我可以帮你结合平台上下文查询资源、分析告警、成本分析、生成待执行任务等。'
+        or config.welcome_message == '你好，我可以帮你结合平台上下文查询资源、分析告警、定位根因、汇总日志/链路/事件证据，并生成待确认的运维任务草稿。'
         or '?' in config.welcome_message
     ):
         config.welcome_message = DEFAULT_WELCOME_MESSAGE
         update_fields.append('welcome_message')
+    if config.require_confirmation is not True:
+        config.require_confirmation = True
+        update_fields.append('require_confirmation')
     if update_fields:
         config.save(update_fields=update_fields)
     _ensure_builtin_runtime_assets(config)
@@ -1021,7 +1025,7 @@ def bootstrap_payload_for_user(user):
         },
         'runtime': {
             'allow_action_execution': config.allow_action_execution,
-            'require_confirmation': config.require_confirmation,
+            'require_confirmation': True,
             'show_evidence': config.show_evidence,
             'allow_analysis': config.allow_analysis,
         },
@@ -9386,13 +9390,6 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
         else:
             pending_action = create_pending_task_action_from_draft(session, assistant_message, draft)
             merged_metadata['pending_action_id'] = pending_action.id
-            if not config.require_confirmation and user_has_permissions(user, ['aiops.task.execute', 'ops.host.execute']):
-                try:
-                    task_draft = confirm_action(pending_action, user)
-                    pending_action.refresh_from_db()
-                    final_content = f"{final_content}\n\n已自动生成可编辑任务草稿：{task_draft['name']}。请到任务中心检查并执行。"
-                except ValueError:
-                    pending_action.refresh_from_db()
 
     payload = {
         'content': final_content,

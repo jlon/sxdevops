@@ -1,4 +1,4 @@
-from django.urls import include, path
+from django.urls import include, path, re_path
 from rest_framework.routers import DefaultRouter
 
 from . import views
@@ -20,6 +20,11 @@ urlpatterns = [
     path('admin/config/', views.agent_config_view, name='aiops-agent-config'),
     path('admin/providers/presets/', views.model_provider_presets, name='aiops-provider-presets-explicit'),
     path('admin/audit/overview/', views.audit_overview, name='aiops-audit-overview'),
+    re_path(
+        r'^sessions/(?P<pk>\d+)/delete_session/?$',
+        views.AIOpsChatSessionViewSet.as_view({'post': 'delete_session'}),
+        name='aiops-session-delete-session',
+    ),
     path('actions/<int:pk>/confirm/', views.confirm_pending_action, name='aiops-confirm-action'),
     path('actions/<int:pk>/cancel/', views.cancel_pending_action, name='aiops-cancel-action'),
     path('', include(router.urls)),

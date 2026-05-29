@@ -11,50 +11,69 @@
                 <img :src="botAvatar" alt="AIOps bot" class="aiops-header-avatar" />
                 <div class="aiops-title">AIOps 智能助手</div>
                 <span class="header-badge">{{ bootstrap.provider?.model || bootstrap.provider?.name || '未配置模型' }}</span>
-                <span class="header-badge runtime" :class="{ safe: !bootstrap.runtime?.allow_action_execution }">
+                <span v-if="!bootstrap.runtime?.allow_action_execution" class="header-badge runtime safe">
                   {{ runtimeLabel }}
                 </span>
-              </div>
-              <div class="aiops-subtitle">
-                {{ analysisOnly ? '当前仅分析，不会触发执行动作' : (bootstrap.welcome_message || '你好，我可以帮你结合平台上下文查询资源、分析告警、成本分析、生成待执行任务等。') }}
+                <span class="aiops-subtitle">
+                  {{ analysisOnly ? '当前仅分析，不会触发执行动作' : (bootstrap.welcome_message || '你好，我可以帮你结合平台上下文查询资源、根因分析、生成待执行任务等。') }}
+                </span>
               </div>
             </div>
             <div class="aiops-header-actions">
-              <el-button size="small" text @click="handleCreateSession">新会话</el-button>
-              <el-button v-if="!embedded" size="small" text @click="closePanel">收起</el-button>
+              <el-button v-if="!embedded" size="small" class="aiops-toolbar-btn" @click="closePanel">
+                <el-icon><Fold /></el-icon>
+                <span>收起</span>
+              </el-button>
             </div>
           </div>
 
           <div class="aiops-panel-body">
             <aside class="aiops-session-list">
               <div class="session-list-head">
-                <span>会话历史</span>
-                <span class="session-count">{{ sessions.length }}</span>
+                <div class="session-head-title">
+                  <span class="session-list-title">会话历史</span>
+                </div>
+                <el-button size="small" class="aiops-toolbar-btn" @click="handleCreateSession">
+                  <el-icon><Plus /></el-icon>
+                  <span>新建</span>
+                </el-button>
               </div>
-              <button
+              <div
                 v-for="session in sessions"
                 :key="session.id"
-                type="button"
                 class="aiops-session-item"
                 :class="{ active: currentSessionId === session.id }"
-                @click="selectSession(session.id)"
               >
-                <el-tooltip
-                  :disabled="!shouldShowSessionTooltip(session.title)"
-                  effect="light"
-                  placement="right"
-                  :show-after="180"
-                  popper-class="aiops-session-tooltip"
+                <button
+                  type="button"
+                  class="session-select-btn"
+                  @click="selectSession(session.id)"
                 >
-                  <span class="session-title">{{ session.title || '新会话' }}</span>
-                  <template #content>
-                    <div class="aiops-session-tooltip-card">
-                      <div class="aiops-session-tooltip-title">{{ session.title || '新会话' }}</div>
-                    </div>
-                  </template>
-                </el-tooltip>
-                
-              </button>
+                  <el-tooltip
+                    :disabled="!shouldShowSessionTooltip(session.title)"
+                    effect="light"
+                    placement="right"
+                    :show-after="180"
+                    popper-class="aiops-session-tooltip"
+                  >
+                    <span class="session-title">{{ session.title || '新会话' }}</span>
+                    <template #content>
+                      <div class="aiops-session-tooltip-card">
+                        <div class="aiops-session-tooltip-title">{{ session.title || '新会话' }}</div>
+                      </div>
+                    </template>
+                  </el-tooltip>
+                </button>
+                <el-button
+                  class="session-delete-btn"
+                  circle
+                  text
+                  :disabled="loading.deleteSession === session.id"
+                  @click.stop="handleDeleteSession(session)"
+                >
+                  <el-icon><Delete /></el-icon>
+                </el-button>
+              </div>
               <div v-if="!sessions.length" class="session-empty">暂无历史会话</div>
             </aside>
 
@@ -66,9 +85,6 @@
                   </button>
                   <div class="session-indicator">
                     <span class="session-indicator-label">{{ currentSession?.title || '新会话' }}</span>
-                    <span class="session-indicator-meta">
-                      {{ currentSession?.last_message_at ? `活跃于 ${formatDateTime(currentSession.last_message_at)}` : '尚未开始提问' }}
-                    </span>
                   </div>
                   <span class="environment-chip" :class="{ empty: !currentEnvironmentName }">
                     {{ currentEnvironmentName ? `环境：${currentEnvironmentName}` : '未指定环境' }}
@@ -322,7 +338,7 @@
                   ref="composerRef"
                   v-model="composer"
                   type="textarea"
-                  :rows="3"
+                  :rows="2"
                   resize="none"
                   :maxlength="2000"
                   show-word-limit
@@ -337,9 +353,13 @@
                     <span v-if="loading.poll" class="composer-tip">正在流式返回结果</span>
                   </div>
                   <div class="composer-action-group">
-                    <el-button text :disabled="!composer.trim()" @click="clearDraft">清空</el-button>
-                    <el-button type="primary" :loading="loading.send || loading.poll" :disabled="!composer.trim() || loading.poll" @click="handleSend">
-                      发送
+                    <el-button class="aiops-toolbar-btn" :disabled="!composer.trim()" @click="clearDraft">
+                      <el-icon><Delete /></el-icon>
+                      <span>清空</span>
+                    </el-button>
+                    <el-button type="primary" class="aiops-send-btn" :loading="loading.send || loading.poll" :disabled="!composer.trim() || loading.poll" @click="handleSend">
+                      <el-icon><Promotion /></el-icon>
+                      <span>发送</span>
                     </el-button>
                   </div>
                 </div>
@@ -350,30 +370,51 @@
           <transition name="aiops-sheet">
             <div v-if="mobileSessionVisible" class="mobile-session-sheet">
               <div class="mobile-session-head">
-                <span>会话历史</span>
-                <el-button size="small" text @click="mobileSessionVisible = false">关闭</el-button>
+                <div class="session-head-title">
+                  <span class="session-list-title">会话历史</span>
+                  <el-button size="small" class="aiops-toolbar-btn" @click="handleCreateSession">
+                    <el-icon><Plus /></el-icon>
+                    <span>新建</span>
+                  </el-button>
+                </div>
+                <el-button size="small" class="aiops-toolbar-btn" @click="mobileSessionVisible = false">
+                  <el-icon><Fold /></el-icon>
+                  <span>关闭</span>
+                </el-button>
               </div>
               <div class="mobile-session-body">
-                <button
+                <div
                   v-for="session in sessions"
                   :key="`mobile-${session.id}`"
-                  type="button"
                   class="aiops-session-item"
                   :class="{ active: currentSessionId === session.id }"
-                  @click="selectSession(session.id)"
                 >
-                  <el-tooltip
-                    :disabled="!shouldShowSessionTooltip(session.title)"
-                    :content="session.title || '新会话'"
-                    effect="light"
-                    placement="top"
-                    :show-after="180"
-                    popper-class="aiops-session-tooltip"
+                  <button
+                    type="button"
+                    class="session-select-btn"
+                    @click="selectSession(session.id)"
                   >
-                    <span class="session-title">{{ session.title || '新会话' }}</span>
-                  </el-tooltip>
-                  
-                </button>
+                    <el-tooltip
+                      :disabled="!shouldShowSessionTooltip(session.title)"
+                      :content="session.title || '新会话'"
+                      effect="light"
+                      placement="top"
+                      :show-after="180"
+                      popper-class="aiops-session-tooltip"
+                    >
+                      <span class="session-title">{{ session.title || '新会话' }}</span>
+                    </el-tooltip>
+                  </button>
+                  <el-button
+                    class="session-delete-btn mobile"
+                    circle
+                    text
+                    :disabled="loading.deleteSession === session.id"
+                    @click.stop="handleDeleteSession(session)"
+                  >
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </div>
                 <div v-if="!sessions.length" class="session-empty">暂无历史会话</div>
               </div>
             </div>
@@ -407,11 +448,13 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete, Fold, Plus, Promotion } from '@element-plus/icons-vue'
 import {
   cancelAIOpsAction,
   confirmAIOpsAction,
   createAIOpsSession,
+  deleteAIOpsSession,
   getAIOpsBootstrap,
   getAIOpsMessages,
   getAIOpsSessions,
@@ -443,7 +486,7 @@ const sessions = ref([])
 const messages = ref([])
 const composer = ref('')
 const currentSessionId = ref(Number(localStorage.getItem(STORAGE_SESSION_KEY) || '') || null)
-const loading = ref({ bootstrap: false, sessions: false, messages: false, send: false, poll: false })
+const loading = ref({ bootstrap: false, sessions: false, messages: false, send: false, poll: false, deleteSession: null })
 const pendingAssistantMessage = ref(null)
 const messageListRef = ref(null)
 const composerRef = ref(null)
@@ -488,7 +531,7 @@ const fabStyle = computed(() => {
 })
 const runtimeLabel = computed(() => {
   if (!bootstrap.value.runtime?.allow_action_execution) return '仅分析/草稿'
-  return bootstrap.value.runtime?.require_confirmation ? '执行需确认' : '可直接执行'
+  return '可生成待执行任务'
 })
 const canViewConfig = computed(() => authStore.hasPermission('aiops.config.view'))
 
@@ -1211,6 +1254,49 @@ async function handleConfirmAction(action) {
   }
 }
 
+async function handleDeleteSession(session) {
+  if (!session?.id) return
+  try {
+    await ElMessageBox.confirm(`确认删除会话《${session.title || '新会话'}》吗？`, '删除确认', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
+    loading.value.deleteSession = session.id
+    await deleteAIOpsSession(session.id)
+    const wasCurrent = currentSessionId.value === session.id
+    if (currentSessionId.value === session.id) {
+      stopMessagePolling()
+      currentSessionId.value = null
+      localStorage.removeItem(STORAGE_SESSION_KEY)
+      messages.value = []
+      loadDraft(null)
+    }
+    await refreshSessionListOnly()
+    if (!sessions.value.length) {
+      messages.value = []
+      loadDraft(null)
+      ElMessage.success('会话已删除')
+      return
+    }
+    if (!wasCurrent && currentSessionId.value && sessions.value.some(item => item.id === currentSessionId.value)) {
+      await selectSession(currentSessionId.value)
+      ElMessage.success('会话已删除')
+      return
+    }
+    await selectSession(sessions.value[0].id)
+    ElMessage.success('会话已删除')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '删除会话失败')
+  } finally {
+    loading.value.deleteSession = null
+  }
+}
+
 async function handleCancelAction(action) {
   try {
     await cancelAIOpsAction(action.id)
@@ -1452,54 +1538,77 @@ onBeforeUnmount(() => {
 .aiops-fab-label strong{font-size:13px;color:#0f172a}
 .aiops-fab-label small{margin-top:2px;font-size:10px;color:#64748b}
 .aiops-fab-dot{position:absolute;top:9px;right:10px;width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 3px rgba(255,255,255,.96),0 0 0 5px rgba(34,197,94,.1)}
-.aiops-panel{position:absolute;right:24px;bottom:88px;width:980px;max-width:calc(100vw - 36px);height:min(760px,calc(100vh - 120px));display:flex;flex-direction:column;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid #dbe4f0;border-radius:24px;box-shadow:0 26px 56px rgba(15,23,42,.18);overflow:hidden}
+.aiops-panel{position:absolute;right:24px;bottom:84px;width:1040px;max-width:calc(100vw - 32px);height:min(800px,calc(100vh - 104px));display:flex;flex-direction:column;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid #dbe4f0;border-radius:24px;box-shadow:0 26px 56px rgba(15,23,42,.18);overflow:hidden}
 .aiops-panel.embedded{position:relative;right:auto;bottom:auto;width:100%;max-width:none;height:100%;min-height:0;border-radius:20px;box-shadow:0 14px 32px rgba(15,23,42,.06)}
-.aiops-panel-header{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #e2e8f0;background:linear-gradient(135deg,#fff7ed 0%,#f0f9ff 100%)}
-.header-copy{min-width:0}
-.aiops-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.aiops-header-avatar{width:38px;height:38px;display:block;flex:0 0 auto}
+.aiops-panel-header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid #e2e8f0;background:linear-gradient(135deg,#fff7ed 0%,#f0f9ff 100%)}
+.header-copy{min-width:0;flex:1}
+.aiops-title-row{display:flex;align-items:center;gap:8px;min-width:0;min-height:34px}
+.aiops-header-avatar{width:32px;height:32px;display:block;flex:0 0 auto}
 .aiops-title{font-size:16px;font-weight:700;color:#0f172a}
-.header-badge{padding:4px 10px;border-radius:999px;background:#ecfeff;color:#0f766e;font-size:12px;white-space:nowrap}
+.header-badge{padding:3px 8px;border-radius:999px;background:#ecfeff;color:#0f766e;font-size:12px;white-space:nowrap}
 .header-badge.runtime{background:#e0f2fe;color:#075985}
 .header-badge.runtime.safe{background:#ecfccb;color:#3f6212}
-.aiops-subtitle{margin-top:4px;font-size:11px;color:#64748b;line-height:1.4}
-.aiops-header-actions{display:flex;gap:8px}
-.aiops-panel-body{display:grid;grid-template-columns:220px 1fr;flex:1;min-height:0}
-.aiops-session-list{padding:12px;border-right:1px solid #e2e8f0;background:#f8fafc;overflow:auto;-webkit-overflow-scrolling:touch}
-.session-list-head{display:flex;align-items:center;justify-content:space-between;padding:0 4px 10px;color:#475569;font-size:12px}
-.session-count{padding:3px 8px;border-radius:999px;background:#e2e8f0}
-.aiops-session-item{width:100%;display:block;text-align:left;padding:10px 12px;border:none;border-radius:12px;background:transparent;cursor:pointer;color:#334155;margin-bottom:6px;transition:background .18s ease,box-shadow .18s ease,transform .18s ease}
+.aiops-subtitle{min-width:180px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#64748b;line-height:1.4;padding-top:1px}
+.aiops-header-actions{display:flex;align-items:center;gap:8px;min-height:34px}
+.aiops-panel-body{display:grid;grid-template-columns:204px 1fr;flex:1;min-height:0}
+.aiops-session-list{padding:10px;border-right:1px solid #e2e8f0;background:#f8fafc;overflow:auto;-webkit-overflow-scrolling:touch}
+.session-list-head{
+  position:relative;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin-bottom:8px;
+  padding:0 4px 10px;
+  color:#475569;
+  font-size:12px;
+}
+.session-list-head::after{
+  content:'';
+  position:absolute;
+  left:4px;
+  right:4px;
+  bottom:0;
+  height:1px;
+  background:linear-gradient(90deg, rgba(226,232,240,0), rgba(191,219,254,.9) 14%, rgba(226,232,240,.95) 50%, rgba(191,219,254,.9) 86%, rgba(226,232,240,0));
+}
+.session-head-title{display:flex;align-items:center;gap:6px;min-width:0;font-weight:700}
+.session-list-title{color:#334155}
+.aiops-session-item{position:relative;display:flex;align-items:center;gap:6px;padding:0 4px 0 0;border-radius:12px;background:transparent;color:#334155;margin-bottom:6px;transition:background .18s ease,box-shadow .18s ease,transform .18s ease}
 .aiops-session-item:hover{background:#fff;transform:translateY(-1px)}
 .aiops-session-item.active{background:#fff;box-shadow:0 10px 20px rgba(15,23,42,.08)}
+.session-select-btn{flex:1;min-width:0;text-align:left;padding:10px 10px 10px 12px;border:none;background:transparent;cursor:pointer;color:inherit}
+.session-delete-btn{position:absolute;top:50%;right:6px;transform:translateY(-50%);width:24px;height:24px;border:none;opacity:0;pointer-events:none;transition:opacity .16s ease,background .16s ease,color .16s ease}
+.aiops-session-item:hover .session-delete-btn{opacity:1;pointer-events:auto}
+.session-delete-btn:hover{background:#fee2e2;color:#b91c1c}
 .session-title{display:block;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .session-empty{font-size:12px;color:#64748b}
 .aiops-chat-main{display:flex;flex-direction:column;min-width:0;min-height:0}
-.chat-toolbar{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid #edf2f7;background:rgba(255,255,255,.82)}
+.chat-toolbar{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;border-bottom:1px solid #edf2f7;background:rgba(255,255,255,.82)}
 .chat-toolbar-left,.chat-toolbar-right{display:flex;align-items:center;gap:10px;min-width:0}
-.toolbar-chip{border:none;border-radius:999px;padding:7px 12px;background:#dbeafe;color:#1d4ed8;cursor:pointer;font-size:12px;font-weight:600}
-.session-indicator{display:flex;flex-direction:column;min-width:0;max-width:220px}
+.toolbar-chip{border:none;border-radius:999px;padding:6px 11px;background:#dbeafe;color:#1d4ed8;cursor:pointer;font-size:12px;font-weight:600}
+.session-indicator{display:flex;flex-direction:column;min-width:0;max-width:220px;line-height:1.1}
 .session-indicator-label{font-size:12px;font-weight:700;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.session-indicator-meta{font-size:12px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .environment-chip{display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:6px;background:#ecfdf5;border:1px solid #bbf7d0;color:#047857;font-size:12px;font-weight:700;white-space:nowrap}
 .environment-chip.empty{background:#fff7ed;border-color:#fed7aa;color:#c2410c}
 .analysis-toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:#334155}
 .toolbar-hint{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.quick-palette{padding:8px 12px 0}
+.quick-palette{padding:6px 12px 0}
 .aiops-quick-questions,.aiops-secondary-actions{display:flex;gap:8px;flex-wrap:wrap}
 .quick-chip{border:none;border-radius:999px;padding:6px 10px;cursor:pointer;transition:transform .18s ease,box-shadow .18s ease;font-size:12px}
 .quick-chip{background:#e0f2fe;color:#075985}
 .quick-chip:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(15,23,42,.08)}
 .message-stage{position:relative;flex:1;min-height:0;overflow:hidden}
-.aiops-message-list{height:100%;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y}
+.aiops-message-list{height:100%;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y}
 .message-empty{margin:auto;max-width:380px;text-align:center}
 .empty-title{font-size:16px;font-weight:700;color:#0f172a}
 .empty-copy{margin-top:8px;color:#64748b;line-height:1.6;font-size:12px}
-.message-item{display:flex;flex-direction:column;gap:4px;max-width:92%}
+.message-item{display:flex;flex-direction:column;gap:3px;max-width:92%}
 .message-item.user{align-self:flex-end}
 .message-item.pending{opacity:.82}
 .message-meta{display:flex;align-items:center;gap:6px;color:#64748b;font-size:11px}
 .message-item.user .message-meta{justify-content:flex-end}
-.message-bubble{padding:10px 12px;border-radius:16px;background:#fff;border:1px solid #e2e8f0;box-shadow:0 8px 18px rgba(15,23,42,.05)}
+.message-bubble{padding:8px 12px;border-radius:14px;background:#fff;border:1px solid #e2e8f0;box-shadow:0 6px 14px rgba(15,23,42,.05)}
 .message-item.user .message-bubble{background:linear-gradient(135deg,#dbeafe,#f0f9ff)}
 .message-content{font-size:13px;line-height:1.5;color:#0f172a;word-break:break-word}
 .user-content{white-space:pre-wrap}
@@ -1577,11 +1686,20 @@ onBeforeUnmount(() => {
 .tool-event-name{font-weight:600;color:#475569}
 .tool-event-detail{color:#64748b}
 .message-actions{display:flex;gap:2px;justify-content:flex-end;margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0}
-.aiops-composer{padding:10px 12px;border-top:1px solid #e2e8f0;background:#fff}
-.composer-actions{display:flex;align-items:center;justify-content:space-between;margin-top:8px}
-.composer-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.composer-tip{font-size:11px;color:#64748b}
-.composer-action-group{display:flex;align-items:center;gap:8px}
+.aiops-composer{padding:8px 12px;border-top:1px solid #e2e8f0;background:#fff}
+.aiops-composer :deep(.el-textarea__inner){min-height:52px!important;padding:7px 10px;font-size:13px;line-height:1.45}
+.aiops-composer :deep(.el-input__count){line-height:1;font-size:10px;bottom:4px;right:8px}
+.aiops-composer :deep(.el-button){height:28px;padding:5px 11px;font-size:12px}
+.aiops-toolbar-btn{height:28px;padding:5px 10px;border-radius:8px;border:1px solid #dbe4f0;background:#fff;color:#334155;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.aiops-toolbar-btn:hover{border-color:#bfdbfe;background:#f8fbff;color:#1d4ed8}
+.aiops-toolbar-btn:disabled{background:#f8fafc;border-color:#e2e8f0;color:#94a3b8;box-shadow:none}
+.aiops-send-btn{height:28px;padding:5px 12px;border-radius:8px}
+.aiops-toolbar-btn :deep(.el-icon),
+.aiops-send-btn :deep(.el-icon){margin-right:4px}
+.composer-actions{display:flex;align-items:center;justify-content:space-between;margin-top:4px}
+.composer-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.composer-tip{font-size:10px;color:#64748b;line-height:1.2}
+.composer-action-group{display:flex;align-items:center;gap:6px}
 .mobile-session-sheet{display:none}
 :global(.aiops-session-tooltip){
   max-width:320px;
@@ -1640,20 +1758,22 @@ onBeforeUnmount(() => {
   .aiops-fab{min-width:118px;height:52px;padding:6px 10px 6px 6px}
   .aiops-fab-core{width:38px;height:38px;border-radius:18px}
   .aiops-fab-avatar{width:26px;height:26px}
-  .aiops-panel{right:12px;bottom:84px;width:min(100vw - 20px,660px);height:min(84vh,calc(100vh - 116px))}
+  .aiops-panel{right:12px;bottom:80px;width:min(100vw - 16px,720px);height:min(86vh,calc(100vh - 100px))}
   .aiops-panel.embedded{width:100%;height:100%;min-height:0}
   .aiops-panel-body{grid-template-columns:1fr}
   .aiops-session-list{display:none}
   .pending-detail-grid{grid-template-columns:1fr}
-  .chat-toolbar{flex-direction:column;align-items:flex-start;gap:8px}
+  .chat-toolbar{flex-direction:column;align-items:flex-start;gap:6px}
   .chat-toolbar-left,.chat-toolbar-right{width:100%;justify-content:space-between}
   .toolbar-hint{max-width:100%}
   .session-indicator{max-width:none;flex:1}
   .mobile-session-sheet{display:flex;position:absolute;left:12px;right:12px;bottom:12px;max-height:45vh;flex-direction:column;border:1px solid #dbe4f0;border-radius:22px;background:#fff;box-shadow:0 20px 48px rgba(15,23,42,.24);overflow:hidden}
-  .mobile-session-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #e2e8f0;background:#f8fafc}
+  .mobile-session-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #e2e8f0;background:#f8fafc;min-height:48px}
   .mobile-session-body{padding:12px;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y}
-  .composer-actions{flex-direction:column;align-items:stretch;gap:10px}
-  .composer-meta{justify-content:space-between}
+  .aiops-composer{padding:8px 12px}
+  .aiops-toolbar-btn,.aiops-send-btn{height:30px}
+  .composer-actions{flex-direction:column;align-items:stretch;gap:6px}
+  .composer-meta{justify-content:space-between;gap:8px}
   .composer-action-group{justify-content:flex-end}
 }
 </style>

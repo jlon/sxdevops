@@ -470,12 +470,14 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
 
 class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsChatSessionSerializer
-    http_method_names = ['get', 'post', 'head', 'options']
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
     demo_account_allowed_actions = {'create', 'send_message', 'send_message_async'}
     rbac_permissions = {
         'list': ['aiops.chat.view'],
         'retrieve': ['aiops.chat.view'],
         'create': ['aiops.chat.view'],
+        'destroy': ['aiops.chat.view'],
+        'delete_session': ['aiops.chat.view'],
         'messages': ['aiops.chat.view'],
         'send_message': ['aiops.chat.view'],
         'send_message_async': ['aiops.chat.view'],
@@ -495,6 +497,31 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         )
         sync_session_to_demo_if_needed(session)
         return Response(AIOpsChatSessionSerializer(session).data, status=status.HTTP_201_CREATED)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        session_id = instance.id
+        session_title = instance.title
+        response = super().destroy(request, *args, **kwargs)
+        if getattr(request.user, 'username', '') == 'admin':
+            sync_admin_sessions_to_demo()
+        record_event(
+            request=request,
+            module='aiops',
+            category='chat',
+            action='delete_session',
+            title='删除 AIOps 会话',
+            summary=f'已删除会话《{session_title}》',
+            resource_type='aiops_chat_session',
+            resource_id=session_id,
+            resource_name=session_title,
+            correlation_id=f'aiops-chat-session:{session_id}',
+        )
+        return response
+
+    @action(detail=True, methods=['post'])
+    def delete_session(self, request, pk=None):
+        return self.destroy(request, pk=pk)
 
     @action(detail=True, methods=['get'])
     def messages(self, request, pk=None):
