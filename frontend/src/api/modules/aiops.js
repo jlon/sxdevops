@@ -13,6 +13,7 @@ export const deleteAIOpsKnowledgeEnvironment = (id) => request.delete(`/aiops/kn
 
 export const getAIOpsSessions = (params) => request.get('/aiops/sessions/', { params })
 export const createAIOpsSession = (data) => request.post('/aiops/sessions/', data)
+export const deleteAIOpsSession = (id) => request.post(`/aiops/sessions/${id}/delete_session/`)
 export const getAIOpsMessages = (id) => request.get(`/aiops/sessions/${id}/messages/`)
 export const sendAIOpsMessage = (id, data) => request.post(`/aiops/sessions/${id}/send_message/`, data, { timeout: AIOPS_CHAT_TIMEOUT })
 export const sendAIOpsMessageAsync = (id, data) => request.post(`/aiops/sessions/${id}/send_message_async/`, data, { timeout: 20000 })

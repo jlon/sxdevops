@@ -1488,8 +1488,8 @@ class SystemPostureSystemSerializer(serializers.ModelSerializer):
         items = self._validate_json_list(value, 'keywords')
         return [str(item).strip() for item in items if str(item).strip()]
 
-    def validate_north_star(self, value):
-        item = self._validate_json_object(value, 'north_star')
+    def validate_core_metric(self, value):
+        item = self._validate_json_object(value, 'core_metric')
         label = str(item.get('label') or '').strip()
         if not label:
             label = '可用率'
@@ -1518,7 +1518,7 @@ class SystemPostureSystemSerializer(serializers.ModelSerializer):
         return [str(item).strip() for item in items if str(item).strip()]
 
     def validate(self, attrs):
-        attrs.setdefault('north_star', {
+        attrs.setdefault('core_metric', {
             'label': '可用率',
             'value': 99,
             'target': 99.9,

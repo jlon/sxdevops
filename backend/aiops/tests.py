@@ -131,7 +131,7 @@ class AIOpsApiTests(TestCase):
             keywords=['order-service', '订单', '订单服务'],
             service_specs=[{'id': 'order', 'name': '订单服务'}, {'id': 'order-service', 'name': 'order-service'}],
             dependencies=[{'id': 'postgresql', 'name': '订单数据库'}, {'id': 'kafka', 'name': 'Kafka'}],
-            north_star={'label': '下单成功率', 'value': 93.8, 'target': 90, 'unit': '%'},
+            core_metric={'label': '下单成功率', 'value': 93.8, 'target': 90, 'unit': '%'},
             is_enabled=True,
         )
         TaskResource.objects.create(
@@ -541,7 +541,7 @@ class AIOpsApiTests(TestCase):
             environment='posture-prod',
             health_score=91,
             service_specs=[{'id': 'checkout', 'name': 'checkout'}],
-            north_star={'label': 'SLA', 'value': 99.92, 'target': 99.9, 'unit': '%'},
+            core_metric={'label': 'SLA', 'value': 99.92, 'target': 99.9, 'unit': '%'},
             is_enabled=True,
         )
         LogEntry.objects.create(service='checkout', level='error', message='checkout failed')
@@ -650,6 +650,27 @@ class AIOpsApiTests(TestCase):
         self.assertIsNotNone(knowledge_env.snapshot_generated_at)
         self.assertTrue(any(edge['relation'] == 'service_deployment' for edge in knowledge_env.association_snapshot.get('edges', [])))
         self.assertTrue(knowledge_env.child_node_snapshot.get('children'))
+
+    @mock.patch('aiops.knowledge_graph._k8s_cluster_nodes')
+    def test_knowledge_graph_hides_represented_task_resource_environment(self, mocked_k8s_nodes):
+        cluster, resource_env, _ = self.ensure_ecommerce_knowledge_environment()
+        mocked_k8s_nodes.return_value = [{
+            'name': 'tf-k3s-single-node',
+            'status': 'Ready',
+            'roles': 'control-plane',
+            'version': 'v1.30.0',
+            'internal_ip': '120.26.213.176',
+        }]
+        cache.clear()
+
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': '电商测试环境'})
+
+        self.assertEqual(response.status_code, 200)
+        node_ids = {node['id'] for node in response.data['nodes']}
+        node_labels = {node['label'] for node in response.data['nodes']}
+        self.assertIn(f'infrastructure:k8s_host:{cluster.id}:tf-k3s-single-node', node_ids)
+        self.assertIn('tf-k3s-single-node', node_labels)
+        self.assertNotIn(f'infrastructure:task_resource_env:{resource_env.id}', node_ids)
 
     def test_knowledge_environment_observability_link_scope_overrides_datasource_autolink(self):
         log_source = LogDataSource.objects.create(name='scope-loki', provider='loki', config={'url': 'http://loki'}, is_enabled=True)
@@ -1252,7 +1273,7 @@ class AIOpsApiTests(TestCase):
             name='交易系统',
             environment='posture-prod',
             health_score=88,
-            north_star={'label': 'SLA', 'value': 99.7, 'target': 99.9, 'unit': '%'},
+            core_metric={'label': 'SLA', 'value': 99.7, 'target': 99.9, 'unit': '%'},
             is_enabled=True,
         )
         SystemPostureSystem.objects.create(
@@ -2923,7 +2944,7 @@ class AIOpsApiTests(TestCase):
             name='checkout',
             environment='prod-posture',
             health_score=92,
-            north_star={'label': 'SLA', 'value': 99.95, 'target': 99.9, 'unit': '%'},
+            core_metric={'label': 'SLA', 'value': 99.95, 'target': 99.9, 'unit': '%'},
             is_enabled=True,
         )
         session_response = self.client.post('/api/aiops/sessions/', {'title': 'direct-posture'}, format='json')

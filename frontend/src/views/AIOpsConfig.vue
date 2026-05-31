@@ -101,12 +101,8 @@
                 <el-switch v-model="configForm.is_enabled" />
               </div>
               <div class="switch-item">
-                <span>允许执行动作</span>
+                <span>允许生成待执行任务</span>
                 <el-switch v-model="configForm.allow_action_execution" />
-              </div>
-              <div class="switch-item">
-                <span>执行前确认</span>
-                <el-switch v-model="configForm.require_confirmation" />
               </div>
               <div class="switch-item">
                 <span>展示证据来源</span>
@@ -811,7 +807,7 @@ function applyConfig(payload = {}) {
     enabled_skill_ids: payload.enabled_skill_ids || [],
     is_enabled: payload.is_enabled ?? true,
     allow_action_execution: payload.allow_action_execution ?? true,
-    require_confirmation: payload.require_confirmation ?? true,
+    require_confirmation: true,
     show_evidence: payload.show_evidence ?? true,
     allow_analysis: payload.allow_analysis ?? true,
     max_history_messages: payload.max_history_messages || 12,
@@ -896,7 +892,7 @@ async function loadAuditActions(page = 1) {
 async function saveConfig() {
   saving.config = true
   try {
-    await updateAIOpsConfig({ ...configForm })
+    await updateAIOpsConfig({ ...configForm, require_confirmation: true })
     ElMessage.success('智能体策略已保存')
     await loadAll()
   } finally {

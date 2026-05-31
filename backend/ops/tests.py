@@ -1,4 +1,5 @@
 from urllib.parse import quote
+import copy
 from datetime import datetime, timedelta
 from decimal import Decimal
 import ssl
@@ -30,6 +31,7 @@ from ops.models import (
     TracingDataSource,
 )
 from ops.k8s_views import _prepare_kubeconfig, _resource_stale_cache_key, _summary_stale_cache_key
+from ops.observability_views import ECOMMERCE_DEPENDENCIES, ECOMMERCE_SERVICE_SPECS
 from ops.tracing_providers import _build_topology_from_trace_details, _tempo_flatten_trace, _trace_detail_from_spans
 
 
@@ -490,6 +492,9 @@ class ObservabilityViewsTests(TestCase):
         def series(label, value, label_name='deployment'):
             return {'metric': {label_name: label}, 'value': [1777862400, str(value)]}
 
+        def labeled_series(labels, value):
+            return {'metric': labels, 'value': [1777862400, str(value)]}
+
         def fake_get(url, params=None, **kwargs):
             query = (params or {}).get('query', '')
             if 'outcome="success"' in query:
@@ -502,6 +507,32 @@ class ObservabilityViewsTests(TestCase):
                 return MockHttpResponse(scalar(checkout_rps))
             if 'sum by (le)' in query and 'path="/api/checkout"' in query:
                 return MockHttpResponse(scalar(checkout_p95_seconds))
+            if 'sum by (service)' in query and 'status!~"[45].."' in query:
+                return MockHttpResponse(vector(
+                    series('api-gateway', success_rate, label_name='service'),
+                    series('cart', 100, label_name='service'),
+                    series('order', 100, label_name='service'),
+                    series('inventory', 100, label_name='service'),
+                    series('catalog', 100, label_name='service'),
+                ))
+            if 'sum by (service,path)' in query and 'status!~"[45].."' in query:
+                return MockHttpResponse(vector(
+                    labeled_series({'service': 'api-gateway', 'path': '/api/checkout'}, success_rate),
+                    labeled_series({'service': 'api-gateway', 'path': '/api/cart/<user_id>/items'}, 100),
+                    labeled_series({'service': 'api-gateway', 'path': '/api/cart/<user_id>'}, 100),
+                    labeled_series({'service': 'api-gateway', 'path': '/api/products'}, 100),
+                    labeled_series({'service': 'order', 'path': '/orders'}, 100),
+                    labeled_series({'service': 'inventory', 'path': '/availability'}, 100),
+                ))
+            if 'sum by (service,path)' in query and 'status' not in query:
+                return MockHttpResponse(vector(
+                    labeled_series({'service': 'api-gateway', 'path': '/api/checkout'}, checkout_rps),
+                    labeled_series({'service': 'api-gateway', 'path': '/api/cart/<user_id>/items'}, 0.01),
+                    labeled_series({'service': 'api-gateway', 'path': '/api/cart/<user_id>'}, 0.01),
+                    labeled_series({'service': 'api-gateway', 'path': '/api/products'}, 0.01),
+                    labeled_series({'service': 'order', 'path': '/orders'}, 0.02),
+                    labeled_series({'service': 'inventory', 'path': '/availability'}, 0.02),
+                ))
             if query.startswith('up{'):
                 if up_values is None:
                     return MockHttpResponse(vector())
@@ -1114,7 +1145,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertTrue(any(link['type'] == 'upstream' for link in selected_rule_config['topology']['links']))
         edge = next(item for item in payload['systems'] if item['id'] == 'platform-edge')
         self.assertEqual(edge['status'], 'critical')
-        self.assertEqual(edge['north_star']['status'], 'critical')
+        self.assertEqual(edge['core_metric']['status'], 'critical')
         self.assertGreater(edge['health_score'], 50)
         self.assertTrue(all(item['status'] in {'healthy', 'unknown'} for item in edge['dependencies']))
         edge_rule_config = edge['form']['rule_config']
@@ -1131,6 +1162,14 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(len(payload['days']), 7)
+        self.assertEqual(payload['summary']['system_count'], 0)
+        self.assertEqual(SystemPostureSLAHistory.objects.count(), 0)
+        self.assertEqual(payload['context']['captured'], 0)
+        self.assertEqual(payload['context']['source'], 'sla_history')
+
+        refresh_response = self.client.get('/api/observability/system-posture/history/?days=7&refresh=1')
+        self.assertEqual(refresh_response.status_code, 200)
+        payload = refresh_response.json()
         self.assertGreaterEqual(payload['summary']['system_count'], 3)
         self.assertGreaterEqual(len(payload['systems']), 3)
         self.assertGreaterEqual(SystemPostureSLAHistory.objects.count(), 3)
@@ -1144,7 +1183,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertGreaterEqual(SystemPostureSLAHistory.objects.count(), 8)
 
     def test_observability_system_posture_history_skips_locked_writes(self):
-        self.client.get('/api/observability/system-posture/history/?days=7')
+        self.client.get('/api/observability/system-posture/history/?days=7&refresh=1')
         with patch(
             'ops.observability_views.SystemPostureSLAHistory.objects.update_or_create',
             side_effect=OperationalError('database is locked'),
@@ -1176,26 +1215,85 @@ class ObservabilityViewsTests(TestCase):
         selected = payload['selected_system']
         self.assertEqual(selected['name'], '交易系统核心')
         self.assertTrue(selected['builtin_backed'])
-        self.assertEqual(selected['north_star']['label'], '环境可用率')
-        self.assertEqual(selected['north_star']['value'], 100)
-        self.assertEqual(selected['north_star']['status'], 'healthy')
+        self.assertEqual(selected['core_metric']['label'], '系统成功率')
+        self.assertGreater(selected['core_metric']['value'], 96.5)
+        self.assertLess(selected['core_metric']['value'], 100)
+        self.assertEqual(selected['core_metric']['status'], 'healthy')
         self.assertTrue(selected['live']['enabled'])
-        self.assertEqual(selected['live']['north_star_metric'], 'checkout_success_rate')
+        self.assertEqual(selected['live']['core_metric_key'], 'checkout_success_rate')
+        self.assertEqual(selected['live']['core_metric_key'], 'checkout_success_rate')
         self.assertNotIn('window', selected['rule_config'])
         self.assertNotIn('window', selected['form']['rule_config'])
         self.assertEqual(selected['live']['window'], '30m')
         self.assertEqual(selected['rule_config']['health_score']['weights']['success_rate'], 0.62)
+        conflict_rule = next(item for item in selected['rule_config']['root_cause_rules'] if item['id'] == 'inventory-conflict')
+        self.assertTrue(conflict_rule['count_as_fault'])
+        self.assertIn('order', [item['service_id'] for item in conflict_rule['affected_services']])
         self.assertIn('rule_config', selected['form'])
         self.assertEqual(selected['children'][0]['id'], 'api-gateway')
         conflict_metric = next(item for item in selected['metrics'] if item['label'] == 'Checkout 409占比')
         self.assertEqual(conflict_metric['value'], 3.5)
         self.assertEqual(conflict_metric['status'], 'critical')
+        gateway = next(item for item in selected['children'] if item['id'] == 'api-gateway')
+        gateway_success = next(item for item in gateway['metrics'] if item['label'] == '成功率')
+        self.assertLess(gateway_success['value'], 100)
+        self.assertGreater(gateway_success['value'], 96.5)
+        gateway_checkout = next(item for item in gateway['children'] if item['id'] == 'gateway-checkout')
+        gateway_checkout_success = next(item for item in gateway_checkout['metrics'] if item['label'] == '成功率')
+        self.assertEqual(gateway_checkout_success['value'], 96.5)
+        self.assertEqual(gateway_checkout_success['status'], 'critical')
+        self.assertEqual(gateway_checkout['status'], 'critical')
+        order = next(item for item in selected['children'] if item['id'] == 'order')
+        self.assertEqual(order['status'], 'critical')
+        order_api = next(item for item in order['children'] if item['id'] == 'order-create')
+        self.assertEqual(order_api['status'], 'critical')
         inventory = next(item for item in selected['children'] if item['id'] == 'inventory')
-        self.assertEqual(inventory['status'], 'healthy')
+        self.assertEqual(inventory['status'], 'critical')
         inventory_api = next(item for item in inventory['children'] if item['id'] == 'inventory-availability')
         self.assertIn('库存', inventory_api['hint'])
         self.assertGreater(selected['health_score'], 80)
         self.assertLessEqual(selected['health_score'], 100)
+
+    @override_settings(OBSERVABILITY_CONFIG={
+        **TEST_OBSERVABILITY_CONFIG,
+        'prometheus': {
+            'enabled': True,
+            'query_url': 'http://prometheus.example.com',
+            'timeout': 3,
+        },
+    })
+    @patch('ops.observability_views.http_requests.get')
+    def test_ecommerce_conflict_can_be_configured_as_fault(self, mock_get):
+        system = self._enable_default_ecommerce_system()
+        mock_get.side_effect = self._mock_ecommerce_prometheus_get()
+        system.rule_config = {
+            'root_cause_rules': [
+                {
+                    'id': 'inventory-conflict',
+                    'metric': 'checkout_conflict_rate',
+                    'min_rate': 1,
+                    'critical_rate': 3,
+                    'min_rps': 0.001,
+                    'count_as_fault': True,
+                    'target_service_id': 'inventory',
+                    'target_interface_id': 'inventory-availability',
+                    'metric_label': '库存冲突率',
+                    'critical_message': '409 冲突按故障计算',
+                },
+            ],
+        }
+        system.save(update_fields=['rule_config'])
+
+        response = self.client.get('/api/observability/system-posture/?system=交易系统核心')
+
+        self.assertEqual(response.status_code, 200)
+        selected = response.json()['selected_system']
+        conflict_metric = next(item for item in selected['metrics'] if item['label'] == 'Checkout 409占比')
+        self.assertEqual(conflict_metric['status'], 'critical')
+        inventory = next(item for item in selected['children'] if item['id'] == 'inventory')
+        self.assertEqual(inventory['status'], 'critical')
+        inventory_api = next(item for item in inventory['children'] if item['id'] == 'inventory-availability')
+        self.assertEqual(inventory_api['status'], 'critical')
 
     @override_settings(OBSERVABILITY_CONFIG={
         **TEST_OBSERVABILITY_CONFIG,
@@ -1228,9 +1326,9 @@ class ObservabilityViewsTests(TestCase):
         selected = response.json()['selected_system']
         self.assertEqual(selected['status'], 'critical')
         self.assertEqual(selected['health_score'], 0)
-        self.assertEqual(selected['north_star']['label'], '环境可用率')
-        self.assertEqual(selected['north_star']['value'], 0)
-        self.assertEqual(selected['north_star']['target'], 99)
+        self.assertEqual(selected['core_metric']['label'], '环境可用率')
+        self.assertEqual(selected['core_metric']['value'], 0)
+        self.assertEqual(selected['core_metric']['target'], 99)
         self.assertEqual(selected['live']['runtime_availability'], 0)
         self.assertTrue(any(item['label'] == '环境可用率' and item['value'] == 0 and item['target'] == 99 for item in selected['metrics']))
         self.assertTrue(all(item['status'] == 'critical' for item in selected['children']))
@@ -1261,11 +1359,11 @@ class ObservabilityViewsTests(TestCase):
         selected = response.json()['selected_system']
         self.assertEqual(selected['status'], 'critical')
         self.assertEqual(selected['health_score'], 0)
-        self.assertEqual(selected['north_star']['label'], '环境可用率')
-        self.assertEqual(selected['north_star']['value'], 0)
-        self.assertEqual(selected['north_star']['target'], 99)
+        self.assertEqual(selected['core_metric']['label'], '环境可用率')
+        self.assertEqual(selected['core_metric']['value'], 0)
+        self.assertEqual(selected['core_metric']['target'], 99)
         self.assertTrue(selected['live']['unavailable'])
-        self.assertNotEqual(selected['north_star']['value'], 93.8)
+        self.assertNotEqual(selected['core_metric']['value'], 93.8)
 
     @override_settings(OBSERVABILITY_CONFIG=TEST_OBSERVABILITY_CONFIG)
     def test_observability_system_posture_does_not_use_demo_success_rate_when_live_source_not_ready(self):
@@ -1276,11 +1374,190 @@ class ObservabilityViewsTests(TestCase):
         selected = response.json()['selected_system']
         self.assertEqual(selected['status'], 'critical')
         self.assertEqual(selected['health_score'], 0)
-        self.assertEqual(selected['north_star']['label'], '环境可用率')
-        self.assertEqual(selected['north_star']['value'], 0)
-        self.assertEqual(selected['north_star']['target'], 99)
+        self.assertEqual(selected['core_metric']['label'], '环境可用率')
+        self.assertEqual(selected['core_metric']['value'], 0)
+        self.assertEqual(selected['core_metric']['target'], 99)
         self.assertTrue(selected['live']['unavailable'])
-        self.assertNotEqual(selected['north_star']['value'], 93.8)
+        self.assertNotEqual(selected['core_metric']['value'], 93.8)
+
+    @override_settings(OBSERVABILITY_CONFIG=TEST_OBSERVABILITY_CONFIG)
+    def test_custom_ecommerce_posture_does_not_use_saved_demo_slo_when_live_source_not_ready(self):
+        SystemPostureSystem.objects.create(
+            name='电商交易核心',
+            environment='ecommerce-test-k3s',
+            domain='业务域',
+            base_status='critical',
+            health_score=94,
+            core_metric={'label': '下单成功率', 'value': 93.8, 'target': 90, 'unit': '%', 'direction': 'higher'},
+            metrics=[{'label': '下单成功率', 'value': 93.8, 'target': 99.95, 'unit': '%', 'direction': 'higher'}],
+            rule_config={
+                'enabled': True,
+                'namespace': 'ecommerce',
+                'service_pattern': 'api-gateway|cart|order|inventory|catalog',
+                'prometheus': {
+                    'scalars': {
+                        'checkout_success_rate': {
+                            'label': '下单成功率',
+                            'target': 90,
+                            'unit': '%',
+                            'direction': 'higher',
+                            'query': '100 * sum(rate(ecommerce_checkout_outcomes_total{namespace="{namespace}",service="api-gateway",outcome="success"}[{window}])) / clamp_min(sum(rate(ecommerce_checkout_outcomes_total{namespace="{namespace}",service="api-gateway",outcome=~"success|conflict"}[{window}])), 0.000001)',
+                        },
+                    },
+                },
+                'core_metric': {'metric': 'checkout_success_rate', 'label': '下单成功率', 'target': 90, 'unit': '%', 'direction': 'higher'},
+                'drilldown': {
+                    'services': [{'id': 'api-gateway', 'name': 'API 网关', 'paths': []}],
+                    'dependencies': [{'id': 'postgres', 'name': 'PostgreSQL'}],
+                },
+            },
+        )
+
+        response = self.client.get('/api/observability/system-posture/?system=电商交易核心')
+
+        self.assertEqual(response.status_code, 200)
+        selected = response.json()['selected_system']
+        self.assertEqual(selected['name'], '电商交易核心')
+        self.assertTrue(selected['live']['unavailable'])
+        self.assertEqual(selected['core_metric']['label'], '环境可用率')
+        self.assertEqual(selected['core_metric']['value'], 0)
+        self.assertEqual(selected['core_metric']['target'], 90)
+        self.assertNotEqual(selected['core_metric']['value'], 93.8)
+
+    @override_settings(OBSERVABILITY_CONFIG=TEST_OBSERVABILITY_CONFIG)
+    def test_system_posture_history_refreshes_today_custom_ecommerce_slo(self):
+        today = timezone.localdate()
+        system = SystemPostureSystem.objects.create(
+            name='电商交易核心',
+            environment='ecommerce-test-k3s',
+            domain='业务域',
+            base_status='critical',
+            health_score=94,
+            core_metric={'label': '下单成功率', 'value': 93.8, 'target': 90, 'unit': '%', 'direction': 'higher'},
+            metrics=[{'label': '下单成功率', 'value': 93.8, 'target': 99.95, 'unit': '%', 'direction': 'higher'}],
+            rule_config={
+                'enabled': True,
+                'namespace': 'ecommerce',
+                'prometheus': {
+                    'scalars': {
+                        'checkout_success_rate': {
+                            'label': '下单成功率',
+                            'target': 90,
+                            'unit': '%',
+                            'direction': 'higher',
+                            'query': '100 * sum(rate(ecommerce_checkout_outcomes_total{namespace="{namespace}",service="api-gateway",outcome="success"}[{window}])) / clamp_min(sum(rate(ecommerce_checkout_outcomes_total{namespace="{namespace}",service="api-gateway",outcome=~"success|conflict"}[{window}])), 0.000001)',
+                        },
+                    },
+                },
+                'core_metric': {'metric': 'checkout_success_rate', 'label': '下单成功率', 'target': 90, 'unit': '%', 'direction': 'higher'},
+                'drilldown': {
+                    'services': [{'id': 'api-gateway', 'name': 'API 网关', 'paths': []}],
+                    'dependencies': [{'id': 'postgres', 'name': 'PostgreSQL'}],
+                },
+            },
+        )
+        system_key = f'custom-{system.id}'
+        SystemPostureSLAHistory.objects.create(
+            day=today,
+            system_key=system_key,
+            system_name='电商交易核心',
+            environment='ecommerce-test-k3s',
+            domain='业务域',
+            status='healthy',
+            sla_value=Decimal('93.800'),
+            sla_target=Decimal('90.000'),
+            health_score=94,
+            metric_label='下单成功率',
+            metric_unit='%',
+            snapshot={},
+        )
+
+        response = self.client.get('/api/observability/system-posture/history/?days=7&refresh=1')
+
+        self.assertEqual(response.status_code, 200)
+        record = SystemPostureSLAHistory.objects.get(day=today, system_key=system_key)
+        self.assertEqual(record.sla_value, Decimal('0.000'))
+        self.assertEqual(record.status, 'critical')
+        payload_system = next(item for item in response.json()['systems'] if item['id'] == system_key)
+        payload_record = next(item for item in payload_system['records'] if item['day'] == today.isoformat())
+        self.assertEqual(payload_record['sla'], 0.0)
+        self.assertNotEqual(payload_record['sla'], 93.8)
+
+    @override_settings(OBSERVABILITY_CONFIG={
+        **TEST_OBSERVABILITY_CONFIG,
+        'prometheus': {
+            'enabled': True,
+            'query_url': 'http://prometheus.example.com',
+            'timeout': 3,
+        },
+    })
+    @patch('ops.observability_views.http_requests.get')
+    def test_custom_ecommerce_posture_uses_live_history_and_keeps_drilldown(self, mock_get):
+        today = timezone.localdate()
+        system = SystemPostureSystem.objects.create(
+            name='电商交易核心',
+            environment='ecommerce-test-k3s',
+            domain='业务域',
+            base_status='healthy',
+            health_score=94,
+            core_metric={'label': '下单成功率', 'value': 93.8, 'target': 90, 'unit': '%', 'direction': 'higher'},
+            metrics=[{'label': '下单成功率', 'value': 93.8, 'target': 90, 'unit': '%', 'direction': 'higher'}],
+            rule_config={
+                'enabled': True,
+                'namespace': 'ecommerce',
+                'prometheus': {
+                    'scalars': {
+                        'checkout_success_rate': {
+                            'label': '下单成功率',
+                            'target': 90,
+                            'unit': '%',
+                            'direction': 'higher',
+                            'query': '100 * sum(rate(ecommerce_checkout_outcomes_total{namespace="{namespace}",service="api-gateway",outcome="success"}[{window}])) / clamp_min(sum(rate(ecommerce_checkout_outcomes_total{namespace="{namespace}",service="api-gateway",outcome=~"success|conflict"}[{window}])), 0.000001)',
+                        },
+                    },
+                },
+                'core_metric': {'metric': 'checkout_success_rate', 'label': '下单成功率', 'target': 90, 'unit': '%', 'direction': 'higher'},
+                'drilldown': {
+                    'services': copy.deepcopy(ECOMMERCE_SERVICE_SPECS),
+                    'dependencies': copy.deepcopy(ECOMMERCE_DEPENDENCIES),
+                },
+            },
+        )
+        system_key = f'custom-{system.id}'
+        SystemPostureSLAHistory.objects.create(
+            day=today,
+            system_key=system_key,
+            system_name='电商交易核心',
+            environment='ecommerce-test-k3s',
+            domain='业务域',
+            status='healthy',
+            sla_value=Decimal('93.800'),
+            sla_target=Decimal('90.000'),
+            health_score=94,
+            metric_label='下单成功率',
+            metric_unit='%',
+            snapshot={},
+        )
+        mock_get.side_effect = self._mock_ecommerce_prometheus_get()
+
+        posture_response = self.client.get(f'/api/observability/system-posture/?system={system_key}')
+        history_response = self.client.get('/api/observability/system-posture/history/?days=7&refresh=1')
+
+        self.assertEqual(posture_response.status_code, 200)
+        selected = posture_response.json()['selected_system']
+        self.assertEqual(selected['core_metric']['label'], '系统成功率')
+        self.assertGreater(selected['core_metric']['value'], 96.5)
+        self.assertLess(selected['core_metric']['value'], 100)
+        self.assertTrue(selected['children'])
+        self.assertTrue(selected['children'][0]['children'])
+        self.assertTrue(selected['dependencies'])
+
+        self.assertEqual(history_response.status_code, 200)
+        payload_system = next(item for item in history_response.json()['systems'] if item['id'] == system_key)
+        payload_record = next(item for item in payload_system['records'] if item['day'] == today.isoformat())
+        self.assertGreater(payload_record['sla'], 96.5)
+        self.assertLess(payload_record['sla'], 100)
+        self.assertNotEqual(payload_record['sla'], 93.8)
 
     @override_settings(OBSERVABILITY_CONFIG={
         **TEST_OBSERVABILITY_CONFIG,
@@ -1328,7 +1605,7 @@ class ObservabilityViewsTests(TestCase):
             tier='交易链路',
             owner='commerce-oncall',
             rule_config={
-                'north_star': {'target': 95},
+                'core_metric': {'target': 95},
                 'status_rules': {
                     'critical': {'health_score_lt': 50, 'success_rate_lt': 90, 'checkout_5xx_rate_gte': 5},
                     'warning': {'health_score_lt': 80, 'success_rate_lt': 95, 'checkout_conflict_rate_gte': 10, 'checkout_p95_ms_gt': 500},
@@ -1361,7 +1638,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertNotIn('window', selected['rule_config'])
         self.assertNotIn('window', selected['form']['rule_config'])
         self.assertEqual(selected['live']['window'], '30m')
-        self.assertEqual(selected['rule_config']['north_star']['target'], 95)
+        self.assertEqual(selected['rule_config']['core_metric']['target'], 95)
         self.assertEqual(selected['status'], 'healthy')
         inventory = next(item for item in selected['children'] if item['id'] == 'inventory')
         self.assertEqual(inventory['status'], 'healthy')
@@ -1387,7 +1664,7 @@ class ObservabilityViewsTests(TestCase):
             'base_status': 'warning',
             'health_score': 82,
             'keywords': ['增长活动', 'growth'],
-            'north_star': {'label': '转化成功率', 'value': 97.5, 'target': 99, 'unit': '%', 'direction': 'higher'},
+            'core_metric': {'label': '转化成功率', 'value': 97.5, 'target': 99, 'unit': '%', 'direction': 'higher'},
             'metrics': [{'label': '转化成功率', 'value': 97.5, 'target': 99, 'unit': '%', 'direction': 'higher'}],
             'service_specs': [
                 {
@@ -1477,7 +1754,7 @@ class ObservabilityViewsTests(TestCase):
         selected = overview_response.json()['selected_system']
         self.assertEqual(selected['status'], 'unknown')
         self.assertIsNone(selected['health_score'])
-        self.assertEqual(selected['north_star'], {})
+        self.assertEqual(selected['core_metric'], {})
         self.assertEqual(selected['children'], [])
         self.assertEqual(selected['dependencies'], [])
 
@@ -1490,7 +1767,7 @@ class ObservabilityViewsTests(TestCase):
             summary='覆盖内置卡片配置',
             base_status='healthy',
             health_score=95,
-            north_star={'label': '下单成功率', 'value': 99.8, 'target': 99.9, 'unit': '%', 'direction': 'higher'},
+            core_metric={'label': '下单成功率', 'value': 99.8, 'target': 99.9, 'unit': '%', 'direction': 'higher'},
             created_by='observer-admin',
             updated_by='observer-admin',
         )
@@ -1541,7 +1818,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertFalse(any(item['id'] == 'commerce-core' for item in payload['systems']))
-        self.assertFalse(SystemPostureSLAHistory.objects.filter(day=today, system_key='commerce-core').exists())
+        self.assertTrue(SystemPostureSLAHistory.objects.filter(day=today, system_key='commerce-core').exists())
 
     def test_hidden_builtin_system_is_pruned_from_backfill_history(self):
         target_day = timezone.localdate() - timedelta(days=1)
@@ -1615,9 +1892,9 @@ class ObservabilityViewsTests(TestCase):
             owner='edge-owner',
             summary='只覆盖入口成功率目标',
             base_status='warning',
-            north_star={'label': '入口成功率', 'value': 99.1, 'target': 99, 'unit': '%', 'direction': 'higher'},
+            core_metric={'label': '入口成功率', 'value': 99.1, 'target': 99, 'unit': '%', 'direction': 'higher'},
             rule_config={
-                'north_star': {
+                'core_metric': {
                     'label': '入口成功率',
                     'target': 99,
                     'unit': '%',
@@ -1633,7 +1910,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         selected = response.json()['selected_system']
         rule_config = selected['form']['rule_config']
-        self.assertEqual(rule_config['north_star']['target'], 99)
+        self.assertEqual(rule_config['core_metric']['target'], 99)
         self.assertIn('drilldown', rule_config)
         self.assertIn('topology', rule_config)
         self.assertIn('nginx-ingress', [item['id'] for item in rule_config['drilldown']['services']])
@@ -3657,4 +3934,3 @@ class AlertActionApiTests(TestCase):
         rule = AlertNotificationRule.objects.get(name='critical notify')
         self.assertEqual(rule.channels.count(), 1)
         self.assertEqual(rule.recipient_groups.count(), 1)
-

@@ -2,6 +2,7 @@
 from rest_framework.decorators import api_view, action, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from django.db.models import Q
 from django.utils import timezone
 
 from eventwall.mixins import EventWallModelViewSetMixin
@@ -85,6 +86,21 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'execute': ['sqlaudit.order.view', 'sqlaudit.order.execute'],
     }
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status_value = self.request.query_params.get('status')
+        if status_value in dict(SqlOrder.STATUS_CHOICES):
+            queryset = queryset.filter(status=status_value)
+
+        search = (self.request.query_params.get('search') or '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search)
+                | Q(submitter__icontains=search)
+                | Q(sql_content__icontains=search)
+            )
+        return queryset
+
     def perform_create(self, serializer):
         order = serializer.save(
             submitter=self.request.user.username,
@@ -110,6 +126,7 @@ class SqlOrderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 message=item.message,
                 line_no=item.line_no,
             )
+
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
         order = self.get_object()

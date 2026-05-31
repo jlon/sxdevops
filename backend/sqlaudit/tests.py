@@ -168,6 +168,35 @@ class SqlAuditRBACTests(TestCase):
         response = self.client.patch(f'/api/sqlaudit/orders/{order.id}/', {'title': 'changed'}, content_type='application/json')
         self.assertEqual(response.status_code, 405)
 
+    def test_order_list_supports_status_filter(self):
+        user = self.create_user_with_permissions('auditor', ['sqlaudit.order.view'])
+        SqlOrder.objects.create(
+            title='pending-order',
+            datasource=self.datasource,
+            database='app',
+            sql_type='DML',
+            sql_content='UPDATE demo SET value = 1 WHERE id = 1',
+            submitter='dev',
+            status='pending',
+        )
+        SqlOrder.objects.create(
+            title='approved-order',
+            datasource=self.datasource,
+            database='app',
+            sql_type='DML',
+            sql_content='UPDATE demo SET value = 2 WHERE id = 2',
+            submitter='dev',
+            status='approved',
+        )
+        self.client.force_login(user)
+
+        response = self.client.get('/api/sqlaudit/orders/?status=pending')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['count'], 1)
+        self.assertEqual(payload['results'][0]['title'], 'pending-order')
+
     @patch('sqlaudit.views.db_executor.execute_query', return_value=(True, ['id'], [{'id': 1}], 1, 8, None))
     def test_query_create_ignores_client_controlled_fields(self, _mock_execute_query):
         user = self.create_user_with_permissions('query-runner', ['sqlaudit.datasource.view', 'sqlaudit.query.execute'])

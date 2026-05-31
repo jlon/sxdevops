@@ -1227,7 +1227,7 @@ class SystemPostureSystem(models.Model):
         validators=[MinValueValidator(0), MaxValueValidator(100)],
     )
     keywords = models.JSONField('匹配关键字', default=list, blank=True)
-    north_star = models.JSONField('北极星指标', default=dict, blank=True)
+    core_metric = models.JSONField('核心指标', default=dict, blank=True)
     metrics = models.JSONField('核心指标', default=list, blank=True)
     service_specs = models.JSONField('服务分解', default=list, blank=True)
     dependencies = models.JSONField('依赖关系', default=list, blank=True)

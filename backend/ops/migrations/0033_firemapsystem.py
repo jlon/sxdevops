@@ -21,7 +21,7 @@ class Migration(migrations.Migration):
                 ('base_status', models.CharField(choices=[('healthy', '健康'), ('warning', '告警'), ('critical', '故障'), ('offline', '离线')], default='healthy', max_length=16, verbose_name='基础状态')),
                 ('health_score', models.PositiveSmallIntegerField(blank=True, null=True, validators=[MinValueValidator(0), MaxValueValidator(100)], verbose_name='健康分')),
                 ('keywords', models.JSONField(blank=True, default=list, verbose_name='匹配关键字')),
-                ('north_star', models.JSONField(blank=True, default=dict, verbose_name='北极星指标')),
+                ('north_star', models.JSONField(blank=True, default=dict, verbose_name='核心指标')),
                 ('metrics', models.JSONField(blank=True, default=list, verbose_name='核心指标')),
                 ('service_specs', models.JSONField(blank=True, default=list, verbose_name='服务分解')),
                 ('dependencies', models.JSONField(blank=True, default=list, verbose_name='依赖关系')),

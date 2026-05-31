@@ -6,6 +6,7 @@ import math
 import re
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, time, timedelta, timezone as datetime_timezone
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import requests as http_requests
@@ -568,7 +569,7 @@ FIREMAP_SYSTEM_TEMPLATES = [
         'tier': 'P0',
         'base_status': 'critical',
         'keywords': ['gateway-service', 'order-service', 'payment-service', 'inventory-service', 'checkout', '下单', '支付', '订单'],
-        'north_star': {'label': '下单成功率', 'value': 93.8, 'target': 99.95, 'unit': '%', 'direction': 'higher'},
+        'core_metric': {'label': '下单成功率', 'value': 93.8, 'target': 99.95, 'unit': '%', 'direction': 'higher'},
         'summary': '入口链路抖动，支付回调和订单查询都在放大故障面。',
         'focus_service_id': 'gateway-service',
         'focus_interface_id': 'gateway-order-detail',
@@ -639,7 +640,7 @@ FIREMAP_SYSTEM_TEMPLATES = [
         'tier': 'P1',
         'base_status': 'warning',
         'keywords': ['member-service', 'warehouse-service', 'delivery-service', 'coupon-service', '会员', '履约', '仓库', '配送'],
-        'north_star': {'label': '会员请求成功率', 'value': 98.6, 'target': 99.9, 'unit': '%', 'direction': 'higher'},
+        'core_metric': {'label': '会员请求成功率', 'value': 98.6, 'target': 99.9, 'unit': '%', 'direction': 'higher'},
         'summary': '会员查询正常，但履约链路出现等待和重试堆积。',
         'focus_service_id': 'member-service',
         'focus_interface_id': 'member-profile',
@@ -710,7 +711,7 @@ FIREMAP_SYSTEM_TEMPLATES = [
         'tier': 'P1',
         'base_status': 'warning',
         'keywords': ['loki', 'tempo', 'grafana', 'alertmanager', 'observability', '日志', '链路', '看板', '告警'],
-        'north_star': {'label': '观测接入成功率', 'value': 99.2, 'target': 99.9, 'unit': '%', 'direction': 'higher'},
+        'core_metric': {'label': '观测接入成功率', 'value': 99.2, 'target': 99.9, 'unit': '%', 'direction': 'higher'},
         'summary': '日志与链路链路基本可用，但查询延迟有轻微抬头。',
         'focus_service_id': 'grafana',
         'focus_interface_id': 'grafana-dashboards',
@@ -865,7 +866,7 @@ FIREMAP_SYSTEM_TEMPLATES = [
         'tier': 'P1',
         'base_status': 'warning',
         'keywords': ['nginx', 'gateway', 'dns', 'cdn', '入口', '网络', '边界', '路由'],
-        'north_star': {'label': '入口成功率', 'value': 99.1, 'target': 99.9, 'unit': '%', 'direction': 'higher'},
+        'core_metric': {'label': '入口成功率', 'value': 99.1, 'target': 99.9, 'unit': '%', 'direction': 'higher'},
         'summary': '入口侧的 4xx / 5xx 有轻微波动，影响多个业务系统。',
         'focus_service_id': 'nginx-ingress',
         'focus_interface_id': 'ingress-api',
@@ -1074,13 +1075,13 @@ def _system_posture_environments(templates):
 
 
 def _system_posture_default_metric(system):
-    north_star = system.north_star if isinstance(system.north_star, dict) else {}
+    core_metric = system.core_metric if isinstance(system.core_metric, dict) else {}
     return {
-        'label': north_star.get('label') or '可用率',
-        'value': north_star.get('value', 99),
-        'target': north_star.get('target', 99.9),
-        'unit': north_star.get('unit') or '%',
-        'direction': north_star.get('direction') or 'higher',
+        'label': core_metric.get('label') or '可用率',
+        'value': core_metric.get('value', 99),
+        'target': core_metric.get('target', 99.9),
+        'unit': core_metric.get('unit') or '%',
+        'direction': core_metric.get('direction') or 'higher',
     }
 
 
@@ -1096,7 +1097,7 @@ def _system_posture_builtin_form(template):
         'base_status': template.get('base_status') or 'unknown',
         'health_score': template.get('health_score'),
         'keywords': template.get('keywords') or [],
-        'north_star': template.get('north_star') or {},
+        'core_metric': template.get('core_metric') or {},
         'metrics': template.get('metrics') or [],
         'service_specs': template.get('service_specs') or [],
         'dependencies': template.get('dependencies') or [],
@@ -1113,29 +1114,33 @@ def _system_posture_builtin_form(template):
 def _system_posture_system_to_template(system, builtin_backed=False, builtin_template=None):
     system_id = f'custom-{system.id}'
     slug = _system_posture_slug(system.name, f'custom-{system.id}')
-    north_star = _system_posture_default_metric(system)
+    core_metric = _system_posture_default_metric(system)
     service_specs = system.service_specs if isinstance(system.service_specs, list) else []
     dependencies = system.dependencies if isinstance(system.dependencies, list) else []
     builtin_service_specs = builtin_template.get('service_specs') if isinstance(builtin_template, dict) and isinstance(builtin_template.get('service_specs'), list) else []
     builtin_dependencies = builtin_template.get('dependencies') if isinstance(builtin_template, dict) and isinstance(builtin_template.get('dependencies'), list) else []
     if builtin_backed:
         service_specs = _merge_builtin_service_specs(service_specs, builtin_service_specs)
+        if not service_specs and builtin_service_specs:
+            service_specs = copy.deepcopy(builtin_service_specs)
         dependencies = _merge_builtin_dependencies(dependencies, builtin_dependencies)
+        if not dependencies and builtin_dependencies:
+            dependencies = copy.deepcopy(builtin_dependencies)
     metrics = system.metrics if isinstance(system.metrics, list) else []
     configured_rule_config = system.rule_config if isinstance(system.rule_config, dict) else {}
     builtin_rule_config = builtin_template.get('rule_config') if isinstance(builtin_template, dict) and isinstance(builtin_template.get('rule_config'), dict) else {}
     rule_config = _deep_merge_dict(builtin_rule_config, configured_rule_config) if builtin_backed else configured_rule_config
-    default_north_star = (
-        north_star.get('label') == '可用率'
-        and north_star.get('value') == 99
-        and north_star.get('target') == 99.9
-        and north_star.get('unit') == '%'
-        and north_star.get('direction') == 'higher'
+    default_core_metric = (
+        core_metric.get('label') == '可用率'
+        and core_metric.get('value') == 99
+        and core_metric.get('target') == 99.9
+        and core_metric.get('unit') == '%'
+        and core_metric.get('direction') == 'higher'
     )
-    north_star_configured = (
-        isinstance(system.north_star, dict)
-        and bool(system.north_star)
-        and not (default_north_star and not metrics and not service_specs and not dependencies and not configured_rule_config)
+    core_metric_configured = (
+        isinstance(system.core_metric, dict)
+        and bool(system.core_metric)
+        and not (default_core_metric and not metrics and not service_specs and not dependencies and not configured_rule_config)
     )
     keywords = system.keywords if isinstance(system.keywords, list) else []
     playbook = system.playbook if isinstance(system.playbook, list) else []
@@ -1151,8 +1156,8 @@ def _system_posture_system_to_template(system, builtin_backed=False, builtin_tem
         'base_status': system.base_status,
         'health_score': system.health_score,
         'keywords': keywords,
-        'north_star': north_star,
-        'north_star_configured': north_star_configured,
+        'core_metric': core_metric,
+        'core_metric_configured': core_metric_configured,
         'metrics': metrics,
         'service_specs': service_specs,
         'dependencies': dependencies,
@@ -1181,8 +1186,8 @@ def _system_posture_system_to_template(system, builtin_backed=False, builtin_tem
         'base_status': system.base_status,
         'health_score': system.health_score,
         'keywords': keywords,
-        'north_star': north_star,
-        'north_star_configured': north_star_configured,
+        'core_metric': core_metric,
+        'core_metric_configured': core_metric_configured,
         'metrics': metrics,
         'service_specs': service_specs,
         'dependencies': dependencies,
@@ -1279,9 +1284,9 @@ def _primary_slo_metric(metrics):
     return next((metric for metric in slo_metrics if _metric_float(metric, 'value') is not None), slo_metrics[0] if slo_metrics else {})
 
 
-def _aggregate_slo_metric(metrics=None, child_metrics=None, fallback_label='汇总 SLI'):
+def _aggregate_slo_metric(metrics=None, child_metrics=None, fallback_label='汇总 SLI', prefer_child_metrics=False):
     own_metric = _primary_slo_metric(metrics)
-    if own_metric:
+    if own_metric and not prefer_child_metrics:
         return own_metric
     candidates = [
         _normalize_metric(metric)
@@ -1289,7 +1294,7 @@ def _aggregate_slo_metric(metrics=None, child_metrics=None, fallback_label='汇�
         if isinstance(metric, dict) and _is_slo_metric(metric)
     ]
     if not candidates:
-        return {}
+        return own_metric or {}
     percent_candidates = [
         metric for metric in candidates
         if metric.get('direction') == 'higher'
@@ -1365,6 +1370,9 @@ def _aggregate_health_score(metrics=None, child_scores=None, dependency_scores=N
 
 
 def _aggregate_status(metrics=None, child_statuses=None, dependency_statuses=None, base_status='unknown', health_score=None):
+    metric_statuses = [_metric_status(metric) for metric in metrics or []]
+    if 'critical' in metric_statuses:
+        return 'critical'
     own_slo = _primary_slo_metric(metrics)
     if own_slo:
         return _metric_status(own_slo)
@@ -1526,7 +1534,7 @@ ECOMMERCE_FIREMAP_RULE_CONFIG = {
             },
             'service_success_rate': {
                 'labels': ['service'],
-                'query': '100 * sum by (service) (rate(ecommerce_http_requests_total{namespace="{namespace}",service=~"{services}",status!~"5.."}[{window}])) / clamp_min(sum by (service) (rate(ecommerce_http_requests_total{namespace="{namespace}",service=~"{services}"}[{window}])), 0.000001)',
+                'query': '100 * sum by (service) (rate(ecommerce_http_requests_total{namespace="{namespace}",service=~"{services}",status!~"[45].."}[{window}])) / clamp_min(sum by (service) (rate(ecommerce_http_requests_total{namespace="{namespace}",service=~"{services}"}[{window}])), 0.000001)',
             },
             'service_2xx_rate': {
                 'labels': ['service'],
@@ -1543,7 +1551,7 @@ ECOMMERCE_FIREMAP_RULE_CONFIG = {
             },
             'path_success_rate': {
                 'labels': ['service', 'path'],
-                'query': '100 * sum by (service,path) (rate(ecommerce_http_requests_total{namespace="{namespace}",service=~"{services}",status!~"5.."}[{window}])) / clamp_min(sum by (service,path) (rate(ecommerce_http_requests_total{namespace="{namespace}",service=~"{services}"}[{window}])), 0.000001)',
+                'query': '100 * sum by (service,path) (rate(ecommerce_http_requests_total{namespace="{namespace}",service=~"{services}",status!~"[45].."}[{window}])) / clamp_min(sum by (service,path) (rate(ecommerce_http_requests_total{namespace="{namespace}",service=~"{services}"}[{window}])), 0.000001)',
             },
             'path_2xx_rate': {
                 'labels': ['service', 'path'],
@@ -1568,7 +1576,7 @@ ECOMMERCE_FIREMAP_RULE_CONFIG = {
             },
         },
     },
-    'north_star': {
+    'core_metric': {
         'metric': 'checkout_success_rate',
         'label': '下单成功率',
         'target': 99,
@@ -1631,11 +1639,32 @@ ECOMMERCE_FIREMAP_RULE_CONFIG = {
             'label': '库存冲突',
             'metric': 'checkout_conflict_rate',
             'min_rate': 1,
-            'critical_rate': 50,
+            'critical_rate': 1,
             'min_rps': 0.001,
+            'count_as_fault': True,
             'zero_success_is_critical': True,
             'target_service_id': 'inventory',
             'target_interface_id': 'inventory-availability',
+            'affected_services': [
+                {
+                    'service_id': 'api-gateway',
+                    'interface_id': 'gateway-checkout',
+                    'metric_label': 'Checkout 409占比',
+                    'message': '下单入口返回 409，需要继续下钻库存与订单链路。',
+                },
+                {
+                    'service_id': 'order',
+                    'interface_id': 'order-create',
+                    'metric_label': '订单受影响',
+                    'message': '订单创建被库存冲突拒绝，需要核对订单写入前后的库存校验。',
+                },
+                {
+                    'service_id': 'inventory',
+                    'interface_id': 'inventory-availability',
+                    'metric_label': '库存冲突率',
+                    'message': '库存可用性校验返回冲突，优先检查库存余量与补货任务。',
+                },
+            ],
             'metric_label': '库存冲突率',
             'warning_message': 'Checkout 409 占比抬头，优先检查库存余量、补货任务和订单库存校验链路。',
             'critical_message': 'Checkout 409 持续发生，当前更像库存不足或库存已耗尽导致的业务拒单。',
@@ -1706,6 +1735,35 @@ def _merge_builtin_dependencies(configured_dependencies, builtin_dependencies):
     return merged
 
 
+def _merge_ecommerce_root_cause_rule_defaults(rule_config):
+    if not isinstance(rule_config, dict):
+        return {}
+    normalized = copy.deepcopy(rule_config)
+    default_rules = ECOMMERCE_FIREMAP_RULE_CONFIG.get('root_cause_rules')
+    rules = normalized.get('root_cause_rules')
+    if not isinstance(default_rules, list) or not isinstance(rules, list):
+        return normalized
+    defaults_by_id = {
+        rule.get('id'): rule
+        for rule in default_rules
+        if isinstance(rule, dict) and rule.get('id')
+    }
+    defaults_by_target = {
+        rule.get('target_service_id'): rule
+        for rule in default_rules
+        if isinstance(rule, dict) and rule.get('target_service_id')
+    }
+    normalized['root_cause_rules'] = [
+        _deep_merge_dict(
+            defaults_by_id.get(rule.get('id')) or defaults_by_target.get(rule.get('target_service_id')) or {},
+            rule,
+        )
+        if isinstance(rule, dict) else rule
+        for rule in rules
+    ]
+    return normalized
+
+
 def _normalize_system_posture_service_specs(service_specs, rule_config):
     drilldown = rule_config.get('drilldown') if isinstance(rule_config.get('drilldown'), dict) else {}
     drilldown_services = drilldown.get('services') if isinstance(drilldown.get('services'), list) else []
@@ -1736,7 +1794,9 @@ def _normalize_system_posture_service_specs(service_specs, rule_config):
 def _system_posture_rule_config(template):
     configured = template.get('rule_config') if isinstance(template.get('rule_config'), dict) else {}
     if _is_ecommerce_system_posture_template(template):
-        return _deep_merge_dict(ECOMMERCE_FIREMAP_RULE_CONFIG, configured)
+        if isinstance(configured.get('core_metric'), dict) and not isinstance(configured.get('core_metric'), dict):
+            configured = {**configured, 'core_metric': configured.get('core_metric')}
+        return _merge_ecommerce_root_cause_rule_defaults(_deep_merge_dict(ECOMMERCE_FIREMAP_RULE_CONFIG, configured))
     return configured
 
 
@@ -1815,6 +1875,23 @@ def _rule_service_pattern(rule_config):
     return str(rule_config.get('service_pattern') or ECOMMERCE_SERVICE_PATTERN).strip() or ECOMMERCE_SERVICE_PATTERN
 
 
+def _system_posture_core_metric_config(rule_config):
+    if not isinstance(rule_config, dict):
+        return {}
+    core_metric = rule_config.get('core_metric')
+    if isinstance(core_metric, dict):
+        return core_metric
+    core_metric = rule_config.get('core_metric')
+    return core_metric if isinstance(core_metric, dict) else {}
+
+
+def _system_posture_explicit_core_metric_config(rule_config):
+    if not isinstance(rule_config, dict):
+        return {}
+    core_metric = rule_config.get('core_metric')
+    return core_metric if isinstance(core_metric, dict) else {}
+
+
 def _render_system_posture_promql(query, rule_config):
     return (
         str(query or '')
@@ -1826,7 +1903,15 @@ def _render_system_posture_promql(query, rule_config):
 
 def _is_ecommerce_system_posture_template(template):
     name = str(template.get('name') or '').strip()
-    return name == ECOMMERCE_FIREMAP_NAME or template.get('id') == 'commerce-core'
+    if name == ECOMMERCE_FIREMAP_NAME or template.get('id') == 'commerce-core':
+        return True
+    rule_config = template.get('rule_config') if isinstance(template.get('rule_config'), dict) else {}
+    prometheus_config = rule_config.get('prometheus') if isinstance(rule_config.get('prometheus'), dict) else {}
+    scalar_rules = prometheus_config.get('scalars') if isinstance(prometheus_config.get('scalars'), dict) else {}
+    if 'checkout_success_rate' in scalar_rules:
+        return True
+    core_metric = _system_posture_core_metric_config(rule_config)
+    return str(core_metric.get('metric') or '').strip() == 'checkout_success_rate'
 
 
 def _safe_float(value):
@@ -2327,8 +2412,8 @@ def _ecommerce_availability_workloads(rule_config):
 
 
 def _ecommerce_slo_target(rule_config, default=99):
-    north_star = rule_config.get('north_star') if isinstance(rule_config.get('north_star'), dict) else {}
-    target = _safe_float(north_star.get('target'))
+    core_metric = _system_posture_core_metric_config(rule_config)
+    target = _safe_float(core_metric.get('target'))
     return target if target is not None else default
 
 
@@ -2393,6 +2478,72 @@ def _ecommerce_root_cause_rules(rule_config):
     return [item for item in rules if isinstance(item, dict)]
 
 
+def _ecommerce_conflict_counts_as_fault(rule_config):
+    for rule in _ecommerce_root_cause_rules(rule_config):
+        if rule.get('id') == 'inventory-conflict' or rule.get('target_service_id') == 'inventory':
+            return _config_bool(rule.get('count_as_fault'), False)
+    return False
+
+
+def _ecommerce_rule_affected_services(rule):
+    if not isinstance(rule, dict):
+        return []
+    configured = rule.get('affected_services') if isinstance(rule.get('affected_services'), list) else []
+    affected = []
+    seen = set()
+    for item in configured:
+        if not isinstance(item, dict):
+            continue
+        service_id = str(item.get('service_id') or item.get('id') or '').strip()
+        if not service_id:
+            continue
+        interface_id = str(item.get('interface_id') or '').strip()
+        key = (service_id, interface_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        affected.append({
+            'service_id': service_id,
+            'interface_id': interface_id,
+            'metric_label': str(item.get('metric_label') or rule.get('metric_label') or rule.get('label') or '').strip(),
+            'message': str(item.get('message') or item.get('hint') or '').strip(),
+        })
+    legacy_service_id = str(rule.get('target_service_id') or '').strip()
+    if legacy_service_id:
+        legacy_interface_id = str(rule.get('target_interface_id') or '').strip()
+        key = (legacy_service_id, legacy_interface_id)
+        if key not in seen:
+            affected.append({
+                'service_id': legacy_service_id,
+                'interface_id': legacy_interface_id,
+                'metric_label': str(rule.get('metric_label') or rule.get('label') or '').strip(),
+                'message': '',
+            })
+    return affected
+
+
+def _ecommerce_affected_service(rule, service_id):
+    service_id = str(service_id or '').strip()
+    for item in _ecommerce_rule_affected_services(rule):
+        if item.get('service_id') == service_id:
+            return item
+    return {}
+
+
+def _ecommerce_affected_interface(rule, service_id, interface_id):
+    service_id = str(service_id or '').strip()
+    interface_id = str(interface_id or '').strip()
+    fallback = {}
+    for item in _ecommerce_rule_affected_services(rule):
+        if item.get('service_id') != service_id:
+            continue
+        if item.get('interface_id') == interface_id:
+            return item
+        if not item.get('interface_id'):
+            fallback = item
+    return fallback
+
+
 def _ecommerce_inventory_conflict_status(snapshot, rule_config):
     matched_rule = {}
     for rule in _ecommerce_root_cause_rules(rule_config):
@@ -2418,7 +2569,9 @@ def _ecommerce_inventory_conflict_status(snapshot, rule_config):
         min_rps = _safe_float(health_config.get('low_traffic_rps')) or 0.001
     if checkout_rps <= min_rps or conflict_rate < min_rate:
         return '', '', matched_rule
-    if conflict_rate >= critical_rate or (matched_rule.get('zero_success_is_critical') and success_rate == 0):
+    if not _config_bool(matched_rule.get('count_as_fault'), False):
+        return '', matched_rule.get('warning_message') or '', matched_rule
+    if _config_bool(matched_rule.get('count_as_fault'), False) and (conflict_rate >= critical_rate or conflict_rate >= min_rate or (matched_rule.get('zero_success_is_critical') and success_rate == 0)):
         return 'critical', matched_rule.get('critical_message') or matched_rule.get('warning_message') or '', matched_rule
     return '', matched_rule.get('warning_message') or '', matched_rule
 
@@ -2436,8 +2589,11 @@ def _ecommerce_conflict_metric(snapshot, rule_config, label=None):
         unit='%',
         direction='lower',
     )
-    if status_value:
+    if _config_bool(rule.get('count_as_fault'), False) and status_value:
         item['status'] = status_value
+    elif not _config_bool(rule.get('count_as_fault'), False):
+        item['status'] = 'healthy'
+        item['tone'] = 'success'
     return item
 
 
@@ -2449,6 +2605,8 @@ def _ecommerce_health_score(snapshot, rule_config):
     extra_penalty = config.get('success_extra_penalty') if isinstance(config.get('success_extra_penalty'), dict) else {}
     success_rate = snapshot.get('checkout_success_rate')
     conflict_rate = snapshot.get('checkout_conflict_rate') or 0
+    if not _ecommerce_conflict_counts_as_fault(rule_config):
+        conflict_rate = 0
     rate_5xx = snapshot.get('checkout_5xx_rate') or 0
     p95_ms = snapshot.get('checkout_p95_ms')
     checkout_rps = snapshot.get('checkout_rps')
@@ -2491,36 +2649,65 @@ def _ecommerce_health_score(snapshot, rule_config):
 
 
 def _ecommerce_status(snapshot, health_score, rule_config):
-    north_star = rule_config.get('north_star') if isinstance(rule_config.get('north_star'), dict) else {}
-    success_rate = snapshot.get('checkout_success_rate')
     runtime_availability = snapshot.get('runtime_availability')
-    if runtime_availability is not None and runtime_availability < 100:
-        return 'critical'
-    target = _safe_float(north_star.get('target')) or 99
-    if success_rate is None:
+    target = _ecommerce_slo_target(rule_config)
+    if runtime_availability is None:
         return 'unknown'
-    return 'healthy' if success_rate >= target else 'critical'
+    return 'healthy' if runtime_availability >= target else 'critical'
 
 
-def _build_ecommerce_interface_metrics(snapshot, rule_config, service_id, path, target_ms):
+def _ecommerce_path_success(snapshot, service_id, path):
     key = (service_id, path)
     success = snapshot.get('path_success_rate', {}).get(key)
-    if service_id == 'api-gateway' and path == '/api/checkout':
-        success = snapshot.get('checkout_success_rate')
-    elif service_id in {'order'}:
+    if service_id in {'order'}:
         success = snapshot.get('path_2xx_rate', {}).get(key, success)
-    north_star = rule_config.get('north_star') if isinstance(rule_config.get('north_star'), dict) else {}
-    success_target = _safe_float(north_star.get('target')) or 99
+    return success
+
+
+def _ecommerce_service_success_from_paths(snapshot, service_id, paths):
+    weighted_total = 0
+    total_rps = 0
+    values_without_rps = []
+    for item in paths if isinstance(paths, list) else []:
+        if not isinstance(item, dict) or not item.get('path'):
+            continue
+        key = (service_id, item.get('path'))
+        success = _ecommerce_path_success(snapshot, service_id, item.get('path'))
+        if success is None:
+            continue
+        rps = snapshot.get('path_rps', {}).get(key)
+        if rps is not None and rps > 0:
+            weighted_total += success * rps
+            total_rps += rps
+        else:
+            values_without_rps.append(success)
+    if total_rps > 0:
+        return weighted_total / total_rps
+    if values_without_rps:
+        return sum(values_without_rps) / len(values_without_rps)
+    return None
+
+
+def _build_ecommerce_interface_metrics(snapshot, rule_config, service_id, path_config, target_ms, conflict_rule=None, conflict_status=''):
+    path = path_config.get('path') if isinstance(path_config, dict) else path_config
+    interface_id = path_config.get('id') if isinstance(path_config, dict) else ''
+    key = (service_id, path)
+    success = _ecommerce_path_success(snapshot, service_id, path)
+    core_metric = _system_posture_core_metric_config(rule_config)
+    success_target = _safe_float(core_metric.get('target')) or 99
     rps_target = _safe_float(_ecommerce_scalar_rule(rule_config, 'checkout_rps').get('target')) or 0.01
     metrics = [
         _metric('成功率', success, success_target, '%', 'higher'),
         _metric('P95', snapshot.get('path_p95_ms', {}).get(key), target_ms, 'ms', 'lower', digits=0),
         _metric('RPS', snapshot.get('path_rps', {}).get(key), rps_target, '', 'higher', digits=3),
     ]
-    if service_id == 'api-gateway' and path == '/api/checkout':
-        metrics.append(_ecommerce_conflict_metric(snapshot, rule_config))
-    if service_id == 'inventory' and path == '/availability':
-        metrics.append(_ecommerce_conflict_metric(snapshot, rule_config, label='库存冲突率'))
+    affected_interface = _ecommerce_affected_interface(conflict_rule or {}, service_id, interface_id)
+    if affected_interface and conflict_status:
+        metrics.append(_ecommerce_conflict_metric(
+            snapshot,
+            rule_config,
+            label=affected_interface.get('metric_label') or conflict_rule.get('metric_label') or conflict_rule.get('label'),
+        ))
     return metrics
 
 
@@ -2528,9 +2715,9 @@ def _build_ecommerce_live_service_specs(snapshot, rule_config):
     services = []
     conflict_status, conflict_hint, conflict_rule = _ecommerce_inventory_conflict_status(snapshot, rule_config)
     drilldown = rule_config.get('drilldown') if isinstance(rule_config.get('drilldown'), dict) else {}
-    configured_services = drilldown.get('services') if isinstance(drilldown.get('services'), list) else ECOMMERCE_SERVICE_SPECS
-    north_star = rule_config.get('north_star') if isinstance(rule_config.get('north_star'), dict) else {}
-    success_target = _safe_float(north_star.get('target')) or 99
+    configured_services = drilldown.get('services') if isinstance(drilldown.get('services'), list) else []
+    core_metric = _system_posture_core_metric_config(rule_config)
+    success_target = _safe_float(core_metric.get('target')) or 99
     rps_target = _safe_float(_ecommerce_scalar_rule(rule_config, 'checkout_rps').get('target')) or 0.01
     for item in configured_services:
         if not isinstance(item, dict):
@@ -2539,9 +2726,13 @@ def _build_ecommerce_live_service_specs(snapshot, rule_config):
         if not service_id:
             continue
         availability, available, desired = _deployment_availability(snapshot, service_id)
-        success = snapshot.get('service_success_rate', {}).get(service_id)
-        if service_id == 'api-gateway':
-            success = snapshot.get('checkout_success_rate') or success
+        configured_paths = [
+            path for path in (item.get('paths') or [])
+            if isinstance(path, dict)
+        ]
+        success = _ecommerce_service_success_from_paths(snapshot, service_id, configured_paths)
+        if success is None:
+            success = snapshot.get('service_success_rate', {}).get(service_id)
         availability_metric = _metric('副本可用率', availability, 100, '%', 'higher')
         metrics = [
             _metric('成功率', success, success_target, '%', 'higher'),
@@ -2552,24 +2743,32 @@ def _build_ecommerce_live_service_specs(snapshot, rule_config):
             metrics.insert(0, availability_metric)
         else:
             metrics.append(availability_metric)
-        if service_id == conflict_rule.get('target_service_id') and conflict_status:
-            metrics.append(_ecommerce_conflict_metric(snapshot, rule_config, label=conflict_rule.get('metric_label') or '库存冲突率'))
+        affected_service = _ecommerce_affected_service(conflict_rule, service_id)
+        if affected_service and conflict_status:
+            metrics.append(_ecommerce_conflict_metric(
+                snapshot,
+                rule_config,
+                label=affected_service.get('metric_label') or conflict_rule.get('metric_label') or '库存冲突率',
+            ))
         if available is not None and desired is not None:
             metrics.append(_metric('可用副本', available, desired, '个', 'higher', digits=0))
 
         interfaces = []
-        for path in item.get('paths') or []:
-            if not isinstance(path, dict):
-                continue
-            path_metrics = _build_ecommerce_interface_metrics(snapshot, rule_config, service_id, path.get('path'), path.get('target_ms') or item.get('target_ms') or 500)
+        for path in configured_paths:
+            path_metrics = _build_ecommerce_interface_metrics(
+                snapshot,
+                rule_config,
+                service_id,
+                path,
+                path.get('target_ms') or item.get('target_ms') or 500,
+                conflict_rule=conflict_rule,
+                conflict_status=conflict_status,
+            )
             interface_hint = path.get('hint') or ''
             interface_status = _metric_status_rank(path_metrics)
-            if (
-                service_id == conflict_rule.get('target_service_id')
-                and path.get('id') == conflict_rule.get('target_interface_id')
-                and conflict_status
-            ):
-                interface_hint = conflict_hint
+            affected_interface = _ecommerce_affected_interface(conflict_rule, service_id, path.get('id'))
+            if affected_interface and conflict_status:
+                interface_hint = affected_interface.get('message') or conflict_hint
                 if _status_rank(conflict_status) > _status_rank(interface_status):
                     interface_status = conflict_status
             interfaces.append({
@@ -2583,7 +2782,7 @@ def _build_ecommerce_live_service_specs(snapshot, rule_config):
         metric_status = _metric_status_rank(metrics)
         if _status_rank(metric_status) > _status_rank(service_status):
             service_status = metric_status
-        if service_id == conflict_rule.get('target_service_id') and conflict_status and _status_rank(conflict_status) > _status_rank(service_status):
+        if affected_service and conflict_status and _status_rank(conflict_status) > _status_rank(service_status):
             service_status = conflict_status
         services.append({
             'id': service_id,
@@ -2591,7 +2790,7 @@ def _build_ecommerce_live_service_specs(snapshot, rule_config):
             'role': item.get('role') or '',
             'base_status': service_status,
             'metrics': metrics,
-            'hint': conflict_hint if service_id == conflict_rule.get('target_service_id') and conflict_status else item.get('role') or '',
+            'hint': (affected_service.get('message') or conflict_hint) if affected_service and conflict_status else item.get('role') or '',
             'interfaces': interfaces,
         })
     return services
@@ -2600,7 +2799,7 @@ def _build_ecommerce_live_service_specs(snapshot, rule_config):
 def _build_ecommerce_live_dependencies(snapshot, rule_config):
     dependencies = []
     drilldown = rule_config.get('drilldown') if isinstance(rule_config.get('drilldown'), dict) else {}
-    configured_dependencies = drilldown.get('dependencies') if isinstance(drilldown.get('dependencies'), list) else ECOMMERCE_DEPENDENCIES
+    configured_dependencies = drilldown.get('dependencies') if isinstance(drilldown.get('dependencies'), list) else []
     for item in configured_dependencies:
         if not isinstance(item, dict):
             continue
@@ -2680,7 +2879,7 @@ def _load_ecommerce_recent_tempo_traces(access, rule_config, time_context=None):
 
 def _build_ecommerce_unavailable_service_specs(rule_config):
     drilldown = rule_config.get('drilldown') if isinstance(rule_config.get('drilldown'), dict) else {}
-    configured_services = drilldown.get('services') if isinstance(drilldown.get('services'), list) else ECOMMERCE_SERVICE_SPECS
+    configured_services = drilldown.get('services') if isinstance(drilldown.get('services'), list) else []
     services = []
     for item in configured_services:
         if not isinstance(item, dict) or not item.get('id'):
@@ -2697,7 +2896,7 @@ def _build_ecommerce_unavailable_service_specs(rule_config):
 
 def _build_ecommerce_unavailable_dependencies(rule_config):
     drilldown = rule_config.get('drilldown') if isinstance(rule_config.get('drilldown'), dict) else {}
-    configured_dependencies = drilldown.get('dependencies') if isinstance(drilldown.get('dependencies'), list) else ECOMMERCE_DEPENDENCIES
+    configured_dependencies = drilldown.get('dependencies') if isinstance(drilldown.get('dependencies'), list) else []
     dependencies = []
     for item in configured_dependencies:
         if not isinstance(item, dict) or not item.get('id'):
@@ -2720,7 +2919,7 @@ def _ecommerce_unavailable_live_template(template, rule_config, client=None, war
         'rule_config': rule_config,
         'base_status': 'critical',
         'health_score': 0,
-        'north_star': {
+        'core_metric': {
             'label': '环境可用率',
             'value': 0,
             'target': slo_target,
@@ -2741,7 +2940,7 @@ def _ecommerce_unavailable_live_template(template, rule_config, client=None, war
             'window': _rule_window(rule_config),
             'namespace': _rule_namespace(rule_config),
             'rule_version': rule_config.get('version'),
-            'north_star_metric': 'runtime_availability',
+            'core_metric_key': 'runtime_availability',
             'runtime_availability': 0,
             'unavailable': True,
             'warnings': warnings[:3],
@@ -2773,10 +2972,19 @@ def _apply_ecommerce_live_template(template, access, time_context=None):
 
     health_score = _ecommerce_health_score(snapshot, rule_config)
     status_value = _ecommerce_status(snapshot, health_score, rule_config)
-    north_star_config = rule_config.get('north_star') if isinstance(rule_config.get('north_star'), dict) else {}
-    north_metric_key = north_star_config.get('metric') or 'checkout_success_rate'
-    north_metric_rule = _ecommerce_scalar_rule(rule_config, north_metric_key)
-    north_value = snapshot.get(north_metric_key)
+    core_metric_config = _system_posture_core_metric_config(rule_config)
+    explicit_core_metric = _system_posture_explicit_core_metric_config(rule_config)
+    core_metric_key = core_metric_config.get('metric') or 'runtime_availability'
+    core_metric_rule = _ecommerce_scalar_rule(rule_config, core_metric_key)
+    core_metric_value = snapshot.get(core_metric_key)
+    if core_metric_key == 'runtime_availability':
+        core_metric_rule = {
+            'label': '环境可用率',
+            'target': core_metric_config.get('target') if core_metric_config.get('target') is not None else 90,
+            'unit': '%',
+            'direction': 'higher',
+        }
+        core_metric_config = {}
     success_rate = snapshot.get('checkout_success_rate')
     conflict_rate = snapshot.get('checkout_conflict_rate')
     p95_ms = snapshot.get('checkout_p95_ms')
@@ -2785,7 +2993,7 @@ def _apply_ecommerce_live_template(template, access, time_context=None):
     recent_traces, trace_context = _load_ecommerce_recent_tempo_traces(access, rule_config, time_context=time_context)
     source_text = 'Grafana 代理 Prometheus' if snapshot.get('source') == 'grafana' else 'Prometheus'
     summary_parts = [
-        f'{snapshot.get("time_label") or "过去 " + (snapshot.get("window") or ECOMMERCE_PROMQL_WINDOW)} {north_star_config.get("label") or north_metric_rule.get("label") or "北极星指标"} {_round_system_posture_value(north_value)}{north_star_config.get("unit") or north_metric_rule.get("unit") or ""}',
+        f'{snapshot.get("time_label") or "过去 " + (snapshot.get("window") or ECOMMERCE_PROMQL_WINDOW)} {core_metric_config.get("label") or core_metric_rule.get("label") or "核心指标"} {_round_system_posture_value(core_metric_value)}{core_metric_config.get("unit") or core_metric_rule.get("unit") or ""}',
         f'Checkout 409 占比 {_round_system_posture_value(conflict_rate)}%' if conflict_rate is not None and conflict_rate >= 1 else '',
         f'网关 P95 {_round_system_posture_value(p95_ms, digits=0)}ms' if p95_ms is not None else '',
         f'Checkout RPS {_round_system_posture_value(rps, digits=3)}' if rps is not None else '',
@@ -2818,12 +3026,12 @@ def _apply_ecommerce_live_template(template, access, time_context=None):
             '/api/checkout',
             'ecommerce',
         ])),
-        'north_star': {
-            'label': north_star_config.get('label') or north_metric_rule.get('label') or '下单成功率',
-            'value': _round_system_posture_value(north_value),
-            'target': north_star_config.get('target') if north_star_config.get('target') is not None else north_metric_rule.get('target', 99),
-            'unit': north_star_config.get('unit') or north_metric_rule.get('unit') or '%',
-            'direction': north_star_config.get('direction') or north_metric_rule.get('direction') or 'higher',
+        'core_metric': {
+            'label': core_metric_config.get('label') or core_metric_rule.get('label') or '下单成功率',
+            'value': _round_system_posture_value(core_metric_value),
+            'target': core_metric_config.get('target') if core_metric_config.get('target') is not None else core_metric_rule.get('target', 99),
+            'unit': core_metric_config.get('unit') or core_metric_rule.get('unit') or '%',
+            'direction': core_metric_config.get('direction') or core_metric_rule.get('direction') or 'higher',
         },
         'metrics': _build_ecommerce_overview_metrics(snapshot, rule_config),
         'summary': live_summary or template.get('summary') or '',
@@ -2843,7 +3051,7 @@ def _apply_ecommerce_live_template(template, access, time_context=None):
             'time_label': snapshot.get('time_label'),
             'namespace': snapshot.get('namespace'),
             'rule_version': rule_config.get('version'),
-            'north_star_metric': north_metric_key,
+            'core_metric_key': core_metric_key,
             'runtime_availability': _round_system_posture_value(snapshot.get('runtime_availability')),
             'health_formula': (rule_config.get('health_score') or {}).get('formula') if isinstance(rule_config.get('health_score'), dict) else '',
             'warnings': snapshot.get('warnings')[:3],
@@ -2981,8 +3189,10 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
             interface_health_score = _cap_health_score_by_status(interface_health_score, interface_status)
             interface_slo = _aggregate_slo_metric(interface_metrics)
             if interface_slo:
-                interface_status = _metric_status(interface_slo)
-                interface_health_score = _metric_health_score(interface_slo)
+                slo_status = _metric_status(interface_slo)
+                if _status_rank(slo_status) > _status_rank(interface_status):
+                    interface_status = slo_status
+                    interface_health_score = _metric_health_score(interface_slo)
             else:
                 interface_status = 'unknown'
                 interface_health_score = None
@@ -2993,7 +3203,7 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
                 'status': interface_status,
                 'tone': _status_tone(interface_status),
                 'health_score': interface_health_score,
-                'north_star': interface_slo,
+                'core_metric': interface_slo,
                 'hint': interface.get('hint') or '',
                 'metrics': interface_metrics,
                 'children': [],
@@ -3027,12 +3237,14 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         service_health_score = _cap_health_score_by_status(service_health_score, service_status)
         service_slo = _aggregate_slo_metric(
             service_metrics,
-            child_metrics=[child.get('north_star') for child in service_children_nodes],
+            child_metrics=[child.get('core_metric') for child in service_children_nodes],
             fallback_label='服务 SLI',
         )
         if service_slo:
-            service_status = _metric_status(service_slo)
-            service_health_score = _metric_health_score(service_slo)
+            slo_status = _metric_status(service_slo)
+            if _status_rank(slo_status) > _status_rank(service_status):
+                service_status = slo_status
+                service_health_score = _metric_health_score(service_slo)
         else:
             service_status = 'unknown'
             service_health_score = None
@@ -3044,7 +3256,7 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
             'status': service_status,
             'tone': _status_tone(service_status),
             'health_score': service_health_score,
-            'north_star': service_slo,
+            'core_metric': service_slo,
             'metrics': service_metrics,
             'hint': service.get('hint') or service.get('role') or '',
             'children': service_children_nodes,
@@ -3087,8 +3299,10 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         dep_health_score = _cap_health_score_by_status(dep_health_score, dep_status)
         dep_slo = _aggregate_slo_metric(dep_metrics)
         if dep_slo:
-            dep_status = _metric_status(dep_slo)
-            dep_health_score = _metric_health_score(dep_slo)
+            slo_status = _metric_status(dep_slo)
+            if _status_rank(slo_status) > _status_rank(dep_status):
+                dep_status = slo_status
+                dep_health_score = _metric_health_score(dep_slo)
         else:
             dep_status = 'unknown'
             dep_health_score = None
@@ -3100,7 +3314,7 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
             'status': dep_status,
             'tone': _status_tone(dep_status),
             'health_score': dep_health_score,
-            'north_star': dep_slo,
+            'core_metric': dep_slo,
             'metrics': dep_metrics,
             'impact': dep.get('impact') or '',
         })
@@ -3191,15 +3405,17 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
             'keyword': template.get('focus_keyword') or template['name'],
         }
 
+    core_metric_source = template.get('core_metric') if isinstance(template.get('core_metric'), dict) else template.get('core_metric')
+    core_metric_configured = template.get('core_metric_configured', template.get('core_metric_configured', True))
     selected_metrics = [
         _normalize_metric(metric)
-        for metric in template.get('north_star') and template.get('north_star_configured', True) and [
+        for metric in core_metric_source and ((template.get('live') or {}).get('enabled') or core_metric_configured) and [
             {
-                'label': template['north_star']['label'],
-                'value': template['north_star']['value'],
-                'target': template['north_star']['target'],
-                'unit': template['north_star']['unit'],
-                'direction': template['north_star']['direction'],
+                'label': core_metric_source.get('label'),
+                'value': core_metric_source.get('value'),
+                'target': core_metric_source.get('target'),
+                'unit': core_metric_source.get('unit'),
+                'direction': core_metric_source.get('direction'),
             }
         ] or []
     ]
@@ -3232,13 +3448,13 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         )
         health_score = _cap_health_score_by_status(health_score, status)
 
-    north_star_payload = _aggregate_slo_metric(
+    core_metric_payload = _aggregate_slo_metric(
         selected_metrics,
         child_metrics=[
-            *(child.get('north_star') for child in service_children),
-            *(dep.get('north_star') for dep in dependency_children),
+            *(child.get('core_metric') for child in service_children),
         ],
-        fallback_label='系统 SLI',
+        fallback_label='系统成功率',
+        prefer_child_metrics=True,
     )
     runtime_slo = next(
         (
@@ -3249,10 +3465,24 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         None,
     )
     if (template.get('live') or {}).get('enabled') and runtime_slo and _metric_status(runtime_slo) == 'critical':
-        north_star_payload = runtime_slo
-    if north_star_payload:
-        status = _metric_status(north_star_payload)
-        health_score = _metric_health_score(north_star_payload)
+        core_metric_payload = runtime_slo
+    if core_metric_payload:
+        slo_status = _metric_status(core_metric_payload)
+        business_metrics = [
+            metric for metric in selected_metrics
+            if metric.get('label') not in {'未认领告警', '错误 Trace', '错误日志'}
+        ]
+        metric_status = _metric_status_rank(business_metrics)
+        child_statuses = [
+            *(child.get('status') for child in service_children),
+            *(dep.get('status') for dep in dependency_children),
+        ]
+        candidate_statuses = [
+            item for item in [status, slo_status, metric_status, *child_statuses] if item
+        ]
+        status = max(candidate_statuses, key=_status_rank) if candidate_statuses else slo_status
+        if status == slo_status and all(_status_rank(item) <= _status_rank(slo_status) for item in candidate_statuses):
+            health_score = _metric_health_score(core_metric_payload)
     else:
         status = 'unknown'
         health_score = None
@@ -3301,7 +3531,7 @@ def _build_system_posture_system_payload(template, access, catalog=None, evidenc
         'health_score': health_score,
         'summary': template['summary'],
         'keywords': template['keywords'],
-        'north_star': north_star_payload,
+        'core_metric': core_metric_payload,
         'metrics': selected_metrics,
         'children': service_children,
         'dependencies': dependency_children,
@@ -3537,16 +3767,16 @@ def _system_posture_decimal(value):
 
 
 def _system_posture_sla_from_system(system):
-    north_star = system.get('north_star') if isinstance(system.get('north_star'), dict) else {}
-    value = _system_posture_decimal(north_star.get('value'))
-    target = _system_posture_decimal(north_star.get('target'))
+    core_metric = system.get('core_metric') if isinstance(system.get('core_metric'), dict) else {}
+    value = _system_posture_decimal(core_metric.get('value'))
+    target = _system_posture_decimal(core_metric.get('target'))
     if value is None:
         value = _system_posture_decimal(system.get('health_score'))
     return {
         'value': value,
         'target': target,
-        'label': north_star.get('label') or 'SLA',
-        'unit': north_star.get('unit') or '%',
+        'label': core_metric.get('label') or 'SLA',
+        'unit': core_metric.get('unit') or '%',
     }
 
 
@@ -3657,7 +3887,7 @@ def _capture_system_posture_sla_history(request, access, day=None, time_context=
                     'metric_label': str(sla['label'] or 'SLA')[:64],
                     'metric_unit': str(sla['unit'] or '%')[:16],
                     'snapshot': {
-                        'north_star': system.get('north_star') or {},
+                        'core_metric': system.get('core_metric') or {},
                         'signals': system.get('signals') or {},
                         'dependencies': len(system.get('dependencies') or []),
                         'children': len(system.get('children') or []),
@@ -3740,6 +3970,38 @@ def _parse_system_posture_history_day(value):
         return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
     except (TypeError, ValueError):
         return None
+
+
+def _system_posture_history_record_from_live_system(system, day):
+    sla = _system_posture_sla_from_system(system)
+    health_score = system.get('health_score')
+    if health_score is not None:
+        try:
+            health_score = max(0, min(100, int(health_score)))
+        except (TypeError, ValueError):
+            health_score = None
+    return SimpleNamespace(
+        day=day,
+        system_key=system.get('id') or system.get('name') or '',
+        system_name=system.get('name') or system.get('id') or '',
+        environment=system.get('environment') or system.get('env') or system.get('form', {}).get('environment') or 'prod',
+        domain=system.get('domain') or '',
+        status=_system_posture_history_status(system.get('status')),
+        sla_value=sla['value'],
+        sla_target=sla['target'],
+        health_score=health_score,
+        metric_label=str(sla['label'] or 'SLA')[:64],
+        metric_unit=str(sla['unit'] or '%')[:16],
+        captured_at=timezone.now(),
+    )
+
+
+def _system_posture_public_json(value):
+    if isinstance(value, list):
+        return [_system_posture_public_json(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {key: _system_posture_public_json(item) for key, item in value.items()}
 
 
 class SystemPostureEnvironmentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
@@ -4244,7 +4506,7 @@ def observability_system_posture_history(request):
     for day, system_key in existing_pairs:
         existing_by_day.setdefault(day, set()).add(system_key)
     today_existing_keys = existing_by_day.get(latest_day, set())
-    if force_refresh or expected_keys != today_existing_keys:
+    if force_refresh:
         backfill_days.append(latest_day)
     if backfill_enabled:
         for offset in range(days):
@@ -4269,7 +4531,9 @@ def observability_system_posture_history(request):
         .order_by('system_name', 'day')
     )
     system_map = {}
+    response_records = []
     for record in records:
+        response_records.append(record)
         if record.system_key not in system_map:
             environment = environment_lookup.get(record.environment) or {}
             current_sla = current_sla_by_key.get(record.system_key) or {}
@@ -4299,10 +4563,10 @@ def observability_system_posture_history(request):
             'label': day.strftime('%m-%d'),
         })
 
-    return Response({
+    return Response(_system_posture_public_json({
         'days': day_items,
         'systems': list(system_map.values()),
-        'summary': _system_posture_history_summary(records, latest_day),
+        'summary': _system_posture_history_summary(response_records, latest_day),
         'context': {
             'days': days,
             'start_day': start_day.isoformat(),
@@ -4310,7 +4574,7 @@ def observability_system_posture_history(request):
             'captured': captured,
             'source': 'sla_history',
         },
-    })
+    }))
 
 
 @api_view(['GET'])
@@ -4384,7 +4648,7 @@ def observability_system_posture(request):
         navigation.append({'title': '事件墙', 'path': '/events/wall', 'description': '查看变更、同步和审计事件。', 'tone': 'success'})
 
     selected_changes = selected_system.get('timeline') or []
-    return Response({
+    return Response(_system_posture_public_json({
         'summary': summary,
         'systems': systems,
         'environments': _system_posture_environments(templates),
@@ -4413,7 +4677,7 @@ def observability_system_posture(request):
             },
             'can_manage': access.get('system_posture_manage'),
         },
-    })
+    }))
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

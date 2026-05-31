@@ -1,13 +1,22 @@
 ﻿<template>
-  <div class="fade-in">
-    <div class="table-card">
-      <div class="filter-bar">
-        <el-input v-model="search" placeholder="搜索名称 / 地址" clearable style="width: 280px"
-          :prefix-icon="Search" @input="fetchData" />
-        <div class="filter-bar-actions">
+  <div class="fade-in workbench-page-shell">
+    <div class="workbench-card">
+      <div class="workbench-card-head">
+        <div class="workbench-card-title">
+          <strong>数据源清单</strong>
+          <span>维护连接、账号与启停状态，供工单与查询页复用。</span>
+        </div>
+        <div class="workbench-card-actions">
           <el-button v-if="canManageSqlDatasources" type="primary" @click="openDialog()">
             <el-icon><Plus /></el-icon> 新增数据源
           </el-button>
+        </div>
+      </div>
+
+      <div class="workbench-toolbar workbench-toolbar--history">
+        <div class="workbench-toolbar-left">
+          <el-input v-model="search" placeholder="搜索名称 / 地址" clearable style="width: 280px"
+            :prefix-icon="Search" @input="fetchData" />
         </div>
       </div>
 
@@ -50,7 +59,7 @@
         </el-table-column>
       </el-table>
 
-      <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+      <div class="workbench-pagination">
         <el-pagination v-model:current-page="page" :page-size="20" :total="total"
           layout="total, prev, pager, next" @current-change="fetchData" />
       </div>
@@ -230,19 +239,6 @@ onMounted(fetchData)
 </script>
 
 <style scoped>
-.filter-bar-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-
-@media (max-width: 900px) {
-  .filter-bar-actions {
-    width: 100%;
-    justify-content: flex-end;
-  }
-}
 </style>
 
 

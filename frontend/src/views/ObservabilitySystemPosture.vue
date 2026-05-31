@@ -78,7 +78,7 @@
               <div v-if="cardMeta(item)" class="system-card__meta">
                 <span>{{ cardMeta(item) }}</span>
               </div>
-              <div class="north-star">
+              <div class="core-metric">
                 <span>{{ cardSlo(item).label || 'SLI' }}</span>
                 <strong>{{ formatMetric(cardSlo(item)) }}</strong>
                 <em>{{ cardSlo(item).target !== undefined ? `SLO${targetText(cardSlo(item))}` : kindLabel(item.kind) }}</em>
@@ -157,7 +157,7 @@
                   <div v-if="cardMeta(item)" class="system-card__meta">
                     <span>{{ cardMeta(item) }}</span>
                   </div>
-                  <div class="north-star">
+                  <div class="core-metric">
                     <span>{{ cardSlo(item).label || 'SLI' }}</span>
                     <strong>{{ formatMetric(cardSlo(item)) }}</strong>
                     <em>{{ cardSlo(item).target !== undefined ? `SLO${targetText(cardSlo(item))}` : kindLabel(item.kind) }}</em>
@@ -410,14 +410,14 @@
 
         <div class="form-section">
           <div class="form-section__head">
-            <strong>SLO 目标</strong>
+            <strong>核心指标目标</strong>
             <span>当前值和健康分由实时数据计算，不在这里手工配置</span>
           </div>
           <div class="form-grid form-grid--slo">
-            <el-form-item label="SLO 指标">
+            <el-form-item label="核心指标">
               <el-input v-model="systemForm.metric_label" placeholder="例如：下单成功率" />
             </el-form-item>
-            <el-form-item label="SLO 目标">
+            <el-form-item label="目标值">
               <el-input-number v-model="systemForm.metric_target" :precision="2" controls-position="right" />
             </el-form-item>
             <el-form-item label="单位">
@@ -444,7 +444,7 @@
               :rows="14"
               spellcheck="false"
               class="json-editor"
-              placeholder='例如：{"north_star":{"metric":"checkout_success_rate","target":99},"drilldown":{"services":[],"dependencies":[]}}'
+              placeholder='例如：{"core_metric":{"metric":"checkout_success_rate","target":90},"root_cause_rules":[{"id":"inventory-conflict","count_as_fault":true}],"drilldown":{"services":[{"id":"api-gateway","paths":[{"id":"gateway-checkout","path":"/api/checkout"}]}],"dependencies":[{"id":"postgres","role":"downstream"}]}}'
             />
           </el-form-item>
         </div>
@@ -465,14 +465,24 @@
       class="system-posture-help-dialog"
     >
       <div class="json-help">
-        <p>常用配置包含 SLO 指标、层级下钻结构、依赖拓扑。查询窗口由页面时间选择器控制，PromQL 中保留 {window} 占位即可。</p>
+        <p>常用配置包含核心指标、层级下钻结构、依赖拓扑。查询窗口由页面时间选择器控制，PromQL 中保留 {window} 占位即可。</p>
+        <ul>
+          <li><strong>core_metric</strong>：卡片核心指标定义；metric 对应 prometheus.scalars 中的指标 key，label/target/unit/direction 控制展示名称、目标值、单位和阈值方向。</li>
+          <li><strong>core_metric.metric</strong>：指定系统核心指标使用哪个单值查询结果；当配置了下钻层级时，页面会优先按下钻层级汇总展示，缺少下钻数据时再使用该指标兜底。</li>
+          <li><strong>prometheus.scalars</strong>：单值指标查询；query 返回 Prometheus scalar/vector 单值，scale 可把秒转换成毫秒。</li>
+          <li><strong>checkout_success_rate</strong>：示例中的业务成功率指标 key，定义在 prometheus.scalars 下；可被 core_metric.metric、健康分公式和概览指标引用，实际系统可按自己的指标命名替换。</li>
+          <li><strong>prometheus.series</strong>：服务、接口维度查询；labels 决定返回结果用哪些标签拼成 key。</li>
+          <li><strong>root_cause_rules.count_as_fault</strong>：是否把该根因指标计入故障；true 表示命中 min_rate/critical_rate 后影响服务、接口、总状态和健康分，false 表示只展示指标不判故障。</li>
+          <li><strong>drilldown.services</strong>：下钻服务拓扑；现在不会用内置拓扑兜底，服务和接口要在这里写完整。</li>
+          <li><strong>drilldown.dependencies</strong>：外部依赖拓扑；role 可用 upstream 或 downstream。</li>
+        </ul>
         <pre><code>{
   "version": 1,
   "enabled": true,
   "engine": "prometheus-tempo",
   "namespace": "trade",
   "service_pattern": "api-gateway|cart|order|inventory|catalog",
-  "north_star": {
+  "core_metric": {
     "metric": "checkout_success_rate",
     "label": "下单成功率",
     "target": 99,
@@ -517,32 +527,74 @@
       }
     }
   },
+  "root_cause_rules": [
+    {
+      "id": "inventory-conflict",
+      "label": "库存冲突",
+      "metric": "checkout_conflict_rate",
+      "min_rate": 1,
+      "critical_rate": 50,
+      "min_rps": 0.001,
+      "count_as_fault": true,
+      "target_service_id": "inventory",
+      "target_interface_id": "inventory-availability"
+    }
+  ],
   "drilldown": {
     "services": [
       {
-        "id": "checkout-service",
-        "name": "Checkout 服务",
+        "id": "api-gateway",
+        "name": "API 网关",
+        "role": "入口层",
+        "target_ms": 500,
+        "paths": [
+          { "id": "gateway-checkout", "name": "POST /api/checkout", "path": "/api/checkout", "target_ms": 500 },
+          { "id": "gateway-products", "name": "GET /api/products", "path": "/api/products", "target_ms": 350 }
+        ]
+      },
+      {
+        "id": "cart",
+        "name": "购物车服务",
+        "role": "交易前置",
+        "target_ms": 250,
+        "paths": [
+          { "id": "cart-add", "name": "POST /cart/&lt;user_id&gt;/items", "path": "/cart/&lt;user_id&gt;/items", "target_ms": 180 },
+          { "id": "cart-query", "name": "GET /cart/&lt;user_id&gt;", "path": "/cart/&lt;user_id&gt;", "target_ms": 120 }
+        ]
+      },
+      {
+        "id": "order",
+        "name": "订单服务",
         "role": "交易核心",
-        "interfaces": [
-          {
-            "id": "checkout-api",
-            "name": "POST /api/checkout",
-            "hint": "下单入口",
-            "metrics": [
-              { "label": "成功率", "target": 99, "unit": "%", "direction": "higher" }
-            ]
-          }
+        "target_ms": 450,
+        "paths": [
+          { "id": "order-create", "name": "POST /orders", "path": "/orders", "target_ms": 350 }
+        ]
+      },
+      {
+        "id": "inventory",
+        "name": "库存服务",
+        "role": "履约校验",
+        "target_ms": 250,
+        "paths": [
+          { "id": "inventory-availability", "name": "POST /availability", "path": "/availability", "target_ms": 160 }
+        ]
+      },
+      {
+        "id": "catalog",
+        "name": "商品服务",
+        "role": "商品读取",
+        "target_ms": 250,
+        "paths": [
+          { "id": "catalog-list", "name": "GET /products", "path": "/products", "target_ms": 180 },
+          { "id": "catalog-detail", "name": "GET /products/&lt;product_id&gt;", "path": "/products/&lt;product_id&gt;", "target_ms": 180 }
         ]
       }
     ],
     "dependencies": [
-      {
-        "id": "order-db",
-        "name": "订单数据库",
-        "role": "downstream",
-        "kind": "数据库",
-        "impact": "订单写入超时会影响下单成功率"
-      }
+      { "id": "postgres", "name": "PostgreSQL", "role": "downstream", "kind": "数据库" },
+      { "id": "redis", "name": "Redis", "role": "downstream", "kind": "缓存" },
+      { "id": "kafka", "name": "Kafka", "role": "downstream", "kind": "消息队列" }
     ]
   },
   "keywords": ["checkout", "order-service"],
@@ -814,8 +866,8 @@ function cardStatus(item = {}) {
 }
 
 function cardSlo(item = {}) {
-  if (item?.north_star && Object.keys(item.north_star || {}).length) {
-    return item.north_star
+  if (item?.core_metric && Object.keys(item.core_metric || {}).length) {
+    return item.core_metric
   }
   const metrics = Array.isArray(item.metrics) ? item.metrics : []
   return (
@@ -963,7 +1015,8 @@ function targetText(metric = {}) {
 
 function stringifyConfig(value = {}) {
   try {
-    return JSON.stringify(value && typeof value === 'object' && !Array.isArray(value) ? value : {}, null, 2)
+    const normalized = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
+    return JSON.stringify(normalized, null, 2)
   } catch {
     return '{}'
   }
@@ -1181,18 +1234,18 @@ function systemToForm(system = {}) {
   const form = system.form || {}
   const sourceRuleConfig = form.rule_config || system.rule_config || {}
   const ruleConfig = buildRuleConfigStructureFromSystem(system, sourceRuleConfig)
-  const northStar = ruleConfig?.north_star && typeof ruleConfig.north_star === 'object'
-    ? ruleConfig.north_star
-    : form.north_star || system.north_star || {}
+  const coreMetric = ruleConfig?.core_metric && typeof ruleConfig.core_metric === 'object'
+    ? ruleConfig.core_metric
+    : form.core_metric || system.core_metric || {}
   return {
     ...defaultSystemForm(),
     name: form.name || system.name || '',
     environment: form.environment || system.environment || 'prod',
     domain: systemDomainOptions.includes(form.domain || system.domain) ? form.domain || system.domain : '业务域',
-    metric_label: northStar.label || form.north_star?.label || system.north_star?.label || '成功率',
-    metric_target: Number(northStar.target ?? form.north_star?.target ?? system.north_star?.target ?? 99),
-    metric_unit: northStar.unit || '%',
-    metric_direction: northStar.direction || 'higher',
+    metric_label: coreMetric.label || form.core_metric?.label || system.core_metric?.label || '成功率',
+    metric_target: Number(coreMetric.target ?? form.core_metric?.target ?? system.core_metric?.target ?? 99),
+    metric_unit: coreMetric.unit || '%',
+    metric_direction: coreMetric.direction || 'higher',
     rule_config_text: stringifyConfig(ruleConfig),
     sort_order: form.sort_order ?? system.sort_order ?? 100,
   }
@@ -1259,11 +1312,11 @@ function formToPayload(sourceForm = systemForm.value, sourceSystem = editingSyst
   const name = form.name.trim()
   const ruleConfig = parseRuleConfig(form.rule_config_text)
   const formSnapshot = sourceSystem?.form || {}
-  const northStar = formSnapshot.north_star || sourceSystem?.north_star || {}
+  const coreMetric = formSnapshot.core_metric || sourceSystem?.core_metric || {}
   const metric = {
-    ...northStar,
+    ...coreMetric,
     label: form.metric_label.trim() || 'SLO',
-    target: Number(form.metric_target ?? northStar.target ?? 99.9),
+    target: Number(form.metric_target ?? coreMetric.target ?? 99.9),
     unit: form.metric_unit.trim() || '',
     direction: form.metric_direction || 'higher',
   }
@@ -1302,8 +1355,8 @@ function formToPayload(sourceForm = systemForm.value, sourceSystem = editingSyst
     : formSnapshot.keywords || sourceSystem?.keywords || splitText(`${name}，${form.domain}`)
   const effectiveRuleConfig = {
     ...ruleConfig,
-    north_star: {
-      ...(ruleConfig.north_star && typeof ruleConfig.north_star === 'object' ? ruleConfig.north_star : {}),
+    core_metric: {
+      ...(ruleConfig.core_metric && typeof ruleConfig.core_metric === 'object' ? ruleConfig.core_metric : {}),
       label: metric.label,
       target: metric.target,
       unit: metric.unit,
@@ -1318,7 +1371,7 @@ function formToPayload(sourceForm = systemForm.value, sourceSystem = editingSyst
     owner: formSnapshot.owner || sourceSystem?.owner || '',
     summary: formSnapshot.summary || sourceSystem?.summary || '',
     keywords,
-    north_star: metric,
+    core_metric: metric,
     metrics: formSnapshot.metrics || sourceSystem?.metrics || [],
     service_specs: serviceSpecs,
     dependencies,
@@ -2260,7 +2313,7 @@ onUnmounted(() => {
   color: var(--fm-muted);
 }
 
-.north-star {
+.core-metric {
   align-items: center;
   background: rgba(247, 249, 252, 0.88);
   border: 1px solid rgba(226, 232, 240, 0.8);
@@ -2273,25 +2326,25 @@ onUnmounted(() => {
   padding: 8px 10px;
 }
 
-.system-card.is-slo-breached .north-star {
+.system-card.is-slo-breached .core-metric {
   background: rgba(255, 247, 245, 0.72);
   border-color: rgba(216, 57, 49, 0.12);
 }
 
-.system-card.is-slo-breached .north-star em {
+.system-card.is-slo-breached .core-metric em {
   border-color: rgba(216, 57, 49, 0.16);
   color: #ad352f;
 }
 
-.north-star span {
+.core-metric span {
   grid-column: 1;
 }
 
-.north-star strong {
+.core-metric strong {
   grid-column: 1;
 }
 
-.north-star em {
+.core-metric em {
   align-self: center;
   background: #ffffff;
   border: 1px solid rgba(226, 232, 240, 0.9);
@@ -2301,8 +2354,8 @@ onUnmounted(() => {
   padding: 2px 8px;
 }
 
-.north-star span,
-.north-star em,
+.core-metric span,
+.core-metric em,
 .metric-cell span,
 .metric-cell em,
 .dependency-card span,
@@ -2313,7 +2366,7 @@ onUnmounted(() => {
   line-height: 1.45;
 }
 
-.north-star strong {
+.core-metric strong {
   color: var(--fm-text);
   font-size: 18px;
   font-weight: 650;

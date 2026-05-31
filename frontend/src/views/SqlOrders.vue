@@ -1,22 +1,31 @@
 ﻿<template>
-  <div class="fade-in">
-    <div class="table-card">
+  <div class="fade-in workbench-page-shell">
+    <div class="workbench-card">
       <el-empty v-if="!canViewOrders" description="当前账号可提交或处理工单，但没有工单列表查看权限。" />
       <template v-else>
-        <div class="filter-bar">
-          <el-input v-model="search" placeholder="搜索标题 / 提交人" clearable style="width: 260px"
-            :prefix-icon="Search" @input="fetchData" />
-          <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 130px" @change="fetchData">
-            <el-option label="待审核" value="pending" />
-            <el-option label="已通过" value="approved" />
-            <el-option label="已驳回" value="rejected" />
-            <el-option label="已执行" value="executed" />
-            <el-option label="执行失败" value="failed" />
-          </el-select>
-          <div class="filter-bar-actions">
+        <div class="workbench-card-head">
+          <div class="workbench-card-title">
+            <strong>SQL 工单列表</strong>
+            <span>覆盖提交、审核、执行与追溯链路。</span>
+          </div>
+          <div class="workbench-card-actions">
             <el-button v-if="canSubmitOrders" type="primary" @click="openSubmitDialog">
               <el-icon><Plus /></el-icon> 提交工单
             </el-button>
+          </div>
+        </div>
+
+        <div class="workbench-toolbar workbench-toolbar--history">
+          <div class="workbench-toolbar-left">
+            <el-input v-model="search" placeholder="搜索标题 / 提交人" clearable style="width: 260px"
+              :prefix-icon="Search" @input="fetchData" />
+            <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 130px" @change="handleStatusChange">
+              <el-option label="待审核" value="pending" />
+              <el-option label="已通过" value="approved" />
+              <el-option label="已驳回" value="rejected" />
+              <el-option label="已执行" value="executed" />
+              <el-option label="执行失败" value="failed" />
+            </el-select>
           </div>
         </div>
 
@@ -57,7 +66,7 @@
           </el-table-column>
         </el-table>
 
-        <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+        <div class="workbench-pagination">
           <el-pagination v-model:current-page="page" :page-size="20" :total="total"
             layout="total, prev, pager, next" @current-change="fetchData" />
         </div>
@@ -199,7 +208,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Search, Select } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -222,6 +232,8 @@ defineProps({
 })
 
 const authStore = useAuthStore()
+const route = useRoute()
+const router = useRouter()
 const items = ref([])
 const loading = ref(false)
 const search = ref('')
@@ -229,6 +241,8 @@ const statusFilter = ref('')
 const page = ref(1)
 const total = ref(0)
 const executingId = ref(null)
+const syncingRoute = ref(false)
+const validStatuses = ['pending', 'approved', 'rejected', 'executed', 'failed']
 
 const datasources = ref([])
 const databases = ref([])
@@ -276,6 +290,22 @@ const checkTagType = (l) => {
 
 const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : ''
 
+const applyRouteFilters = () => {
+  const status = Array.isArray(route.query.status) ? route.query.status[0] : route.query.status
+  statusFilter.value = status && validStatuses.includes(status) ? status : ''
+}
+
+const syncStatusToRoute = async (status) => {
+  syncingRoute.value = true
+  const nextQuery = { ...route.query }
+  if (status) {
+    nextQuery.status = status
+  } else {
+    delete nextQuery.status
+  }
+  await router.replace({ path: route.path, query: nextQuery })
+}
+
 const fetchData = async () => {
   if (!canViewOrders.value) return
   loading.value = true
@@ -284,10 +314,28 @@ const fetchData = async () => {
     if (search.value) params.search = search.value
     if (statusFilter.value) params.status = statusFilter.value
     const res = await getSqlOrders(params)
-    items.value = res.results || res
-    total.value = res.count || items.value.length
+    const serverItems = res.results || res
+    const hasStatusMismatch = statusFilter.value && Array.isArray(serverItems)
+      ? serverItems.some(item => item.status !== statusFilter.value)
+      : false
+    items.value = statusFilter.value && Array.isArray(serverItems)
+      ? serverItems.filter(item => item.status === statusFilter.value)
+      : serverItems
+    total.value = hasStatusMismatch
+      ? items.value.length
+      : (res.count || items.value.length)
   } catch (e) { console.error(e) }
   finally { loading.value = false }
+}
+
+const handleStatusChange = async (value) => {
+  page.value = 1
+  const nextStatus = value && validStatuses.includes(value) ? value : ''
+  statusFilter.value = nextStatus
+  await syncStatusToRoute(nextStatus)
+  if (canViewOrders.value) {
+    await fetchData()
+  }
 }
 
 const loadDatasources = async () => {
@@ -409,18 +457,23 @@ const handleExecute = async (row) => {
 }
 
 onMounted(() => {
+  applyRouteFilters()
+  page.value = 1
+  if (canViewOrders.value) fetchData()
+})
+
+watch(() => route.query.status, () => {
+  if (syncingRoute.value) {
+    syncingRoute.value = false
+    return
+  }
+  applyRouteFilters()
+  page.value = 1
   if (canViewOrders.value) fetchData()
 })
 </script>
 
 <style scoped>
-.filter-bar-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-
 .content-hint {
   margin-top: 8px;
   font-size: 12px;
@@ -429,9 +482,5 @@ onMounted(() => {
 }
 
 @media (max-width: 900px) {
-  .filter-bar-actions {
-    width: 100%;
-    justify-content: flex-end;
-  }
 }
 </style>

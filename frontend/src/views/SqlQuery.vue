@@ -1,8 +1,21 @@
 ﻿<template>
-  <div class="fade-in">
-    <div class="table-card" style="margin-bottom: 20px;">
-      <div class="query-controls">
-        <div class="query-selects">
+  <div class="fade-in workbench-page-shell">
+    <div class="workbench-card">
+      <div class="workbench-card-head">
+        <div class="workbench-card-title">
+          <strong>只读查询台</strong>
+          <span>沿用任务历史的卡片和结果区结构，便于和工单页统一浏览体验。</span>
+        </div>
+        <div class="workbench-card-actions">
+          <el-button v-if="canExecuteQueries" type="primary" @click="handleQuery" :loading="querying"
+            :disabled="!selectedDs || !selectedDb || !sqlContent.trim()">
+            <el-icon><CaretRight /></el-icon> 执行查询
+          </el-button>
+        </div>
+      </div>
+
+      <div class="workbench-toolbar workbench-toolbar--history">
+        <div class="workbench-toolbar-left">
           <el-select v-model="selectedDs" placeholder="选择数据源" style="width: 220px"
             @change="onDsChange" filterable>
             <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id">
@@ -18,13 +31,9 @@
           </el-select>
           <el-input v-model="submitter" placeholder="操作人" style="width: 130px" disabled />
         </div>
-        <el-button v-if="canExecuteQueries" type="primary" @click="handleQuery" :loading="querying"
-          :disabled="!selectedDs || !selectedDb || !sqlContent.trim()">
-          <el-icon><CaretRight /></el-icon> 执行查询
-        </el-button>
       </div>
 
-      <div class="sql-editor-wrapper" style="margin-top:8px;">
+      <div class="sql-editor-wrapper">
         <textarea v-model="sqlContent" class="sql-editor"
           :placeholder="queryPlaceholder" rows="6"
           @keydown.ctrl.enter="handleQuery"></textarea>
@@ -32,32 +41,37 @@
       <div class="query-hint">{{ queryHint }}</div>
     </div>
 
-    <div class="table-card" v-if="queryResult || queryError" style="margin-bottom:8px;">
-      <div class="query-result-header">
-        <h3 style="margin:0;">查询结果</h3>
-        <div class="result-meta" v-if="queryResult">
+    <div class="workbench-card" v-if="queryResult || queryError">
+      <div class="workbench-card-head">
+        <div class="workbench-card-title">
+          <strong>查询结果</strong>
+        </div>
+        <div class="workbench-card-actions result-meta" v-if="queryResult">
           <el-tag type="info" size="small">{{ queryResult.count }} 行</el-tag>
           <el-tag type="success" size="small">{{ queryResult.duration_ms }}ms</el-tag>
         </div>
       </div>
 
-      <div v-if="queryError" style="margin-top:8px;">
+      <div v-if="queryError">
         <el-alert :title="queryError" type="error" show-icon :closable="false" />
       </div>
 
-      <el-table v-else :data="queryResult.rows" stripe style="width: 100%; margin-top:8px;"
+      <el-table v-else :data="queryResult.rows" stripe style="width: 100%;"
         max-height="400" size="small">
         <el-table-column v-for="col in queryResult.columns" :key="col"
           :prop="col" :label="col" min-width="120" show-overflow-tooltip />
       </el-table>
     </div>
 
-    <div v-if="canViewQueries" class="table-card">
-      <div class="page-header" style="margin-bottom:0; padding:0;">
-        <h3 style="margin:0;">查询历史</h3>
+    <div v-if="canViewQueries" class="workbench-card">
+      <div class="workbench-card-head">
+        <div class="workbench-card-title">
+          <strong>查询历史</strong>
+          <span>最近执行记录会沉淀在这里，方便回看语句与结果规模。</span>
+        </div>
       </div>
 
-      <el-table :data="history" stripe v-loading="historyLoading" style="width: 100%; margin-top:8px;" size="small">
+      <el-table :data="history" stripe v-loading="historyLoading" style="width: 100%;" size="small">
         <el-table-column prop="datasource_name" label="数据源" width="130" />
         <el-table-column label="类型" width="110">
           <template #default="{ row }">
@@ -76,7 +90,7 @@
         </el-table-column>
       </el-table>
 
-      <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+      <div class="workbench-pagination">
         <el-pagination v-model:current-page="historyPage" :page-size="20" :total="historyTotal"
           layout="total, prev, pager, next" @current-change="fetchHistory" />
       </div>
@@ -194,5 +208,9 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-secondary);
+}
+
+.sql-editor-wrapper {
+  margin-top: 2px;
 }
 </style>
