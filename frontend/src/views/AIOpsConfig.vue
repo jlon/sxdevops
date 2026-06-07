@@ -5,7 +5,7 @@
         <div class="hero-title-row">
           <span class="hero-icon"><el-icon><ChatDotSquare /></el-icon></span>
           <h2>智能体配置</h2>
-          <p class="page-inline-desc">统一管理智能助手的策略、MCP、Skill、模型提供商与审计能力。</p>
+          <p class="page-inline-desc">统一管理智能助手的策略、MCP、Action、Skill、模型提供商与审计能力。</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -218,14 +218,18 @@
       <template v-else-if="activeTab === 'skills'">
         <div class="section-toolbar">
           <div class="toolbar-head">
-            <span class="toolbar-title">Skill 知识包</span>
-            <span class="toolbar-desc">按问题分类管理内置与自定义 Skill，沉淀 SOP、证据清单和输出约束</span>
+            <span class="toolbar-title">Skill 能力包</span>
+            <span class="toolbar-desc">沉淀 SOP、证据清单、工具依赖、查询规范和回答方法</span>
           </div>
           <el-button size="small" type="primary" @click="openSkillDialog()">新增 Skill</el-button>
         </div>
+        <div class="concept-note concept-note--skill">
+          <strong>Skill = 能力包</strong>
+          <span>用于声明专业方法和工具依赖；最终可用工具仍会经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。</span>
+        </div>
         <div class="skill-summary-row">
           <div class="skill-summary-item">
-            <span>知识包</span>
+            <span>能力包</span>
             <strong>{{ skillOverview.total }}</strong>
           </div>
           <div class="skill-summary-item">
@@ -258,7 +262,7 @@
                       {{ formatSkillType(skill) }}
                     </el-tag>
                     <el-tag size="small" :type="skillRiskTagType(skill.risk_level)" effect="plain">
-                      {{ formatSkillRiskLabel(skill.risk_level) }}
+                      能力风险：{{ formatSkillRiskLabel(skill.risk_level) }}
                     </el-tag>
                     <el-tag size="small" :type="skill.is_enabled ? 'success' : 'info'" effect="plain">
                       {{ skill.is_enabled ? '启用' : '停用' }}
@@ -267,18 +271,22 @@
                   <div class="skill-package-desc">{{ skill.description || '暂无描述' }}</div>
                   <div class="skill-package-tags">
                     <el-tag v-for="action in skill.applicable_actions || []" :key="`${skill.slug}-${action}`" size="small" effect="plain">
-                      {{ formatActionName(action) }}
+                      适用：{{ formatActionName(action) }}
                     </el-tag>
                     <span v-if="!(skill.applicable_actions || []).length" class="muted-text">未绑定 Action</span>
+                  </div>
+                  <div class="skill-package-hints">
+                    <span>{{ formatSkillCoverage(skill) }}</span>
+                    <span>{{ formatSkillToolDependencies(skill) }}</span>
                   </div>
                 </div>
                 <div class="skill-package-side">
                   <div class="skill-package-stat">
-                    <span>工具</span>
-                    <strong>{{ skillToolCount(skill) }}</strong>
+                    <span>工具依赖</span>
+                    <strong>{{ skillRecommendedToolCount(skill) }}</strong>
                   </div>
                   <div class="skill-package-stat">
-                    <span>示例</span>
+                    <span>场景</span>
                     <strong>{{ (skill.examples || []).length }}</strong>
                   </div>
                   <div class="table-actions">
@@ -296,9 +304,13 @@
         <div class="section-toolbar">
           <div class="toolbar-head">
             <span class="toolbar-title">Action Registry</span>
-            <span class="toolbar-desc">按场景拆分的智能助手任务定义、工具白名单和预检查要求</span>
+            <span class="toolbar-desc">定义 assistant 的任务入口、流程策略、预检查和结构化输出</span>
           </div>
           <span class="audit-hint">已内置 10 个 P0 action</span>
+        </div>
+        <div class="concept-note concept-note--action">
+          <strong>Action = 任务入口</strong>
+          <span>用于把用户问题路由到任务类型，并决定上下文、预检、风险、输出结构和默认加载的 Skill。</span>
         </div>
         <div class="action-summary-row">
           <div class="action-summary-item">
@@ -354,11 +366,25 @@
                     </el-tag>
                     <span v-if="!(action.required_context || []).length" class="muted-text">未要求前置上下文</span>
                   </div>
+                  <div class="action-contract-grid">
+                    <div>
+                      <span>示例入口</span>
+                      <strong>{{ formatActionExamples(action) }}</strong>
+                    </div>
+                    <div>
+                      <span>默认 Skill</span>
+                      <strong>{{ formatActionSkillNames(action) }}</strong>
+                    </div>
+                    <div>
+                      <span>结构化输出</span>
+                      <strong>{{ formatActionList(action.output_blocks) }}</strong>
+                    </div>
+                  </div>
                 </div>
                 <div class="action-package-side">
                   <div class="action-package-stat">
-                    <span>工具</span>
-                    <strong>{{ actionToolCount(action) }}</strong>
+                    <span>示例</span>
+                    <strong>{{ (action.suggested_questions || []).length }}</strong>
                   </div>
                   <div class="action-package-stat">
                     <span>Skill</span>
@@ -642,7 +668,7 @@
           </el-select>
         </el-form-item>
         <div class="dialog-grid">
-          <el-form-item label="风险等级">
+          <el-form-item label="风险提示">
             <el-select v-model="skillForm.risk_level" style="width:100%">
               <el-option label="只读" value="read_only" />
               <el-option label="草稿" value="draft" />
@@ -650,28 +676,28 @@
               <el-option label="执行" value="execute" />
             </el-select>
           </el-form-item>
-          <el-form-item label="最大轮次">
+          <el-form-item label="建议轮次">
             <el-input-number v-model="skillForm.max_iterations" :min="0" :max="20" style="width:100%" />
           </el-form-item>
         </div>
-        <el-form-item label="示例问题">
+        <el-form-item label="适用场景">
           <el-select v-model="skillForm.examples" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" />
         </el-form-item>
-        <el-form-item label="内置工具">
+        <el-form-item label="核心工具依赖">
           <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%">
             <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="tool" :value="tool" />
           </el-select>
         </el-form-item>
-        <el-form-item label="推荐工具">
+        <el-form-item label="补充工具依赖">
           <el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%">
             <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="tool" :value="tool" />
           </el-select>
         </el-form-item>
-        <el-form-item label="允许角色"><el-select v-model="skillForm.allowed_role_codes" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
-        <el-form-item label="输出约束">
+        <el-form-item label="适用角色"><el-select v-model="skillForm.allowed_role_codes" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
+        <el-form-item label="输出指导">
           <el-input v-model="skillForm.output_contract_text" type="textarea" :rows="4" placeholder='例如：{"sections":["结论","依据"],"blocks":["risk_notice"]}' />
         </el-form-item>
-        <el-form-item label="内容"><el-input v-model="skillForm.content" type="textarea" :rows="10" /></el-form-item>
+        <el-form-item label="方法内容"><el-input v-model="skillForm.content" type="textarea" :rows="10" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="skillForm.is_enabled" /></el-form-item>
       </el-form>
       <template #footer>
@@ -960,12 +986,30 @@ function skillRiskTagType(risk) {
   return 'info'
 }
 
-function skillToolCount(skill = {}) {
-  return new Set([...(skill.builtin_tools || []), ...(skill.recommended_tools || [])]).size
+function skillRecommendedTools(skill = {}) {
+  return Array.from(new Set([...(skill.builtin_tools || []), ...(skill.recommended_tools || [])])).filter(Boolean)
 }
 
-function actionToolCount(action = {}) {
-  return new Set(action.allowed_tools || []).size
+function skillRecommendedToolCount(skill = {}) {
+  return skillRecommendedTools(skill).length
+}
+
+function formatSkillCoverage(skill = {}) {
+  const examples = (skill.examples || []).filter(Boolean)
+  if (!examples.length) return '适用场景：未配置样例'
+  return `适用场景：${examples.slice(0, 2).join('、')}${examples.length > 2 ? '…' : ''}`
+}
+
+function formatSkillToolDependencies(skill = {}) {
+  const tools = skillRecommendedTools(skill)
+  if (!tools.length) return '工具依赖：未声明'
+  return `工具依赖：${tools.slice(0, 4).join('、')}${tools.length > 4 ? '…' : ''}`
+}
+
+function formatActionExamples(action = {}) {
+  const examples = (action.suggested_questions || []).filter(Boolean)
+  if (!examples.length) return '--'
+  return examples.slice(0, 2).join('、') + (examples.length > 2 ? '…' : '')
 }
 
 function actionSkillCount(action = {}) {
@@ -975,6 +1019,13 @@ function actionSkillCount(action = {}) {
 function formatActionName(code) {
   const action = actionRegistry.value.find(item => item.code === code)
   return action?.display_name || code
+}
+
+function formatActionSkillNames(action = {}) {
+  const skillsBySlug = new Map(skills.value.map(item => [item.slug, item.name]))
+  const names = (action.skills || []).map(slug => skillsBySlug.get(slug) || slug).filter(Boolean)
+  if (!names.length) return '--'
+  return names.join('、')
 }
 
 function formatEnabledTools(tools) {
@@ -1982,6 +2033,37 @@ onMounted(async () => {
   line-height: 1.8;
 }
 
+.concept-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.concept-note strong {
+  flex-shrink: 0;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.concept-note--action {
+  background: #f8fbff;
+  border-color: rgba(96, 165, 250, 0.28);
+}
+
+.concept-note--skill {
+  background: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.28);
+}
+
 .skill-summary-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2087,6 +2169,27 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+
+.skill-package-hints {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.skill-package-hints span {
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #edf2f7;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .skill-package-side {
@@ -2234,6 +2337,40 @@ onMounted(async () => {
   margin-top: 8px;
 }
 
+.action-contract-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.action-contract-grid div {
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 10px;
+  background: #f8fbff;
+  border: 1px solid #e0ecff;
+}
+
+.action-contract-grid span {
+  display: block;
+  margin-bottom: 4px;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.action-contract-grid strong {
+  display: block;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .action-package-side {
   display: flex;
   align-items: center;
@@ -2359,6 +2496,17 @@ onMounted(async () => {
     flex-direction: row;
     justify-content: space-between;
     padding: 0 12px;
+  }
+
+  .concept-note,
+  .skill-package-hints,
+  .action-contract-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .concept-note {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 

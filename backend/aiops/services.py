@@ -7512,7 +7512,7 @@ def _build_answer_formatter_messages(question, draft_content, sections, citation
         (
             f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}\n"
             f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}\n"
-            f"  推荐工具：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '按 Action 工具白名单'}\n"
+            f"  工具依赖：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '未声明工具依赖'}；最终可用工具还要经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。\n"
             f"  内容：{skill.content}"
         )
         for skill in active_skills or []
@@ -9551,7 +9551,7 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         (
             f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}\n"
             f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}\n"
-            f"  推荐工具：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '按 Action 工具白名单'}\n"
+            f"  工具依赖：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '未声明工具依赖'}；最终可用工具还要经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。\n"
             f"  内容：{skill.content}"
         )
         for skill in active_skills
@@ -9560,7 +9560,8 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         (
             f"- {action['code']}（{action['display_name']}）：{action['description']}；"
             f"模式={action['agent_mode_display']}；风险={action['risk_level_display']}；"
-            f"工具：{'、'.join(action.get('allowed_tools') or [])}；"
+            f"Skill：{'、'.join(action.get('skills') or []) or '按路由选择'}；"
+            f"上下文：{'、'.join(action.get('required_context') or []) or '无强制上下文'}；"
             f"输出：{'、'.join(action.get('output_blocks') or [])}"
         )
         for action in list_action_registry(user=user, include_unavailable=False)
@@ -9583,6 +9584,10 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '\n'.join(mcp_lines) if mcp_lines else '- 当前无可用 MCP',
         '外部 MCP 运行状态：',
         '\n'.join(diagnostic_lines) if diagnostic_lines else '- 当前无外部 MCP 诊断信息',
+        'Action 与 Skill 边界：',
+        '- Action 是任务入口和流程策略，决定 agent 模式、上下文、预检、风险、确认流、结构化输出和默认 Skill。',
+        '- Skill 是能力包，声明工具依赖，并提供 SOP、证据清单、查询规范、风险判断和回答格式。',
+        '- 最终可调用工具必须同时满足选中 Skill 工具依赖、MCP 可用、用户 RBAC 和 Action 安全策略。',
         '启用 Skill：',
         '\n'.join(skill_lines) if skill_lines else '- 当前无启用 Skill',
         '可用 Action Registry：',

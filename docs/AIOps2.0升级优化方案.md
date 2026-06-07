@@ -9,7 +9,7 @@ AIOps 2.0 的目标不是增加一个通用聊天入口，而是把 AI 能力做
 核心定位：
 
 - 从“问答助手”升级为“可配置的运维 Agent 平台”。
-- 从“单一大模型回复”升级为“意图路由 + Action 合同 + Skill 知识包 + 受控工具 + 结构化 UI”。
+- 从“单一大模型回复”升级为“意图路由 + Action 任务入口 + Skill 能力包 + 受控工具 + 结构化 UI”。
 - 从“自然语言建议”升级为“证据链、预检、确认流、审计流闭环”。
 - 从“平台内浮窗”升级为“Web assistant + MCP/A2A 互操作能力”。
 
@@ -18,11 +18,11 @@ AIOps 2.0 的目标不是增加一个通用聊天入口，而是把 AI 能力做
 1. 平台 API 是唯一执行边界  
    LLM 只负责理解、规划和生成候选参数，所有查询、创建、修改、执行动作都必须通过后端工具层调用平台 API，不能绕过 RBAC、审计和参数校验。
 
-2. Action 负责平台任务合同  
-   Action 是稳定的后端协议，负责识别任务类型、选择 agent 模式、声明工具白名单、风险等级、预检 schema、输出 block 和权限边界。
+2. Action 负责任务入口和流程策略  
+   Action 是稳定的后端协议，负责识别任务类型、选择 agent 模式、声明风险等级、预检 schema、输出 block、默认 Skill 和安全策略。
 
-3. Skill 负责领域知识沉淀  
-   Skill 是可复用知识包，负责 SOP、证据清单、查询规范、输出要求、安全边界和案例示例。一个 Action 可以加载多个 Skill，一个 Skill 也可以被多个 Action 复用。
+3. Skill 负责能力包沉淀  
+   Skill 是可复用能力包，负责 SOP、证据清单、工具依赖、查询规范、输出要求和安全边界。一个 Action 可以加载多个 Skill，一个 Skill 也可以被多个 Action 复用。
 
 4. 结构化响应驱动前端交互  
    assistant 返回 Markdown 之外，还要返回结构化 block，让前端可以渲染事件卡片、证据时间线、查询建议、审批表单、回滚计划、自愈推荐和待确认按钮。
@@ -68,17 +68,52 @@ Skill Registry + Tool Registry + MCP Registry
 
 - `Action Router` 负责识别任务类型，不直接执行业务动作。
 - `Agent Kernel` 支持 Direct、ReAct、Plan + ReAct 三类模式。
-- `Skill Registry` 负责加载运维知识、输出约束和场景模板。
+- `Skill Registry` 负责加载能力包、工具依赖、输出约束和场景模板。
 - `Tool Registry` 负责暴露平台能力、校验参数、执行权限和记录审计。
 - `Structured Block Renderer` 负责把 AI 输出转成可交互 UI。
 - `State Store` 负责会话状态、消息流、取消信号、并发锁和恢复能力。
 
 ## 4. Action 与 Skill 的边界
 
-Action 和 Skill 不能重复承担同一件事：
+Action 和 Skill 的边界要按“任务入口”和“能力包”拆开，避免两个配置页都变成一组相似的提示词、工具和风险字段。
 
-- Action 回答“这是什么平台任务、谁能做、按什么流程做、能调用哪些工具、输出什么结构、是否需要预检或确认”。
-- Skill 回答“这类任务应该怎么分析、需要哪些证据、查询怎么写、风险怎么判断、回答怎么组织、哪些动作不能直接做”。
+核心定义：
+
+- Action 是用户意图进入平台任务的分类入口，也负责流程和安全策略，回答“这次属于哪类任务、需要哪些上下文、按什么流程做、是否需要预检或确认、输出什么结构、风险边界是什么”。
+- Skill 是可复用能力包，回答“完成这类任务需要哪些专业能力、工具依赖、SOP、证据清单、查询规范、风险判断和回答格式”。
+
+运行关系：
+
+- 用户问题先进入 Action Router，识别一个主 Action。
+- Action 根据任务分类决定 agent 模式、预检表单、输出 block、风险等级、确认流和默认加载的 Skill。
+- Skill 声明工具依赖、MCP 能力、SOP、证据清单、字段规范、判断规则和回答格式。
+- 最终可用工具不是 Action 或 Skill 单独决定，而是 `选中 Skill 的工具依赖 ∩ MCP 当前可用工具 ∩ 用户 RBAC ∩ Action 安全策略`。
+- Action 不直接堆叠工具列表；Action 只保留安全策略兜底，例如只读、草稿、写入、执行、是否允许高风险工具、是否必须 preflight。
+
+字段归属：
+
+| 归属 | 字段 | 含义 |
+| --- | --- | --- |
+| Action 独占 | `agent_mode` | 决定 Direct、ReAct、Plan+ReAct 等执行编排方式。 |
+| Action 独占 | `required_context` | 执行前必须具备的环境、服务、集群、时间窗口等上下文。 |
+| Action 独占 | `preflight_schema` | 缺参、写入或执行前的表单补齐协议。 |
+| Action 独占 | `rbac_permissions` | 发起、确认、执行所需权限。 |
+| Action 独占 | `output_schema` | 前端结构化 block 协议。 |
+| Action 负责 | `suggested_questions` | 典型用户问题示例，用于展示任务入口和辅助意图路由。 |
+| Action 负责 | `skills` | 默认加载哪些能力包。 |
+| Action 负责 | `tool_policy` | 安全策略兜底，例如只读/可写/需确认/禁止高危工具。当前实现可继续兼容旧 `allowed_tools` 字段，但 UI 和文档不把它作为主设计入口。 |
+| Skill 负责 | `content` | SOP、证据清单、查询规范、安全边界、回答格式。 |
+| Skill 负责 | `tool_dependencies` | 能力包需要的 MCP/API/CLI 工具依赖。当前实现对应 `builtin_tools` 和 `recommended_tools`。 |
+| Skill 负责 | `applicable_actions` | 声明这个能力包可挂载到哪些 Action。 |
+| Skill 负责 | `output_contract` | 输出指导，只约束表达方式，不替代 Action 的结构化响应 schema。 |
+| Skill 负责 | `risk_level` | 知识包风险提示，不作为执行权限或工具调用权限。 |
+
+页面呈现原则：
+
+- Action 页面按“任务入口”展示，突出任务分类、示例入口、上下文、预检、风险等级、输出结构和关联 Skill。
+- Skill 页面按“能力包”展示，突出工具依赖、SOP、证据清单、适用 Action、风险提示和输出指导。
+- Action 页面不再把工具作为核心字段展示；工具主要从 Skill 能力包来。
+- Skill 的工具依赖也不是无边界执行权限，最终仍要经过 MCP 可用性、RBAC 和 Action 安全策略过滤。
 
 示例映射：
 
@@ -90,22 +125,24 @@ Action 和 Skill 不能重复承担同一件事：
 | `k8s.diagnose` | K8s 排障、容器只读取证、安全边界、回答整形 |
 | `self_heal.recommend` | 自愈风险护栏、任务模板选择、回滚策略、回答整形 |
 
+典型入口问题归 Action，不归 Skill。Skill 可以保留“适用场景样例”，但 UI 上不应把它表现成任务入口。
+
 ## 5. Action Router 设计
 
 P0 先内置以下 Action：
 
-| Action | 目标场景 | 核心工具 |
+| Action | 目标场景 | 示例入口 |
 | --- | --- | --- |
-| `alert.root_cause` | 告警根因分析 | 告警、指标、日志、链路、变更、知识图谱 |
-| `change.correlation` | 变更关联分析 | 发布记录、工单、Git、CI-CD、事件墙、知识图谱 |
-| `log.query_generate` | 日志查询生成 | 日志数据源、字段字典、历史查询 |
-| `metric.query_generate` | PromQL/指标查询生成 | 指标数据源、服务标签、指标字典 |
-| `k8s.diagnose` | K8s 排障 | 集群、命名空间、Pod、Event、容器日志 |
-| `deploy.failure_diagnose` | 发布失败诊断 | 发布任务、构建日志、制品、K8s、告警 |
-| `slo.analysis` | SLO/服务健康分析 | 指标、告警、链路、错误率、延迟 |
-| `self_heal.recommend` | 自愈推荐 | 告警、历史处置、任务模板、自愈脚本 |
-| `notification.policy_suggest` | 通知和升级策略建议 | 告警规则、值班、团队、通知渠道 |
-| `runbook.generate` | Runbook 生成 | 历史事件、处置记录、知识库、任务模板 |
+| `alert.root_cause` | 告警根因分析 | 分析这条告警为什么触发 |
+| `change.correlation` | 变更关联分析 | 最近哪些变更可能影响这个服务 |
+| `log.query_generate` | 日志查询生成 | 帮我生成订单服务错误日志查询 |
+| `metric.query_generate` | PromQL/指标查询生成 | 帮我生成错误率和 P95 延迟查询 |
+| `k8s.diagnose` | K8s 排障 | 这个命名空间有哪些 Pod 异常 |
+| `deploy.failure_diagnose` | 发布失败诊断 | 这次发布失败可能是什么原因 |
+| `slo.analysis` | SLO/服务健康分析 | 当前服务健康度下降受哪些指标影响 |
+| `self_heal.recommend` | 自愈推荐 | 这个故障适合自愈吗 |
+| `notification.policy_suggest` | 通知和升级策略建议 | 这个告警应该通知谁并如何升级 |
+| `runbook.generate` | Runbook 生成 | 把这次故障沉淀成 Runbook |
 
 每个 Action 至少定义：
 
@@ -114,15 +151,16 @@ P0 先内置以下 Action：
 - `risk_level`：`read_only` / `draft` / `write` / `execute`。
 - `agent_mode`：`direct` / `react` / `plan_react`。
 - `required_context`：必须具备的上下文。
-- `allowed_tools`：可调用工具白名单。
 - `skills`：默认加载 Skill slug。
 - `preflight_schema`：缺参时返回的表单 schema。
 - `output_schema`：结构化响应 block schema。
 - `rbac_permissions`：发起、确认、执行所需权限。
+- `suggested_questions`：典型用户入口问题。
+- `tool_policy`：工具安全策略兜底，例如只读、需确认、禁止高危执行。
 
 ## 6. Skill 库设计
 
-Skill 是 sxdevops assistant 的领域知识包，不直接查数据，不直接执行平台动作。Skill 管理的重点是“让 assistant 在某一类问题上有稳定工作方法”，而不是堆叠零散的一句话提示词。
+Skill 是 sxdevops assistant 的领域能力包，可以声明工具依赖，但不能绕过平台权限和 Action 安全策略直接执行。Skill 管理的重点是“让 assistant 在某一类问题上具备稳定专业能力”，而不是堆叠零散的一句话提示词。
 
 ### Skill 包结构
 
@@ -133,12 +171,11 @@ Skill 是 sxdevops assistant 的领域知识包，不直接查数据，不直接
 - `category`：问题分类，例如告警排障、日志查询、K8s 诊断、自愈安全。
 - `description`：适用场景摘要。
 - `applicable_actions`：可复用到哪些 Action。
-- `examples`：典型用户问题示例。
-- `builtin_tools`：强绑定平台工具。
-- `recommended_tools`：建议优先选择的工具。
-- `max_iterations`：建议最大推理/工具轮次，0 表示由 Action 决定。
-- `risk_level`：Skill 自身风险建议。
-- `output_contract`：建议输出结构。
+- `tool_dependencies`：能力包需要的 MCP/API/CLI 工具依赖，当前实现对应 `builtin_tools` 和 `recommended_tools`。
+- `examples`：方法适用场景样例，不作为任务入口展示。
+- `max_iterations`：建议最大推理/工具轮次，0 表示完全由 Action 决定。
+- `risk_level`：知识包风险提示，用于提醒方法风险，不作为执行权限。
+- `output_contract`：输出指导，用于约束回答组织方式，不替代 Action 的结构化响应 schema。
 - `content`：完整 SOP、证据清单、查询规范、安全约束和回答格式。
 
 ### P0 内置 Skill
@@ -163,7 +200,7 @@ Skill 是 sxdevops assistant 的领域知识包，不直接查数据，不直接
 自定义 Skill 必须遵守：
 
 - 必须声明适用 Action，不允许成为无边界的通用提示词。
-- 必须声明风险等级和推荐工具。
+- 必须声明风险提示和工具依赖。
 - 写入或执行类 Skill 必须包含预检、确认、dry-run、审计和回滚要求。
 - 不允许把密钥、token、kubeconfig、证书等敏感信息写入内容。
 
