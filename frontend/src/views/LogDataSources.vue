@@ -478,7 +478,7 @@ onMounted(async () => {
   margin: 0;
   color: #475569;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .inline-subtitle {

@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, time as datetime_time, timedelta
 from decimal import Decimal
 from urllib.parse import urlparse
 
@@ -22,6 +22,7 @@ from django.db import close_old_connections
 from django.db.models import Avg, Count, Q, Sum
 from django.http import QueryDict
 from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_datetime
 
 from cmdb.models import ConfigItem
 from eventwall.models import EventRecord
@@ -1188,6 +1189,7 @@ BUILTIN_MODEL_PROVIDER = {
     'temperature': 0.2,
     'max_tokens': 1600,
     'timeout_seconds': 30,
+    'price_currency': AIOpsModelProvider.CURRENCY_USD,
     'api_key': 'demo-openai-compatible-key',
     'last_test_message': '预置体验配置，需替换为真实 API Key 后使用',
 }
@@ -1203,6 +1205,7 @@ MODEL_PROVIDER_PRESETS = [
         'temperature': 0.2,
         'max_tokens': 1600,
         'timeout_seconds': 60,
+        'price_currency': AIOpsModelProvider.CURRENCY_CNY,
         'api_key_placeholder': 'DeepSeek API Key',
         'docs_url': 'https://api-docs.deepseek.com/',
         'notes': 'OpenAI-compatible；适合直接接入 Chat Completions 与 Tool Calling。',
@@ -1217,6 +1220,7 @@ MODEL_PROVIDER_PRESETS = [
         'temperature': 0.2,
         'max_tokens': 1600,
         'timeout_seconds': 60,
+        'price_currency': AIOpsModelProvider.CURRENCY_CNY,
         'api_key_placeholder': '智谱 API Key',
         'docs_url': 'https://docs.bigmodel.cn/cn/guide/develop/openai/introduction',
         'notes': '智谱 OpenAI API 兼容入口；Base URL 不需要追加 /chat/completions。',
@@ -1231,6 +1235,7 @@ MODEL_PROVIDER_PRESETS = [
         'temperature': 1.0,
         'max_tokens': 1600,
         'timeout_seconds': 60,
+        'price_currency': AIOpsModelProvider.CURRENCY_CNY,
         'api_key_placeholder': 'MiniMax API Key',
         'docs_url': 'https://platform.minimax.io/docs/api-reference/text-openai-api',
         'notes': 'MiniMax OpenAI-compatible 入口；temperature 必须大于 0，预设使用官方推荐 1.0。',
@@ -1245,6 +1250,7 @@ MODEL_PROVIDER_PRESETS = [
         'temperature': 0.2,
         'max_tokens': 1600,
         'timeout_seconds': 60,
+        'price_currency': AIOpsModelProvider.CURRENCY_USD,
         'api_key_placeholder': 'API Key',
         'docs_url': '',
         'notes': '适用于兼容 Bearer 鉴权与 /chat/completions 的网关、OneAPI/NewAPI、私有模型服务。',
@@ -6694,7 +6700,7 @@ def query_traces(session, user_message, user, query='', errors_only=False, limit
         )
         return {
             'sections': sections,
-            'citations': [{'title': f"链路追踪 / {tracing_meta.get('provider_name') or tracing_meta.get('provider') or 'Tracing'}", 'path': '/observability/tracing'}],
+            'citations': [{'title': '链路追踪', 'path': '/observability/tracing'}],
             'traces': traces,
             'summary': summary,
             'service': matched_service,
@@ -7955,11 +7961,13 @@ def _build_tool_trace_response_block(tool_names, collected_tool_outputs):
     }
 
 
-def _build_pending_action_response_block(draft, pending_action=None, disabled=False):
+def _build_pending_action_response_block(draft, pending_action=None, disabled=False, disabled_reason='policy'):
     if not draft:
         return None
+    disabled_by_analysis_only = disabled and disabled_reason == 'analysis_only'
     status = pending_action.status if pending_action else ('disabled' if disabled else 'draft')
-    status_display = pending_action.get_status_display() if pending_action else ('已关闭' if disabled else '待确认')
+    status_display = pending_action.get_status_display() if pending_action else ('只分析' if disabled_by_analysis_only else ('已关闭' if disabled else '待确认'))
+    disabled_summary = '本轮已开启只分析，未生成待执行任务。' if disabled_by_analysis_only else '管理员已关闭动作执行，当前只保留分析和任务草稿能力。'
     metrics = [
         {'label': '目标主机', 'value': f"{draft.get('host_count') or 0} 台"},
         {'label': '执行方式', 'value': draft.get('execution_mode') or '--'},
@@ -7980,7 +7988,7 @@ def _build_pending_action_response_block(draft, pending_action=None, disabled=Fa
         'id': 'pending-action',
         'type': 'approval_form',
         'title': pending_action.title if pending_action else draft.get('name') or '待确认动作',
-        'summary': '确认后将载入任务中心草稿，可编辑后再执行。' if not disabled else '管理员已关闭动作执行，当前只保留分析和任务草稿能力。',
+        'summary': '确认后将载入任务中心草稿，可编辑后再执行。' if not disabled else disabled_summary,
         'status': status,
         'status_display': status_display,
         'risk_level': pending_action.risk_level if pending_action else draft.get('risk_level') or AIOpsPendingAction.RISK_LOW,
@@ -9676,6 +9684,17 @@ def _estimate_model_invocation_cost(provider, prompt_tokens=0, completion_tokens
     return (Decimal(prompt_tokens or 0) * input_price / unit) + (Decimal(completion_tokens or 0) * output_price / unit)
 
 
+def _normalize_model_cost_currency(value):
+    currency = str(value or '').upper()
+    if currency in {AIOpsModelProvider.CURRENCY_USD, AIOpsModelProvider.CURRENCY_CNY}:
+        return currency
+    return AIOpsModelProvider.CURRENCY_USD
+
+
+def _model_provider_price_currency(provider):
+    return _normalize_model_cost_currency(getattr(provider, 'price_currency', ''))
+
+
 def _model_request_summary(payload):
     messages = payload.get('messages') or []
     tools = payload.get('tools') or []
@@ -9712,6 +9731,7 @@ def _record_model_invocation(provider, payload, data=None, *, status_value, late
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             estimated_cost_usd=_estimate_model_invocation_cost(provider, prompt_tokens, completion_tokens),
+            estimated_cost_currency=_model_provider_price_currency(provider),
             request_summary=_model_request_summary(payload),
             response_summary=response_summary,
         )
@@ -9719,13 +9739,60 @@ def _record_model_invocation(provider, payload, data=None, *, status_value, late
         return
 
 
-def build_model_cost_overview(days=7):
+def _parse_audit_range_datetime(value, end_of_day=False):
+    if not value:
+        return None
+    parsed = parse_datetime(str(value))
+    if parsed is None:
+        parsed_date = parse_date(str(value))
+        if parsed_date:
+            parsed = datetime.combine(parsed_date, datetime_time.max if end_of_day else datetime_time.min)
+    if parsed is None:
+        return None
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+    return parsed
+
+
+def build_model_cost_overview(days=7, range_type='', start=None, end=None):
+    range_type = (range_type or '').strip().lower()
+    start_at = _parse_audit_range_datetime(start)
+    end_at = _parse_audit_range_datetime(end, end_of_day=True)
     try:
         days = int(days or 7)
     except (TypeError, ValueError):
         days = 7
-    since = timezone.now() - timedelta(days=max(1, min(days, 90)))
-    queryset = AIOpsModelInvocation.objects.filter(created_at__gte=since)
+    days = max(1, min(days, 90))
+
+    queryset = AIOpsModelInvocation.objects.all()
+    tool_queryset = AIOpsToolInvocation.objects.all()
+    window_days = days
+    window_mode = 'recent'
+    window_label = f'近 {days} 日'
+
+    if range_type == 'all':
+        window_days = None
+        window_mode = 'all'
+        window_label = '全部时间'
+        start_at = None
+        end_at = None
+    elif start_at or end_at:
+        window_days = None
+        window_mode = 'custom'
+        window_label = '自定义范围'
+        if start_at:
+            queryset = queryset.filter(created_at__gte=start_at)
+            tool_queryset = tool_queryset.filter(created_at__gte=start_at)
+        if end_at:
+            queryset = queryset.filter(created_at__lte=end_at)
+            tool_queryset = tool_queryset.filter(created_at__lte=end_at)
+    else:
+        since = timezone.now() - timedelta(days=days)
+        start_at = since
+        end_at = timezone.now()
+        queryset = queryset.filter(created_at__gte=since)
+        tool_queryset = tool_queryset.filter(created_at__gte=since)
+
     totals = queryset.aggregate(
         total_calls=Count('id'),
         total_tokens=Sum('total_tokens'),
@@ -9734,33 +9801,45 @@ def build_model_cost_overview(days=7):
         estimated_cost_usd=Sum('estimated_cost_usd'),
         avg_latency_ms=Avg('latency_ms'),
     )
+    by_currency = []
+    for item in queryset.values('estimated_cost_currency').annotate(
+        cost=Sum('estimated_cost_usd'),
+    ).order_by('estimated_cost_currency'):
+        by_currency.append({
+            'currency': _normalize_model_cost_currency(item.get('estimated_cost_currency')),
+            'estimated_cost_usd': item.get('cost') or Decimal('0'),
+        })
+    currencies = [item['currency'] for item in by_currency]
+    cost_currency = currencies[0] if len(currencies) == 1 else ('MIXED' if len(currencies) > 1 else AIOpsModelProvider.CURRENCY_USD)
     by_provider = []
-    for item in queryset.values('provider__name').annotate(
+    for item in queryset.values('provider__name', 'estimated_cost_currency').annotate(
         calls=Count('id'),
         tokens=Sum('total_tokens'),
         cost=Sum('estimated_cost_usd'),
         avg_latency=Avg('latency_ms'),
     ).order_by('-calls')[:10]:
+        currency = _normalize_model_cost_currency(item.get('estimated_cost_currency'))
         by_provider.append({
             'provider': item.get('provider__name') or '未知提供商',
+            'cost_currency': currency,
             'calls': item.get('calls') or 0,
             'tokens': item.get('tokens') or 0,
             'estimated_cost_usd': item.get('cost') or Decimal('0'),
             'avg_latency_ms': int(item.get('avg_latency') or 0),
         })
     by_purpose = []
-    for item in queryset.values('purpose').annotate(
+    for item in queryset.values('purpose', 'estimated_cost_currency').annotate(
         calls=Count('id'),
         tokens=Sum('total_tokens'),
         cost=Sum('estimated_cost_usd'),
     ).order_by('-calls')[:10]:
         by_purpose.append({
             'purpose': item.get('purpose') or '',
+            'cost_currency': _normalize_model_cost_currency(item.get('estimated_cost_currency')),
             'calls': item.get('calls') or 0,
             'tokens': item.get('tokens') or 0,
             'estimated_cost_usd': item.get('cost') or Decimal('0'),
         })
-    tool_queryset = AIOpsToolInvocation.objects.filter(created_at__gte=since)
     tool_totals = tool_queryset.aggregate(
         total_calls=Count('id'),
         avg_latency_ms=Avg('latency_ms'),
@@ -9776,13 +9855,19 @@ def build_model_cost_overview(days=7):
             'avg_latency_ms': int(item.get('avg_latency') or 0),
         })
     return {
-        'window_days': max(1, min(days, 90)),
+        'window_days': window_days,
+        'window_mode': window_mode,
+        'window_label': window_label,
+        'start_at': start_at.isoformat() if start_at else None,
+        'end_at': end_at.isoformat() if end_at else None,
         'model': {
             'total_calls': totals.get('total_calls') or 0,
             'total_tokens': totals.get('total_tokens') or 0,
             'prompt_tokens': totals.get('prompt_tokens') or 0,
             'completion_tokens': totals.get('completion_tokens') or 0,
             'estimated_cost_usd': totals.get('estimated_cost_usd') or Decimal('0'),
+            'cost_currency': cost_currency,
+            'by_currency': by_currency,
             'avg_latency_ms': int(totals.get('avg_latency_ms') or 0),
             'by_provider': by_provider,
             'by_purpose': by_purpose,
@@ -11672,7 +11757,7 @@ def _run_selected_action(session, user_message, user, question, scoped_question,
     return None
 
 
-def _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=None):
+def _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=None, analysis_only=False):
     emit = progress_callback or (lambda **kwargs: None)
     config = get_agent_config()
     provider = get_active_provider(config)
@@ -11780,7 +11865,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             active_skills,
             emit,
         )
-    if _is_task_generation_question(question):
+    if not analysis_only and _is_task_generation_question(question):
         return _run_task_generation_evidence(
             session,
             user_message,
@@ -12024,6 +12109,12 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             message='当前没有可用模型，无法发起问答。',
         )
     tools, registry, managed_clients, mcp_diagnostics = _build_runtime_tool_registry(active_mcp_servers, user)
+    if analysis_only:
+        tools = [
+            tool for tool in tools
+            if ((tool.get('function') or {}).get('name') != 'generate_host_task')
+        ]
+        registry.pop('generate_host_task', None)
     if not tools:
         failed_external_mcp = [item for item in mcp_diagnostics if item.get('status') == 'failed']
         failure_detail = ''
@@ -12088,6 +12179,11 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         messages.append({
             'role': 'user',
             'content': '路由约束：本问题明确限定在日志中查询或分析，必须调用 query_logs；不要先调用 query_alerts 或 query_system_posture。若用户同时提到警告和错误，使用 levels=["warning","error"]。',
+        })
+    if analysis_only:
+        messages.append({
+            'role': 'user',
+            'content': '请求约束：本轮为只分析模式，只能做查询、分析、解释和建议；禁止生成、创建、新建、安排待执行任务，禁止调用 generate_host_task。',
         })
 
     try:
@@ -12374,14 +12470,14 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     }
 
 
-def _build_chat_result(session, user_message, user, question, progress_callback=None):
+def _build_chat_result(session, user_message, user, question, progress_callback=None, analysis_only=False):
     emit = progress_callback or (lambda **kwargs: None)
     emit(
         status_value=PROCESSING_STATUS_RUNNING,
         text='已收到问题，正在准备上下文',
     )
     try:
-        result = _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=emit)
+        result = _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=emit, analysis_only=analysis_only)
         if result:
             return result
     except AIOpsModelCallError as exc:
@@ -12452,17 +12548,25 @@ def _stream_dispatch_result(message_id, payload, progress_callback=None):
 
 
 
-def _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=False, progress_callback=None, question=''):
+def _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=False, progress_callback=None, question='', analysis_only=False):
     config = get_agent_config()
     assistant_message.refresh_from_db()
     final_content = result.get('content', '')
     merged_metadata = {**(assistant_message.metadata or {}), **(result.get('metadata') or {})}
+    if analysis_only:
+        merged_metadata['analysis_only'] = True
     response_blocks = list(merged_metadata.get('response_blocks') or [])
     pending_action = None
     draft = result.get('pending_action_draft')
 
     if draft and not draft.get('error'):
-        if _should_materialize_host_task(question, result, draft):
+        action_block_reason = 'policy' if not config.allow_action_execution else ('analysis_only' if analysis_only else '')
+        if action_block_reason:
+            if action_block_reason == 'policy':
+                merged_metadata['action_execution_disabled'] = True
+            if analysis_only:
+                merged_metadata['analysis_only_enforced'] = True
+        elif _should_materialize_host_task(question, result, draft):
             try:
                 task = _create_host_task_record_from_draft(draft, user, session=session)
                 pending_action = create_pending_task_action_from_draft(session, assistant_message, draft)
@@ -12482,15 +12586,14 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
             except ValueError as exc:
                 merged_metadata['task_materialization_error'] = str(exc)[:200]
                 final_content = f"{final_content}\n\n任务中心创建失败：{exc}"
-        elif not config.allow_action_execution:
-            merged_metadata['action_execution_disabled'] = True
         else:
             pending_action = create_pending_task_action_from_draft(session, assistant_message, draft)
             merged_metadata['pending_action_id'] = pending_action.id
         pending_block = _build_pending_action_response_block(
             draft,
             pending_action=pending_action,
-            disabled=not config.allow_action_execution,
+            disabled=bool(action_block_reason),
+            disabled_reason=action_block_reason or 'policy',
         )
         if pending_block:
             response_blocks = _replace_response_block(response_blocks, pending_block)
@@ -12523,7 +12626,7 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
 
 
 
-def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_message_id, question):
+def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_message_id, question, analysis_only=False):
     close_old_connections()
     try:
         session = AIOpsChatSession.objects.select_related('user').get(pk=session_id)
@@ -12531,8 +12634,8 @@ def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_messa
         assistant_message = AIOpsChatMessage.objects.get(pk=assistant_message_id)
         user = session.user if session.user_id == user_id else session.user.__class__.objects.get(pk=user_id)
         emit = _make_processing_callback(assistant_message_id)
-        result = _build_chat_result(session, user_message, user, question, progress_callback=emit)
-        _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=True, progress_callback=emit, question=question)
+        result = _build_chat_result(session, user_message, user, question, progress_callback=emit, analysis_only=analysis_only)
+        _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=True, progress_callback=emit, question=question, analysis_only=analysis_only)
     except Exception as exc:
         _update_chat_message_processing(
             assistant_message_id,
@@ -12551,7 +12654,7 @@ def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_messa
 
 
 
-def start_async_chat_processing(session, user_message, user, assistant_message):
+def start_async_chat_processing(session, user_message, user, assistant_message, analysis_only=False):
     worker = threading.Thread(
         target=_run_async_chat_worker,
         kwargs={
@@ -12560,6 +12663,7 @@ def start_async_chat_processing(session, user_message, user, assistant_message):
             'user_id': user.id,
             'assistant_message_id': assistant_message.id,
             'question': user_message.content,
+            'analysis_only': analysis_only,
         },
         daemon=True,
         name=f'aiops-chat-{assistant_message.id}',
@@ -12569,7 +12673,7 @@ def start_async_chat_processing(session, user_message, user, assistant_message):
 
 
 
-def dispatch_chat(session, user_message, user, question):
+def dispatch_chat(session, user_message, user, question, analysis_only=False):
     assistant_message = AIOpsChatMessage.objects.create(
         session=session,
         role=AIOpsChatMessage.ROLE_ASSISTANT,
@@ -12580,8 +12684,8 @@ def dispatch_chat(session, user_message, user, question):
         metadata={},
     )
     emit = _make_processing_callback(assistant_message.id)
-    result = _build_chat_result(session, user_message, user, question, progress_callback=emit)
-    return _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=False, progress_callback=emit, question=question)
+    result = _build_chat_result(session, user_message, user, question, progress_callback=emit, analysis_only=analysis_only)
+    return _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=False, progress_callback=emit, question=question, analysis_only=analysis_only)
 
 
 def build_audit_overview():

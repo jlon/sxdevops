@@ -598,12 +598,14 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         serializer = AIOpsChatInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
+        analysis_only = bool(serializer.validated_data.get('analysis_only'))
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
             content=content,
+            metadata={'analysis_only': True} if analysis_only else {},
         )
-        assistant_message, pending_action = dispatch_chat(session, user_message, request.user, user_message.content)
+        assistant_message, pending_action = dispatch_chat(session, user_message, request.user, user_message.content, analysis_only=analysis_only)
         return Response({
             'user_message': AIOpsChatMessageSerializer(user_message).data,
             'assistant_message': AIOpsChatMessageSerializer(assistant_message).data,
@@ -620,10 +622,12 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         serializer = AIOpsChatInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
+        analysis_only = bool(serializer.validated_data.get('analysis_only'))
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
             content=content,
+            metadata={'analysis_only': True} if analysis_only else {},
         )
         assistant_message = AIOpsChatMessage.objects.create(
             session=session,
@@ -633,6 +637,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             metadata={
                 'processing_status': 'pending',
                 'processing_text': '请求已提交，正在排队处理',
+                'analysis_only': analysis_only,
                 'processing_steps': [{
                     'title': '排队中',
                     'detail': '已收到问题，正在准备上下文',
@@ -647,7 +652,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             session.title = content[:48] or '新会话'
         session.save(update_fields=['last_message_at', 'title', 'updated_at'])
         sync_session_to_demo_if_needed(session)
-        start_async_chat_processing(session, user_message, request.user, assistant_message)
+        start_async_chat_processing(session, user_message, request.user, assistant_message, analysis_only=analysis_only)
         return Response({
             'user_message': AIOpsChatMessageSerializer(user_message).data,
             'assistant_message': AIOpsChatMessageSerializer(assistant_message).data,
@@ -1334,7 +1339,12 @@ def audit_overview(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('aiops.audit.view')])
 def audit_cost_overview(request):
-    return Response(build_model_cost_overview(days=request.query_params.get('days', 7)))
+    return Response(build_model_cost_overview(
+        days=request.query_params.get('days', 7),
+        range_type=request.query_params.get('range', ''),
+        start=request.query_params.get('start'),
+        end=request.query_params.get('end'),
+    ))
 
 
 @api_view(['POST'])

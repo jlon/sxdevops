@@ -671,7 +671,7 @@ onMounted(() => {
   margin: 0;
   color: #64748b;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .docker-page-shell :deep(.release-hero-title-row) {
@@ -686,6 +686,7 @@ onMounted(() => {
 
 .docker-page-shell :deep(.hero h2) {
   margin: 0;
+  font-size: 23px;
   color: #0f172a;
 }
 

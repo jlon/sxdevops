@@ -1851,7 +1851,7 @@ onUnmounted(() => {
 }
 
 .hero-panel {
-  background: linear-gradient(135deg, rgba(239,246,255,.96) 0%, rgba(236,254,255,.94) 52%, rgba(248,250,252,.98) 100%);
+  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
   border: 1px solid rgba(96,165,250,.18);
   border-radius: 20px;
   box-shadow: 0 16px 36px rgba(14,165,233,.08);
@@ -1885,7 +1885,7 @@ onUnmounted(() => {
 .hero h2 {
   margin: 0;
   color: #0f172a;
-  font-size: 22px;
+  font-size: 23px;
   line-height: 1.1;
 }
 
@@ -1935,7 +1935,7 @@ onUnmounted(() => {
   margin: 0;
   color: #475569;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .inline-subtitle {
@@ -2892,6 +2892,11 @@ pre {
     white-space: normal;
   }
 }
-.hero.panel.hero-panel { border-radius: 20px; }
+.hero.panel.hero-panel {
+  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
+  border-color: #e5e7eb;
+  border-radius: 20px;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
+}
 </style>
 

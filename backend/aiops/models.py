@@ -23,6 +23,12 @@ class AIOpsModelProvider(models.Model):
     PROVIDER_CHOICES = [
         (PROVIDER_OPENAI_COMPATIBLE, 'OpenAI Compatible'),
     ]
+    CURRENCY_USD = 'USD'
+    CURRENCY_CNY = 'CNY'
+    CURRENCY_CHOICES = [
+        (CURRENCY_USD, 'USD'),
+        (CURRENCY_CNY, 'CNY'),
+    ]
 
     STATUS_UNKNOWN = 'unknown'
     STATUS_SUCCESS = 'success'
@@ -42,6 +48,7 @@ class AIOpsModelProvider(models.Model):
     temperature = models.FloatField('温度', default=0.2)
     max_tokens = models.PositiveIntegerField('最大 Tokens', default=1200)
     timeout_seconds = models.PositiveIntegerField('超时(秒)', default=30)
+    price_currency = models.CharField('计费币种', max_length=3, choices=CURRENCY_CHOICES, default=CURRENCY_USD)
     input_token_price_per_1m = models.DecimalField('输入 Token 单价/百万', max_digits=10, decimal_places=6, default=0)
     output_token_price_per_1m = models.DecimalField('输出 Token 单价/百万', max_digits=10, decimal_places=6, default=0)
     is_enabled = models.BooleanField('启用', default=True)
@@ -465,6 +472,7 @@ class AIOpsModelInvocation(models.Model):
     completion_tokens = models.PositiveIntegerField('输出 Token', default=0)
     total_tokens = models.PositiveIntegerField('总 Token', default=0)
     estimated_cost_usd = models.DecimalField('预估费用 USD', max_digits=12, decimal_places=6, default=0)
+    estimated_cost_currency = models.CharField('预估费用币种', max_length=3, choices=AIOpsModelProvider.CURRENCY_CHOICES, default=AIOpsModelProvider.CURRENCY_USD)
     request_summary = models.JSONField('请求摘要', default=dict, blank=True)
     response_summary = models.JSONField('响应摘要', default=dict, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)

@@ -681,7 +681,7 @@ onMounted(loadAll)
 .hero-tagline {
   color: #646a73;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.45;
   max-width: 620px;
 }
 

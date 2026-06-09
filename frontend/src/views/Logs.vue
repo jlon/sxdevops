@@ -698,10 +698,15 @@ onUnmounted(() => {
   margin: 0;
 }
 
+.hero h2 {
+  font-size: 23px;
+}
+
 .subtitle {
   color: #475569;
   margin: 8px 0 0;
   max-width: 620px;
+  line-height: 1.45;
 }
 
 .hero-actions,

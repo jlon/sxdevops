@@ -2154,7 +2154,7 @@ onUnmounted(() => {
 }
 
 .hero-title-row {
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
 }
 
@@ -2167,8 +2167,10 @@ onUnmounted(() => {
 .page-inline-desc {
   color: #64748b;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
   margin: 0;
+  flex: 0 1 auto;
+  transform: translateY(1px);
 }
 
 .hero-icon {

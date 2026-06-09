@@ -15,11 +15,18 @@
       </div>
     </section>
 
-    <div class="stats-grid release-stats dashboard-stats">
-      <div v-for="card in statCards" :key="card.label" class="stat-card release-stat-card" :class="card.tone">
-        <div class="stat-value">{{ card.value }}</div>
+    <div class="audit-grid alert-top-stats">
+      <button
+        v-for="card in statCards"
+        :key="card.key"
+        type="button"
+        class="audit-card audit-card--inline audit-card--action alert-summary-card"
+        :class="[card.tone, { 'is-active': activeStatKey === card.key }]"
+        @click="applyStatFilter(card)"
+      >
         <div class="stat-label">{{ card.label }}</div>
-      </div>
+        <div class="stat-value">{{ card.value }}</div>
+      </button>
     </div>
 
     <div class="neo-tabs theme-blue alert-center-tabs">
@@ -936,6 +943,7 @@ const filters = reactive({
   search: '',
   level: '',
   status: '',
+  claimed: '',
   source_type: '',
   environment: '',
 })
@@ -971,11 +979,24 @@ const canViewConfig = computed(() => authStore.hasPermission('ops.alert.config.v
 const canManageConfig = computed(() => authStore.hasPermission('ops.alert.config.manage'))
 
 const statCards = computed(() => [
-  { label: '\u6D3B\u8DC3\u544A\u8B66', value: summary.value.active || 0, tone: '' },
-  { label: '\u4E25\u91CD\u544A\u8B66', value: summary.value.critical || 0, tone: 'danger-card' },
-  { label: '\u5DF2\u5C4F\u853D\u544A\u8B66', value: summary.value.muted || 0, tone: 'warning-card' },
-  { label: '\u5DF2\u8BA4\u9886\u544A\u8B66', value: summary.value.claimed || 0, tone: 'success-card' },
+  { key: 'all', label: '\u5168\u90E8\u544A\u8B66', value: summary.value.total || 0, tone: 'base-card', filter: { status: '', level: '', claimed: '' } },
+  { key: 'active', label: '\u6D3B\u8DC3\u544A\u8B66', value: summary.value.active || 0, tone: 'info-card', filter: { status: 'active', level: '', claimed: '' } },
+  { key: 'critical', label: '\u4E25\u91CD\u544A\u8B66', value: summary.value.critical || 0, tone: 'danger-card', filter: { status: '', level: 'critical', claimed: '' } },
+  { key: 'muted', label: '\u5DF2\u5C4F\u853D\u544A\u8B66', value: summary.value.muted || 0, tone: 'warning-card', filter: { status: 'muted', level: '', claimed: '' } },
 ])
+
+const activeStatKey = computed(() => {
+  const current = {
+    status: filters.status || '',
+    level: filters.level || '',
+    claimed: filters.claimed || '',
+  }
+  return statCards.value.find((card) => (
+    card.filter.status === current.status
+    && card.filter.level === current.level
+    && card.filter.claimed === current.claimed
+  ))?.key || ''
+})
 
 const integrationHelpIntro = {
   title: '说明平台如何从各类 webhook payload 中提取告警字段',
@@ -1258,10 +1279,9 @@ function buildAlertParams() {
   if (filters.search) params.search = filters.search
   if (filters.level) params.level = filters.level
   if (filters.status) params.status = filters.status
+  if (filters.claimed) params.claimed = filters.claimed
   if (filters.source_type) params.source_type = filters.source_type
   if (filters.environment) params.environment = filters.environment
-  if (route.query.claimed === '0' || route.query.ack === '0') params.claimed = '0'
-  else if (route.query.claimed === '1' || route.query.ack === '1') params.claimed = '1'
   return params
 }
 
@@ -1301,6 +1321,17 @@ async function refreshEvents() {
 function handleFilterChange() {
   page.value = 1
   refreshEvents()
+}
+
+async function applyStatFilter(card) {
+  const shouldClear = activeStatKey.value === card.key
+  filters.status = shouldClear ? '' : card.filter.status
+  filters.level = shouldClear ? '' : card.filter.level
+  filters.claimed = shouldClear ? '' : card.filter.claimed
+  activeTab.value = 'events'
+  eventMode.value = 'list'
+  page.value = 1
+  await refreshEvents()
 }
 
 function openGroup(row) {
@@ -1748,6 +1779,9 @@ async function removeEscalationPolicy(id) {
 function applyRouteFilters() {
   filters.search = typeof route.query.search === 'string' ? route.query.search.trim() : ''
   filters.level = typeof route.query.level === 'string' ? route.query.level.trim() : ''
+  if (route.query.claimed === '0' || route.query.ack === '0') filters.claimed = '0'
+  else if (route.query.claimed === '1' || route.query.ack === '1') filters.claimed = '1'
+  else filters.claimed = ''
 }
 
 watch(
@@ -1824,7 +1858,7 @@ onMounted(async () => {
 }
 
 .hero-title-row {
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
 }
 
@@ -1839,8 +1873,10 @@ onMounted(async () => {
 .page-inline-desc {
   color: #64748b;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
   margin: 0;
+  flex: 0 1 auto;
+  transform: translateY(1px);
 }
 
 .hero-icon {
@@ -1894,43 +1930,39 @@ onMounted(async () => {
   padding: 0 14px;
 }
 
-.release-stats {
+.alert-top-stats {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: 0;
 }
 
-.release-stat-card {
-  background: #fff;
-  border: 1px solid var(--alert-border-soft);
-  border-radius: 12px;
-  box-shadow: 0 6px 18px rgba(31, 35, 41, 0.04);
+.alert-summary-card {
+  justify-content: center;
   min-height: 68px;
-  padding: 9px 11px;
+  padding: 14px 16px;
 }
 
-.warning-card {
-  background: linear-gradient(135deg, #fef3c7, #fdba74);
+.alert-summary-card.audit-card--action:hover {
+  border-color: rgba(36, 91, 219, 0.16);
+  box-shadow: 0 10px 20px rgba(36, 91, 219, 0.06);
 }
 
-.danger-card {
-  background: linear-gradient(135deg, #fee2e2, #fca5a5);
+.alert-summary-card.audit-card--action.is-active {
+  border-color: rgba(36, 91, 219, 0.24);
+  background: linear-gradient(180deg, #f4f7ff 0%, #ffffff 100%);
+  box-shadow: 0 0 0 1px rgba(36, 91, 219, 0.05), 0 12px 22px rgba(36, 91, 219, 0.08);
 }
 
-.success-card {
-  background: linear-gradient(135deg, #dcfce7, #86efac);
+.alert-summary-card .stat-label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.stat-value {
-  font-size: 22px;
-  font-weight: 700;
-}
-
-.stat-label {
-  color: #475569;
-  font-size: 12px;
-  margin-top: 4px;
+.alert-summary-card .stat-value {
+  color: #1f2329;
+  font-size: 24px;
 }
 
 .toolbar,
@@ -2454,7 +2486,7 @@ onMounted(async () => {
 }
 
 @media (max-width: 1100px) {
-  .release-stats,
+  .alert-top-stats,
   .split-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2478,7 +2510,7 @@ onMounted(async () => {
     padding-left: 54px;
   }
 
-  .release-stats,
+  .alert-top-stats,
   .split-grid {
     grid-template-columns: 1fr;
   }

@@ -30,7 +30,7 @@ class AIOpsModelProviderSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'provider_type', 'base_url', 'api_key', 'has_api_key', 'default_model', 'backup_model',
             'temperature', 'max_tokens', 'timeout_seconds', 'is_enabled', 'runtime_ready', 'setup_hint',
-            'input_token_price_per_1m', 'output_token_price_per_1m',
+            'price_currency', 'input_token_price_per_1m', 'output_token_price_per_1m',
             'last_test_status', 'last_test_message',
             'created_at', 'updated_at',
         ]
@@ -303,6 +303,7 @@ class AIOpsAuditSessionSerializer(serializers.ModelSerializer):
 
 class AIOpsChatInputSerializer(serializers.Serializer):
     content = serializers.CharField(max_length=4000)
+    analysis_only = serializers.BooleanField(required=False, default=False)
 
 
 class AIOpsCreateSessionSerializer(serializers.Serializer):
@@ -332,7 +333,7 @@ class AIOpsModelInvocationSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'provider', 'provider_name', 'session', 'session_title', 'message', 'username',
             'purpose', 'purpose_display', 'requested_model', 'resolved_model', 'status', 'status_display',
-            'latency_ms', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'estimated_cost_usd',
+            'latency_ms', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'estimated_cost_usd', 'estimated_cost_currency',
             'request_summary', 'response_summary', 'created_at',
         ]
 

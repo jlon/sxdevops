@@ -59,19 +59,27 @@ Read `references/ui-benchmarks.md` when you need the exact class patterns and sp
 ### Tabs
 
 - Main tabs use the repo's blue pill workbench style.
-- Prefer `neo-tabs theme-blue`.
+- Prefer the button-based `neo-tabs theme-blue` pattern used by `frontend/src/components/cmdb/CmdbHostTaskCenter.vue`.
+- Do not use Element Plus `el-tabs` for top-level workbench tabs unless the page needs native tab-pane behavior; if `el-tabs` is used, override it to visually match the same button dimensions below.
 - Outer tabs shell:
+  - `display: flex`
+  - `width: 100%`
   - padding `3px`
+  - gap `8px`
   - border radius `12px`
   - soft gray border
+  - subtle workbench shadow `0 12px 26px rgba(15, 23, 42, 0.04)`
 - Main tab button:
-  - height about `38px`
-  - compact horizontal padding
-  - `13px` bold or semibold text
+  - `min-height: 38px`
+  - horizontal padding `0 18px`
+  - border radius `8px`
+  - icon size `15px`
+  - gap `6px`
+  - `13px` / `700` text, `line-height: 1.2`
   - translucent blue active state
 - Secondary tabs should sit directly above the filter area with a tighter gap than a normal section break.
 - Keep the tabs shell immediately below the stats row when both are present, not above it.
-- Active tabs should use a pale transparent blue fill such as `rgba(51, 112, 255, 0.1)` or `#e8f0ff` with blue text; do not use the global solid/gradient blue active style on workbench management pages.
+- Active tabs should use `#e8f0ff` or `rgba(51, 112, 255, 0.1)` with `#245bdb` text and an inset pale blue border; do not use the global solid/gradient blue active style on workbench management pages.
 
 ### Stats Cards
 

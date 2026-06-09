@@ -539,6 +539,7 @@ watch(() => [...form.k8s_cluster_ids], (ids) => {
 
 .hero-title-row h2 {
   margin: 0;
+  font-size: 23px;
   color: #0f172a;
 }
 

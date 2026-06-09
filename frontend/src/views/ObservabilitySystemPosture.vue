@@ -1837,7 +1837,7 @@ onUnmounted(() => {
 
 .hero h2 {
   color: var(--fm-text);
-  font-size: 22px;
+  font-size: 23px;
   font-weight: 600;
   line-height: 1.12;
   margin: 0;

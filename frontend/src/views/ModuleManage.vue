@@ -149,6 +149,7 @@ onMounted(fetchSettings)
 
 .release-hero-title-row h2 {
   color: #0f172a;
+  font-size: 23px;
   margin: 0;
 }
 

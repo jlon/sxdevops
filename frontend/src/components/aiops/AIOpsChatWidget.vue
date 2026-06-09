@@ -15,7 +15,7 @@
                   {{ runtimeLabel }}
                 </span>
                 <span class="aiops-subtitle">
-                  {{ analysisOnly ? '当前仅分析，不会触发执行动作' : (bootstrap.welcome_message || '你好，我可以帮你结合平台上下文查询资源、根因分析、生成待执行任务等。') }}
+                  {{ effectiveAnalysisOnly ? '当前仅分析，不会触发执行动作' : (bootstrap.welcome_message || '你好，我可以帮你结合平台上下文查询资源、根因分析、生成待执行任务等。') }}
                 </span>
               </div>
             </div>
@@ -91,12 +91,12 @@
                   </span>
                   <label class="analysis-toggle">
                     <span>只分析</span>
-                    <el-switch v-model="analysisOnly" size="small" />
+                    <el-switch v-model="analysisSwitchValue" size="small" :disabled="forcedAnalysisOnly" />
                   </label>
                 </div>
                 <div class="chat-toolbar-right">
                   <span class="toolbar-hint">
-                    {{ analysisOnly ? '提问会自动带上“不要执行”约束' : '具备权限时可生成待执行动作' }}
+                    {{ analysisHintText }}
                   </span>
                 </div>
               </div>
@@ -216,7 +216,7 @@
                         </div>
                       </div>
                       <div v-else-if="message.role === 'assistant'" class="message-content assistant">
-                        <template v-for="(block, blockIndex) in parseAssistantContent(message.content)" :key="`${message.localKey || message.id || index}-${blockIndex}`">
+                        <template v-for="(block, blockIndex) in parseAssistantContent(getAssistantMainContent(message))" :key="`${message.localKey || message.id || index}-${blockIndex}`">
                           <div v-if="block.type === 'heading'" class="rich-heading">
                             <template v-for="(token, tokenIndex) in parseInlineMarkdown(block.text)" :key="`${blockIndex}-heading-${tokenIndex}`">
                               <strong v-if="token.type === 'strong'">{{ token.text }}</strong>
@@ -269,94 +269,108 @@
                           v-for="(responseBlock, responseBlockIndex) in getMessageBlocks(message)"
                           :key="`${message.id || message.localKey}-block-${responseBlock._key || responseBlockIndex}`"
                           class="response-block-card"
-                          :class="`type-${responseBlock.type}`"
+                          :class="[
+                            `type-${responseBlock.type}`,
+                            { 'is-collapsed': !isResponseBlockExpanded(message, responseBlock, responseBlockIndex) },
+                          ]"
                         >
                           <div class="response-block-head">
                             <div class="response-block-headline">
                               <div class="response-block-title">{{ responseBlock.title }}</div>
                               <div v-if="responseBlock.summary" class="response-block-summary">{{ responseBlock.summary }}</div>
                             </div>
-                            <span class="response-block-badge">{{ getBlockTypeLabel(responseBlock.type) }}</span>
+                            <div class="response-block-head-actions">
+                              <span class="response-block-badge">{{ getBlockTypeLabel(responseBlock.type) }}</span>
+                              <button type="button" class="response-block-toggle" @click="toggleResponseBlockExpanded(message, responseBlock, responseBlockIndex)">
+                                {{ isResponseBlockExpanded(message, responseBlock, responseBlockIndex) ? '收起' : '展开' }}
+                              </button>
+                            </div>
                           </div>
 
-                          <div v-if="responseBlock.type === 'approval_form'" class="response-block-approval">
-                            <div v-if="getBlockMetrics(responseBlock).length" class="response-block-metric-grid">
-                              <div v-for="metric in getBlockMetrics(responseBlock)" :key="`${responseBlock._key}-metric-${metric.label}`" class="response-block-metric">
-                                <span>{{ metric.label }}</span>
-                                <strong>{{ metric.value }}</strong>
+                          <div v-show="isResponseBlockExpanded(message, responseBlock, responseBlockIndex)" class="response-block-content">
+                            <div v-if="responseBlock.type === 'approval_form'" class="response-block-approval">
+                              <div v-if="getBlockMetrics(responseBlock).length" class="response-block-metric-grid">
+                                <div v-for="metric in getBlockMetrics(responseBlock)" :key="`${responseBlock._key}-metric-${metric.label}`" class="response-block-metric">
+                                  <span>{{ metric.label }}</span>
+                                  <strong>{{ metric.value }}</strong>
+                                </div>
+                              </div>
+                              <div v-if="message.pending_action?.action_payload?.payload?.command" class="response-block-command">
+                                {{ message.pending_action.action_payload.payload.command }}
                               </div>
                             </div>
-                            <div v-if="message.pending_action?.action_payload?.payload?.command" class="response-block-command">
-                              {{ message.pending_action.action_payload.payload.command }}
-                            </div>
-                          </div>
 
-                          <div v-else-if="responseBlock.type === 'tool_trace'" class="response-block-trace">
-                            <div
-                              v-for="item in getBlockItems(responseBlock)"
-                              :key="`${responseBlock._key}-trace-${getBlockItemText(item)}`"
-                              class="response-block-trace-item"
-                              :class="getBlockItemStatus(item)"
-                            >
-                              <span class="response-block-trace-dot" :class="getBlockItemStatus(item)" />
-                              <div class="response-block-trace-body">
-                                <div class="response-block-trace-name">{{ getBlockItemText(item) }}</div>
-                                <div class="response-block-trace-detail">{{ getBlockItemDetail(item) }}</div>
+                            <div v-else-if="responseBlock.type === 'tool_trace'" class="response-block-trace">
+                              <div
+                                v-for="item in getBlockItems(responseBlock)"
+                                :key="`${responseBlock._key}-trace-${getBlockItemText(item)}`"
+                                class="response-block-trace-item"
+                                :class="getBlockItemStatus(item)"
+                              >
+                                <span class="response-block-trace-dot" :class="getBlockItemStatus(item)" />
+                                <div class="response-block-trace-body">
+                                  <div class="response-block-trace-name">{{ getBlockItemText(item) }}</div>
+                                  <div class="response-block-trace-detail">{{ getBlockItemDetail(item) }}</div>
+                                </div>
                               </div>
                             </div>
-                          </div>
 
-                          <div v-else-if="responseBlock.type === 'query_suggestion'" class="response-block-chip-list">
-                            <button
-                              v-for="item in getBlockItems(responseBlock)"
-                              :key="`${responseBlock._key}-suggest-${getBlockItemText(item)}`"
-                              type="button"
-                              class="response-block-chip"
-                              @click="reuseMessage(getBlockItemText(item))"
-                            >
-                              {{ getBlockItemText(item) }}
-                            </button>
-                          </div>
+                            <div v-else-if="responseBlock.type === 'query_suggestion'" class="response-block-chip-list">
+                              <button
+                                v-for="item in getBlockItems(responseBlock)"
+                                :key="`${responseBlock._key}-suggest-${getBlockItemText(item)}`"
+                                type="button"
+                                class="response-block-chip"
+                                @click="reuseMessage(getBlockItemText(item))"
+                              >
+                                {{ getBlockItemText(item) }}
+                              </button>
+                            </div>
 
-                          <div v-else-if="getBlockItems(responseBlock).length" class="response-block-item-list">
-                            <div
-                              v-for="item in getBlockItems(responseBlock)"
-                              :key="`${responseBlock._key}-item-${getBlockItemText(item)}`"
-                              class="response-block-item"
-                            >
-                              <span class="response-block-item-dot" />
-                              <div class="response-block-item-body">
-                                <div class="response-block-item-text">{{ getBlockItemText(item) }}</div>
-                                <div v-if="getBlockItemDetail(item)" class="response-block-item-detail">{{ getBlockItemDetail(item) }}</div>
+                            <div v-else-if="getBlockItems(responseBlock).length" class="response-block-item-list">
+                              <div
+                                v-for="item in getBlockItems(responseBlock)"
+                                :key="`${responseBlock._key}-item-${getBlockItemText(item)}`"
+                                class="response-block-item"
+                              >
+                                <span class="response-block-item-dot" />
+                                <div class="response-block-item-body">
+                                  <div class="response-block-item-text">{{ getBlockItemText(item) }}</div>
+                                  <div v-if="getBlockItemDetail(item)" class="response-block-item-detail">{{ getBlockItemDetail(item) }}</div>
+                                </div>
                               </div>
                             </div>
-                          </div>
 
-                          <div v-if="getBlockActions(responseBlock, message).length" class="response-block-actions">
-                            <el-button
-                              v-for="action in getBlockActions(responseBlock, message)"
-                              :key="`${responseBlock._key}-action-${action.type || action.label}`"
-                              size="small"
-                              text
-                              class="response-block-action-btn"
-                              @click="handleBlockAction(responseBlock, action, message)"
-                            >
-                              <el-icon><component :is="getBlockActionIcon(action.type)" /></el-icon>
-                              <span>{{ action.label || '操作' }}</span>
-                            </el-button>
+                            <div v-if="getBlockActions(responseBlock, message).length" class="response-block-actions">
+                              <el-button
+                                v-for="action in getBlockActions(responseBlock, message)"
+                                :key="`${responseBlock._key}-action-${action.type || action.label}`"
+                                size="small"
+                                text
+                                class="response-block-action-btn"
+                                @click="handleBlockAction(responseBlock, action, message)"
+                              >
+                                <el-icon><component :is="getBlockActionIcon(action.type)" /></el-icon>
+                                <span>{{ action.label || '操作' }}</span>
+                              </el-button>
+                            </div>
                           </div>
                         </div>
                       </div>
 
-                      <div v-if="message.citations?.length" class="citation-row">
+                      <div v-if="getAssistantFollowupLine(message)" class="assistant-followup-line">
+                        {{ getAssistantFollowupLine(message) }}
+                      </div>
+
+                      <div v-if="getDisplayCitations(message).length" class="citation-row">
                         <button
-                          v-for="citation in message.citations"
-                          :key="`${message.id || message.localKey}-${citation.title}`"
+                          v-for="citation in getDisplayCitations(message)"
+                          :key="`${message.id || message.localKey}-${citation.displayTitle}-${citation.path || ''}`"
                           type="button"
                           class="citation-chip"
                           @click="jumpToCitation(citation)"
                         >
-                          {{ citation.title }}
+                          {{ citation.displayTitle }}
                         </button>
                       </div>
 
@@ -432,7 +446,7 @@
                 <div class="composer-actions">
                   <div class="composer-meta">
                     <span class="composer-tip">Enter 发送，Shift + Enter 换行</span>
-                    <span v-if="analysisOnly" class="composer-tip">当前为只分析模式</span>
+                    <span v-if="effectiveAnalysisOnly" class="composer-tip">当前为只分析模式</span>
                     <span v-if="composer.trim()" class="composer-tip">草稿已自动保存</span>
                     <span v-if="loading.poll" class="composer-tip">正在流式返回结果</span>
                   </div>
@@ -593,12 +607,28 @@ let pollingMessageId = null
 let pollingFinalizeAttempts = 0
 const processExpandedState = ref({})
 const processStatusState = ref({})
+const responseBlockExpandedState = ref({})
 const FINAL_POLL_MAX_ATTEMPTS = 4
 const FINAL_POLL_STABLE_ROUNDS = 2
 
 const available = computed(() => bootstrap.value.enabled && authStore.hasPermission('aiops.chat.view'))
 const renderMessages = computed(() => pendingAssistantMessage.value ? [...messages.value, pendingAssistantMessage.value] : messages.value)
 const currentSession = computed(() => sessions.value.find(item => item.id === currentSessionId.value) || null)
+const actionExecutionAllowed = computed(() => bootstrap.value.runtime?.allow_action_execution !== false)
+const forcedAnalysisOnly = computed(() => !actionExecutionAllowed.value)
+const effectiveAnalysisOnly = computed(() => forcedAnalysisOnly.value || analysisOnly.value)
+const analysisSwitchValue = computed({
+  get: () => effectiveAnalysisOnly.value,
+  set: value => {
+    if (!forcedAnalysisOnly.value) {
+      analysisOnly.value = value
+    }
+  },
+})
+const analysisHintText = computed(() => {
+  if (forcedAnalysisOnly.value) return '平台已关闭待执行任务生成'
+  return effectiveAnalysisOnly.value ? '本轮会强制只分析，不生成待执行任务' : '具备权限时可生成待执行动作'
+})
 const currentEnvironmentName = computed(() => {
   const value = currentSession.value?.context?.current_environment
   if (!value) return ''
@@ -794,6 +824,112 @@ function normalizeResponseBlockItems(items) {
     .filter(Boolean)
 }
 
+function normalizeShortcutTitle(value) {
+  let title = String(value || '').trim()
+  title = title.replace(/^\s*(?:[-*+]\s+|\d+\.\s+)?/, '')
+  title = title.replace(/^可继续查看[:：]\s*/, '')
+  title = title.replace(/^\[([^\]]+)\]\((?:\/|https?:\/\/)[^)]+\)$/, '$1')
+  title = title.replace(/^([^:：]+)\s*[:：]\s*`?(?:\/|https?:\/\/).*`?$/, '$1')
+  title = title.replace(/\s*[（(]\s*(?:\/|https?:\/\/)[^)）]+\s*[)）]$/, '')
+  title = title.trim().replace(/[。；;、，,\s]+$/g, '')
+  if (/链路追踪|调用链|Trace|Tracing|Tempo|OpenTelemetry/i.test(title)) {
+    return '链路追踪'
+  }
+  return title
+}
+
+function splitFollowupTitles(value) {
+  const source = String(value || '').trim().replace(/^可继续查看[:：]\s*/, '')
+  return source
+    .split(/[、，,；;]\s*/)
+    .map(normalizeShortcutTitle)
+    .filter(Boolean)
+}
+
+function getAssistantFollowupTitles(message) {
+  const lines = normalizeText(message?.content || '').split('\n')
+  const titles = []
+  const seen = new Set()
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim()
+    if (!/^可继续查看[:：]/.test(trimmed)) continue
+    const inlineValue = trimmed.replace(/^可继续查看[:：]\s*/, '')
+    const candidates = inlineValue ? [inlineValue] : []
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const nextLine = lines[cursor].trim()
+      if (!nextLine) break
+      if (/^(结论|依据|建议|建议操作|关键点|执行概要|下一步)[:：]/.test(nextLine)) break
+      if (/^(?:[-*+]\s+|\d+\.\s+)/.test(nextLine)) {
+        candidates.push(nextLine)
+        continue
+      }
+      break
+    }
+    for (const title of candidates.flatMap(splitFollowupTitles)) {
+      if (seen.has(title)) continue
+      seen.add(title)
+      titles.push(title)
+    }
+  }
+  return titles
+}
+
+function getAssistantFollowupLine(message) {
+  const titles = getAssistantFollowupTitles(message)
+  return titles.length ? `可继续查看：${titles.join('、')}。` : ''
+}
+
+function isAssistantSectionHeading(value) {
+  return /^(结论|依据|建议|建议操作|关键点|执行概要|下一步)[:：]/.test(String(value || '').trim())
+}
+
+function getFollowupLineEndIndex(lines, startIndex) {
+  let cursor = startIndex + 1
+  while (cursor < lines.length) {
+    const nextLine = String(lines[cursor] || '').trim()
+    if (!nextLine) return cursor
+    if (isAssistantSectionHeading(nextLine)) return cursor - 1
+    if (/^(?:[-*+]\s+|\d+\.\s+)/.test(nextLine)) {
+      cursor += 1
+      continue
+    }
+    return cursor - 1
+  }
+  return lines.length - 1
+}
+
+function getAssistantMainContent(message) {
+  const lines = normalizeText(message?.content || '').split('\n')
+  const kept = []
+  let index = 0
+  while (index < lines.length) {
+    const trimmed = lines[index].trim()
+    if (/^可继续查看[:：]/.test(trimmed)) {
+      index = getFollowupLineEndIndex(lines, index) + 1
+      continue
+    }
+    kept.push(lines[index])
+    index += 1
+  }
+  return kept.join('\n').trim()
+}
+
+function getDisplayCitations(message) {
+  const seen = new Set()
+  return (message?.citations || [])
+    .map(citation => ({
+      ...citation,
+      displayTitle: normalizeShortcutTitle(citation?.title),
+    }))
+    .filter((citation) => {
+      if (!citation.displayTitle) return false
+      const key = `${citation.displayTitle}:${citation.path || ''}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
 function buildApprovalFormBlock(pendingAction) {
   const payload = pendingAction?.action_payload || {}
   const metrics = [
@@ -850,6 +986,40 @@ function getMessageBlocks(message) {
 
 function hasApprovalBlock(message) {
   return getMessageBlocks(message).some(block => block.type === 'approval_form')
+}
+
+function getResponseBlockStateKey(message, block, index = 0) {
+  const messageKey = String(message?.id || message?.localKey || '').trim()
+  const blockKey = String(block?._key || block?.id || block?.key || `${block?.type || 'block'}-${index}`).trim()
+  return messageKey && blockKey ? `${messageKey}:${blockKey}` : ''
+}
+
+function isResponseBlockExpanded(message, block, index = 0) {
+  const key = getResponseBlockStateKey(message, block, index)
+  if (!key) return false
+  return Boolean(responseBlockExpandedState.value[key])
+}
+
+function toggleResponseBlockExpanded(message, block, index = 0) {
+  const key = getResponseBlockStateKey(message, block, index)
+  if (!key) return
+  responseBlockExpandedState.value = {
+    ...responseBlockExpandedState.value,
+    [key]: !isResponseBlockExpanded(message, block, index),
+  }
+}
+
+function syncResponseBlockState(list = renderMessages.value) {
+  const nextExpanded = {}
+  for (const message of list || []) {
+    if (message?.role !== 'assistant') continue
+    getMessageBlocks(message).forEach((block, index) => {
+      const key = getResponseBlockStateKey(message, block, index)
+      if (!key) return
+      nextExpanded[key] = Boolean(responseBlockExpandedState.value[key])
+    })
+  }
+  responseBlockExpandedState.value = nextExpanded
 }
 
 function getBlockTypeLabel(type) {
@@ -1072,7 +1242,7 @@ function syncProcessCardState(list = renderMessages.value) {
 
 function buildQuestionPayload(raw) {
   const content = raw.trim()
-  if (!analysisOnly.value) return content
+  if (!effectiveAnalysisOnly.value) return content
   if (/不要执行|仅分析|只分析/.test(content)) return content
   return `只做分析，不要执行：${content}`
 }
@@ -1482,7 +1652,7 @@ async function handleSend() {
   scrollToBottom(true)
 
   try {
-    const response = await sendAIOpsMessageAsync(sessionId, { content })
+    const response = await sendAIOpsMessageAsync(sessionId, { content, analysis_only: effectiveAnalysisOnly.value })
     messages.value.push(response.user_message)
     messages.value.push(response.assistant_message)
     pendingAssistantMessage.value = null
@@ -1740,6 +1910,7 @@ watch(() => renderMessages.value.length, async () => {
 
 watch(renderMessages, value => {
   syncProcessCardState(value)
+  syncResponseBlockState(value)
 }, { deep: true, immediate: true })
 
 watch(analysisOnly, value => {
@@ -1898,8 +2069,16 @@ onBeforeUnmount(() => {
 .response-block-headline{min-width:0;display:flex;flex-direction:column;gap:3px}
 .response-block-title{font-size:12px;font-weight:700;color:#1e293b}
 .response-block-summary{font-size:11px;line-height:1.5;color:#64748b;word-break:break-word}
+.response-block-card.is-collapsed .response-block-head{align-items:center}
+.response-block-card.is-collapsed .response-block-headline{flex-direction:row;align-items:center;gap:8px;white-space:nowrap}
+.response-block-card.is-collapsed .response-block-title{flex:0 0 auto;max-width:42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.response-block-card.is-collapsed .response-block-summary{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;word-break:normal}
+.response-block-head-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
 .response-block-badge{flex:0 0 auto;padding:2px 7px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:10px;font-weight:700}
 .response-block-card.type-risk_notice .response-block-badge,.response-block-card.type-approval_form .response-block-badge{background:#fff7ed;color:#c2410c}
+.response-block-toggle{border:none;padding:2px 0;background:transparent;color:#64748b;font-size:11px;cursor:pointer}
+.response-block-toggle:hover{color:#334155}
+.response-block-content{margin-top:8px}
 .response-block-metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px}
 .response-block-metric{padding:7px 8px;border-radius:10px;background:rgba(255,255,255,.72);border:1px solid rgba(226,232,240,.9);display:flex;flex-direction:column;gap:3px}
 .response-block-metric span{font-size:10px;color:#64748b}
@@ -1920,6 +2099,7 @@ onBeforeUnmount(() => {
 .response-block-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;padding-top:7px;border-top:1px dashed #e2e8f0}
 .response-block-action-btn{height:24px;padding:3px 8px;border-radius:8px;color:#334155}
 .response-block-action-btn :deep(.el-icon){margin-right:3px}
+.assistant-followup-line{margin-top:8px;color:#475569;font-size:12px;line-height:1.5}
 .citation-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .citation-chip{border:none;border-radius:999px;padding:4px 8px;background:#ecfeff;color:#0f766e;cursor:pointer;font-size:11px}
 .pending-action-card{margin-top:10px;padding:10px;border-radius:12px;background:#fff7ed;border:1px solid #fdba74}

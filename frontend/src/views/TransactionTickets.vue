@@ -514,8 +514,8 @@ onMounted(async () => {
 .hero{background:linear-gradient(135deg,#fbfdff 0%,#f7faff 52%,#f9fbfd 100%);display:flex;gap:12px;justify-content:space-between;align-items:center;border-color:rgba(36,91,219,.09)}
 .release-hero-title-row{display:flex;align-items:center;gap:12px}
 .release-hero-title-inline{flex-wrap:wrap}
-.hero h2{margin:0;color:#0f172a}
-.ticket-hero-desc{margin:0;color:#64748b;font-size:13px;line-height:1.5}
+.hero h2{margin:0;color:#0f172a;font-size:23px}
+.ticket-hero-desc{margin:0;color:#64748b;font-size:13px;line-height:1.45}
 .ticket-header-icon{width:42px;height:42px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:20px;color:#245bdb;background:linear-gradient(180deg,#f3f7ff 0%,#ebf2ff 100%);border:1px solid rgba(36,91,219,.12);box-shadow:inset 0 1px 0 rgba(255,255,255,.8)}
 .audit-grid{gap:10px}
 .audit-card{border-radius:14px;border:1px solid rgba(15,23,42,.08);background:linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(252,253,255,.94) 100%);box-shadow:0 4px 14px rgba(15,23,42,.03)}

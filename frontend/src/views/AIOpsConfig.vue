@@ -5,7 +5,7 @@
         <div class="hero-title-row">
           <span class="hero-icon"><el-icon><ChatDotSquare /></el-icon></span>
           <h2>智能体配置</h2>
-          <p class="page-inline-desc">统一管理智能助手的策略、MCP、Action、Skill、模型提供商与审计能力。</p>
+          <p class="page-inline-desc">统一管理智能助手的策略、MCP、Action、Skill 与模型提供商。</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -43,11 +43,6 @@
         <el-tab-pane name="providers">
           <template #label>
             <span class="tab-label"><el-icon><Cpu /></el-icon>模型提供商</span>
-          </template>
-        </el-tab-pane>
-        <el-tab-pane name="audit">
-          <template #label>
-            <span class="tab-label"><el-icon><Tickets /></el-icon>审计</span>
           </template>
         </el-tab-pane>
       </el-tabs>
@@ -99,28 +94,28 @@
             </el-form>
           </div>
           <div class="config-section surface-card">
-            <div class="section-title">运行与安全</div>
+            <div class="section-title">运行生效项</div>
+            <div class="runtime-note">这些配置会被聊天入口或后端任务生成逻辑直接读取。</div>
             <div class="switch-list">
               <div class="switch-item">
-                <span>启用机器人</span>
+                <div class="switch-copy">
+                  <span>启用智能助手</span>
+                  <small>关闭后聊天入口不可用，已有会话仍保留。</small>
+                </div>
                 <el-switch v-model="configForm.is_enabled" />
               </div>
               <div class="switch-item">
-                <span>允许生成待执行任务</span>
+                <div class="switch-copy">
+                  <span>允许生成待执行任务</span>
+                  <small>关闭后只返回分析结果，不创建待确认任务。</small>
+                </div>
                 <el-switch v-model="configForm.allow_action_execution" />
               </div>
-              <div class="switch-item">
-                <span>展示证据来源</span>
-                <el-switch v-model="configForm.show_evidence" />
-              </div>
-              <div class="switch-item">
-                <span>允许关联分析</span>
-                <el-switch v-model="configForm.allow_analysis" />
-              </div>
             </div>
-            <el-form :model="configForm" label-width="118px" style="margin-top:8px;">
-              <el-form-item label="历史消息窗口">
+            <el-form :model="configForm" label-width="126px" class="runtime-form">
+              <el-form-item label="模型上下文消息数">
                 <el-input-number v-model="configForm.max_history_messages" :min="4" :max="40" />
+                <div class="runtime-field-tip">仅限制每次发送给模型的最近用户/助手消息数，不影响会话历史展示。</div>
               </el-form-item>
             </el-form>
           </div>
@@ -128,20 +123,20 @@
       </template>
 
       <template v-else-if="activeTab === 'orchestration'">
-        <div class="audit-grid">
-          <div class="audit-card audit-card--inline">
+        <div class="skill-summary-row">
+          <div class="skill-summary-item">
             <span>协同任务</span>
             <strong>{{ a2aOverview.total }}</strong>
           </div>
-          <div class="audit-card audit-card--inline audit-card--warning">
+          <div class="skill-summary-item">
             <span>待处理任务</span>
             <strong>{{ a2aOverview.queued }}</strong>
           </div>
-          <div class="audit-card audit-card--inline audit-card--success">
+          <div class="skill-summary-item">
             <span>Runbook 手册</span>
             <strong>{{ runbookOverview.total }}</strong>
           </div>
-          <div class="audit-card audit-card--inline">
+          <div class="skill-summary-item">
             <span>复盘知识</span>
             <strong>{{ reviewOverview.total }}</strong>
           </div>
@@ -278,6 +273,11 @@
           <el-table-column prop="provider_type" label="类型" width="150" />
           <el-table-column prop="base_url" label="Base URL" min-width="220" show-overflow-tooltip />
           <el-table-column prop="default_model" label="默认模型" width="160" />
+          <el-table-column label="计费" width="96">
+            <template #default="{ row }">
+              <el-tag size="small" effect="plain">{{ formatProviderCurrency(row.price_currency) }}</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="可用性" width="96">
             <template #default="{ row }">
               <el-tooltip :content="providerRuntimeHint(row)" placement="top" :disabled="row.runtime_ready">
@@ -303,20 +303,20 @@
       </template>
 
       <template v-else-if="activeTab === 'mcp'">
-        <div v-if="canViewMcpServer" class="audit-grid">
-          <div class="audit-card audit-card--inline">
+        <div v-if="canViewMcpServer" class="skill-summary-row">
+          <div class="skill-summary-item">
             <span>对外 MCP 工具</span>
             <strong>{{ platformMcpOverview.total }}</strong>
           </div>
-          <div class="audit-card audit-card--inline audit-card--success">
+          <div class="skill-summary-item">
             <span>当前可用</span>
             <strong>{{ platformMcpOverview.available }}</strong>
           </div>
-          <div class="audit-card audit-card--inline">
+          <div class="skill-summary-item">
             <span>每分钟限流</span>
             <strong>{{ platformMcpOverview.rateLimit }}</strong>
           </div>
-          <div class="audit-card audit-card--inline audit-card--warning">
+          <div class="skill-summary-item">
             <span>工具边界</span>
             <strong>只读</strong>
           </div>
@@ -452,20 +452,16 @@
                     </el-tag>
                     <span v-if="!(skill.applicable_actions || []).length" class="muted-text">未绑定 Action</span>
                   </div>
-                  <div class="skill-package-hints">
-                    <span>{{ formatSkillCoverage(skill) }}</span>
-                    <span>{{ formatSkillToolDependencies(skill) }}</span>
-                  </div>
                 </div>
                 <div class="skill-package-side">
-                  <div class="skill-package-stat">
+                  <button type="button" class="skill-package-stat stat-detail-button" @click="openSkillStatDetail(skill, 'tools')">
                     <span>工具依赖</span>
                     <strong>{{ skillRecommendedToolCount(skill) }}</strong>
-                  </div>
-                  <div class="skill-package-stat">
+                  </button>
+                  <button type="button" class="skill-package-stat stat-detail-button" @click="openSkillStatDetail(skill, 'scenes')">
                     <span>场景</span>
                     <strong>{{ (skill.examples || []).length }}</strong>
-                  </div>
+                  </button>
                   <div class="table-actions">
                     <el-button link type="primary" @click="openSkillDialog(skill)">编辑</el-button>
                     <el-button link type="danger" :disabled="skill.is_builtin" @click="handleDeleteSkill(skill)">删除</el-button>
@@ -543,34 +539,20 @@
                     </el-tag>
                     <span v-if="!(action.required_context || []).length" class="muted-text">未要求前置上下文</span>
                   </div>
-                  <div class="action-contract-grid">
-                    <div>
-                      <span>示例入口</span>
-                      <strong>{{ formatActionExamples(action) }}</strong>
-                    </div>
-                    <div>
-                      <span>默认 Skill</span>
-                      <strong>{{ formatActionSkillNames(action) }}</strong>
-                    </div>
-                    <div>
-                      <span>结构化输出</span>
-                      <strong>{{ formatActionList(action.output_blocks) }}</strong>
-                    </div>
-                  </div>
                 </div>
                 <div class="action-package-side">
-                  <div class="action-package-stat">
+                  <button type="button" class="action-package-stat stat-detail-button" @click="openActionStatDetail(action, 'examples')">
                     <span>示例</span>
                     <strong>{{ (action.suggested_questions || []).length }}</strong>
-                  </div>
-                  <div class="action-package-stat">
+                  </button>
+                  <button type="button" class="action-package-stat stat-detail-button" @click="openActionStatDetail(action, 'skills')">
                     <span>Skill</span>
                     <strong>{{ actionSkillCount(action) }}</strong>
-                  </div>
-                  <div class="action-package-stat">
+                  </button>
+                  <button type="button" class="action-package-stat stat-detail-button" @click="openActionStatDetail(action, 'outputs')">
                     <span>输出</span>
                     <strong>{{ (action.output_blocks || []).length }}</strong>
-                  </div>
+                  </button>
                 </div>
               </div>
             </div>
@@ -578,222 +560,6 @@
         </div>
       </template>
 
-      <template v-else>
-        <div class="audit-grid">
-          <div class="audit-card audit-card--info">
-            <span>今日会话</span>
-            <strong>{{ auditOverview.sessions_today || 0 }}</strong>
-          </div>
-          <div class="audit-card audit-card--success">
-            <span>今日消息</span>
-            <strong>{{ auditOverview.messages_today || 0 }}</strong>
-          </div>
-          <div class="audit-card audit-card--warning">
-            <span>今日动作</span>
-            <strong>{{ auditOverview.actions_today || 0 }}</strong>
-          </div>
-          <div class="audit-card audit-card--danger">
-            <span>失败动作</span>
-            <strong>{{ auditOverview.failed_actions_today || 0 }}</strong>
-          </div>
-          <div class="audit-card audit-card--info">
-            <span>模型调用</span>
-            <strong>{{ auditOverview.model_calls_today || 0 }}</strong>
-          </div>
-          <div class="audit-card audit-card--success">
-            <span>7 日 Token</span>
-            <strong>{{ modelCostSummary.total_tokens || 0 }}</strong>
-          </div>
-          <div class="audit-card audit-card--warning">
-            <span>预估费用</span>
-            <strong>{{ modelCostSummary.estimated_cost_usd || 0 }}</strong>
-          </div>
-        </div>
-        <div class="cost-grid">
-          <div class="cost-panel">
-            <div class="section-title">模型成本统计</div>
-            <div class="cost-list">
-              <div v-for="item in modelCostSummary.by_provider || []" :key="item.provider" class="cost-row">
-                <span>{{ item.provider }}</span>
-                <strong>{{ item.calls }} 次 / {{ item.tokens }} tokens / {{ item.estimated_cost_usd }}</strong>
-              </div>
-              <div v-if="!(modelCostSummary.by_provider || []).length" class="muted-text">暂无模型调用数据</div>
-            </div>
-          </div>
-          <div class="cost-panel">
-            <div class="section-title">工具调用统计</div>
-            <div class="cost-list">
-              <div v-for="item in toolCostSummary.by_tool || []" :key="item.tool_name" class="cost-row">
-                <span>{{ item.tool_name }}</span>
-                <strong>{{ item.calls }} 次 / 平均 {{ item.avg_latency_ms }} ms</strong>
-              </div>
-              <div v-if="!(toolCostSummary.by_tool || []).length" class="muted-text">暂无工具调用数据</div>
-            </div>
-          </div>
-        </div>
-        <div class="audit-section">
-          <div class="section-toolbar audit-toolbar">
-            <div class="section-title" style="margin-bottom:0;">最近会话</div>
-            <div class="audit-toolbar-actions">
-              <span class="audit-hint">展示全部历史，可翻页查看</span>
-              <el-button
-                v-if="canManageAudit"
-                size="small"
-                type="danger"
-                plain
-                :disabled="!selectedAuditSessionIds.length"
-                @click="handleBatchDeleteAuditSessions"
-              >
-                批量删除
-              </el-button>
-            </div>
-          </div>
-          <el-table :data="auditSessions" stripe size="small" class="console-table" @selection-change="handleAuditSessionSelectionChange">
-            <el-table-column v-if="canManageAudit" type="selection" width="42" />
-            <el-table-column prop="title" label="会话标题" min-width="220" show-overflow-tooltip />
-            <el-table-column prop="username" label="用户" width="120" />
-            <el-table-column prop="message_count" label="消息数" width="90" />
-            <el-table-column prop="status" label="状态" width="100" />
-            <el-table-column prop="last_message_at" label="最后消息" min-width="180" />
-            <el-table-column v-if="canManageAudit" label="操作" width="100" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="danger" @click="handleDeleteAuditSession(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div class="pagination-row">
-            <el-pagination
-              v-model:current-page="auditSessionPagination.page"
-              :page-size="auditSessionPagination.pageSize"
-              :total="auditSessionPagination.total"
-              layout="total, prev, pager, next"
-              @current-change="loadAuditSessions"
-            />
-          </div>
-        </div>
-        <div class="audit-section">
-          <div class="section-toolbar audit-toolbar">
-            <div class="section-title" style="margin-bottom:0;">最近工具调用</div>
-            <div class="audit-toolbar-actions">
-              <span class="audit-hint">展示全部历史，可翻页查看</span>
-              <el-button
-                v-if="canManageAudit"
-                size="small"
-                type="danger"
-                plain
-                :disabled="!selectedAuditToolIds.length"
-                @click="handleBatchDeleteAuditTools"
-              >
-                批量删除
-              </el-button>
-            </div>
-          </div>
-          <el-table :data="auditTools" stripe size="small" class="console-table" @selection-change="handleAuditToolSelectionChange">
-            <el-table-column v-if="canManageAudit" type="selection" width="42" />
-            <el-table-column type="expand">
-              <template #default="{ row }">
-                <div class="json-preview">{{ formatJsonCompact({ request_payload: row.request_payload, response_summary: row.response_summary }) }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column prop="tool_name" label="工具" width="180" />
-            <el-table-column prop="username" label="用户" width="120" />
-            <el-table-column prop="status" label="状态" width="100" />
-            <el-table-column prop="latency_ms" label="耗时(ms)" width="110" />
-            <el-table-column prop="created_at" label="时间" min-width="180" />
-            <el-table-column v-if="canManageAudit" label="操作" width="100" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="danger" @click="handleDeleteAuditTool(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div class="pagination-row">
-            <el-pagination
-              v-model:current-page="auditToolPagination.page"
-              :page-size="auditToolPagination.pageSize"
-              :total="auditToolPagination.total"
-              layout="total, prev, pager, next"
-              @current-change="loadAuditTools"
-            />
-          </div>
-        </div>
-        <div class="audit-section">
-          <div class="section-toolbar audit-toolbar">
-            <div class="section-title" style="margin-bottom:0;">最近模型调用</div>
-            <div class="audit-toolbar-actions">
-              <span class="audit-hint">展示模型 usage、耗时和费用估算</span>
-            </div>
-          </div>
-          <el-table :data="auditModels" stripe size="small" class="console-table">
-            <el-table-column type="expand">
-              <template #default="{ row }">
-                <div class="json-preview">{{ formatJsonCompact({ request_summary: row.request_summary, response_summary: row.response_summary }) }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column prop="provider_name" label="提供商" min-width="150" show-overflow-tooltip />
-            <el-table-column prop="purpose_display" label="用途" width="110" />
-            <el-table-column prop="resolved_model" label="模型" min-width="160" show-overflow-tooltip />
-            <el-table-column prop="status_display" label="状态" width="90" />
-            <el-table-column prop="total_tokens" label="Token" width="100" />
-            <el-table-column prop="estimated_cost_usd" label="费用" width="110" />
-            <el-table-column prop="latency_ms" label="耗时(ms)" width="110" />
-            <el-table-column prop="created_at" label="时间" min-width="170" />
-            <el-table-column v-if="canManageAudit" label="操作" width="90" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="danger" @click="handleDeleteAuditModel(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div class="pagination-row">
-            <el-pagination
-              v-model:current-page="auditModelPagination.page"
-              :page-size="auditModelPagination.pageSize"
-              :total="auditModelPagination.total"
-              layout="total, prev, pager, next"
-              @current-change="loadAuditModels"
-            />
-          </div>
-        </div>
-        <div class="audit-section">
-          <div class="section-toolbar audit-toolbar">
-            <div class="section-title" style="margin-bottom:0;">最近动作</div>
-            <div class="audit-toolbar-actions">
-              <span class="audit-hint">展示全部历史，可翻页查看</span>
-              <el-button
-                v-if="canManageAudit"
-                size="small"
-                type="danger"
-                plain
-                :disabled="!selectedAuditActionIds.length"
-                @click="handleBatchDeleteAuditActions"
-              >
-                批量删除
-              </el-button>
-            </div>
-          </div>
-          <el-table :data="auditActions" stripe size="small" class="console-table" @selection-change="handleAuditActionSelectionChange">
-            <el-table-column v-if="canManageAudit" type="selection" width="42" />
-            <el-table-column prop="title" label="动作标题" min-width="180" />
-            <el-table-column prop="risk_level_display" label="风险" width="100" />
-            <el-table-column prop="status_display" label="状态" width="120" />
-            <el-table-column prop="confirmed_by" label="确认人" width="120" />
-            <el-table-column prop="updated_at" label="更新时间" min-width="180" />
-            <el-table-column v-if="canManageAudit" label="操作" width="100" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="danger" @click="handleDeleteAuditAction(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div class="pagination-row">
-            <el-pagination
-              v-model:current-page="auditActionPagination.page"
-              :page-size="auditActionPagination.pageSize"
-              :total="auditActionPagination.total"
-              layout="total, prev, pager, next"
-              @current-change="loadAuditActions"
-            />
-          </div>
-        </div>
-      </template>
     </section>
 
     <el-dialog v-model="providerDialogVisible" :title="providerForm.id ? '编辑提供商' : '新增提供商'" width="760px" destroy-on-close append-to-body>
@@ -843,8 +609,21 @@
           <el-form-item label="温度"><el-input-number v-model="providerForm.temperature" :min="0" :max="2" :step="0.1" /></el-form-item>
           <el-form-item label="最大 Tokens"><el-input-number v-model="providerForm.max_tokens" :min="100" :max="16000" :step="100" /></el-form-item>
           <el-form-item label="超时"><el-input-number v-model="providerForm.timeout_seconds" :min="5" :max="120" /></el-form-item>
-          <el-form-item label="输入单价"><el-input-number v-model="providerForm.input_token_price_per_1m" :min="0" :precision="6" :step="0.000001" /></el-form-item>
-          <el-form-item label="输出单价"><el-input-number v-model="providerForm.output_token_price_per_1m" :min="0" :precision="6" :step="0.000001" /></el-form-item>
+          <el-form-item label="计费币种">
+            <el-segmented v-model="providerForm.price_currency" :options="providerCurrencyOptions" />
+          </el-form-item>
+          <el-form-item label="输入单价">
+            <div class="price-input-row">
+              <el-input-number v-model="providerForm.input_token_price_per_1m" :min="0" :precision="6" :step="0.000001" />
+              <span>{{ providerPriceUnitLabel }}</span>
+            </div>
+          </el-form-item>
+          <el-form-item label="输出单价">
+            <div class="price-input-row">
+              <el-input-number v-model="providerForm.output_token_price_per_1m" :min="0" :precision="6" :step="0.000001" />
+              <span>{{ providerPriceUnitLabel }}</span>
+            </div>
+          </el-form-item>
           <el-form-item label="启用"><el-switch v-model="providerForm.is_enabled" /></el-form-item>
         </div>
       </el-form>
@@ -1080,12 +859,29 @@
         <el-button @click="mcpToolsDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="statDetailDialogVisible" :title="statDetail.title || '统计详情'" width="640px" destroy-on-close append-to-body>
+      <div v-if="statDetail.subtitle" class="stat-detail-subtitle">{{ statDetail.subtitle }}</div>
+      <div v-if="statDetail.items.length" class="stat-detail-list">
+        <div v-for="(item, index) in statDetail.items" :key="`${item.label}-${index}`" class="stat-detail-item">
+          <div class="stat-detail-main">
+            <span class="stat-detail-label">{{ item.label }}</span>
+            <span v-if="item.desc" class="stat-detail-desc">{{ item.desc }}</span>
+          </div>
+          <el-tag v-if="item.tag" size="small" effect="plain">{{ item.tag }}</el-tag>
+        </div>
+      </div>
+      <div v-else class="stat-detail-empty">{{ statDetail.emptyText || '暂无详情' }}</div>
+      <template #footer>
+        <el-button @click="statDetailDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ChatDotSquare, Connection, Cpu, Message, Promotion, Setting, Tickets, Tools } from '@element-plus/icons-vue'
+import { ChatDotSquare, Connection, Cpu, Message, Promotion, Setting, Tools } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import {
@@ -1098,26 +894,13 @@ import {
   createAIOpsA2ATask,
   createAIOpsRunbookDraft,
   createAIOpsRunbookFromSession,
-  bulkDeleteAIOpsAuditSessions,
-  bulkDeleteAIOpsAuditActions,
-  bulkDeleteAIOpsAuditToolInvocations,
   cloneAIOpsSkill,
-  deleteAIOpsAuditSession,
-  deleteAIOpsAuditAction,
-  deleteAIOpsAuditModelInvocation,
-  deleteAIOpsAuditToolInvocation,
   deleteAIOpsMcpServer,
   deleteAIOpsProvider,
   deleteAIOpsSkill,
   deleteAIOpsReviewKnowledge,
   deleteAIOpsRunbook,
   getAIOpsA2ATasks,
-  getAIOpsAuditActions,
-  getAIOpsAuditCosts,
-  getAIOpsAuditModelInvocations,
-  getAIOpsAuditOverview,
-  getAIOpsAuditSessions,
-  getAIOpsAuditToolInvocations,
   getAIOpsActions,
   getAIOpsConfig,
   getAIOpsPlatformMcpManifest,
@@ -1153,40 +936,11 @@ const mcpServers = ref([])
 const skills = ref([])
 const actionRegistry = ref([])
 const actionRegistrySummary = ref({})
-const auditOverview = ref({})
-const auditCosts = ref({})
-const auditSessions = ref([])
-const auditTools = ref([])
-const auditModels = ref([])
-const auditActions = ref([])
-const selectedAuditSessionIds = ref([])
-const selectedAuditToolIds = ref([])
-const selectedAuditActionIds = ref([])
 const a2aTasks = ref([])
 const runbooks = ref([])
 const reviewKnowledge = ref([])
 const platformMcpManifest = ref({ tools: [], rate_limit: {} })
 const skillMarketplace = ref({ summary: {}, items: [] })
-const auditSessionPagination = reactive({
-  page: 1,
-  pageSize: 10,
-  total: 0,
-})
-const auditToolPagination = reactive({
-  page: 1,
-  pageSize: 10,
-  total: 0,
-})
-const auditModelPagination = reactive({
-  page: 1,
-  pageSize: 10,
-  total: 0,
-})
-const auditActionPagination = reactive({
-  page: 1,
-  pageSize: 10,
-  total: 0,
-})
 
 const a2aPagination = reactive({
   page: 1,
@@ -1227,8 +981,15 @@ const mcpToolsDialogVisible = ref(false)
 const a2aDialogVisible = ref(false)
 const runbookDialogVisible = ref(false)
 const runbookVersionDialogVisible = ref(false)
+const statDetailDialogVisible = ref(false)
 const runbookVersions = ref([])
 const currentRunbookVersionTitle = ref('')
+const statDetail = reactive({
+  title: '',
+  subtitle: '',
+  items: [],
+  emptyText: '',
+})
 
 const providerForm = reactive({})
 const providerModels = ref([])
@@ -1242,7 +1003,6 @@ const mcpToolsList = ref([])
 const mcpToolDiagnostics = ref([])
 const currentMcpToolsTitle = ref('')
 
-const canManageAudit = computed(() => authStore.hasPermission('aiops.audit.manage'))
 const canInvokeA2A = computed(() => authStore.hasPermission('aiops.a2a.invoke'))
 const canManageRunbook = computed(() => authStore.hasPermission('aiops.runbook.manage'))
 const canViewMcpServer = computed(() => authStore.hasPermission('aiops.mcp.view'))
@@ -1253,6 +1013,11 @@ const providerApiKeyPlaceholder = computed(() => {
   if (preset?.api_key_placeholder) return providerForm.id ? `留空则保留原值；${preset.api_key_placeholder}` : preset.api_key_placeholder
   return providerForm.id ? '留空则保留原值' : 'API Key'
 })
+const providerCurrencyOptions = [
+  { label: '美元 USD', value: 'USD' },
+  { label: '人民币 CNY', value: 'CNY' },
+]
+const providerPriceUnitLabel = computed(() => `${currencySymbol(providerForm.price_currency)}/百万 Token`)
 const mcpAuthConfig = computed(() => {
   try {
     const raw = mcpForm.auth_config_text?.trim()
@@ -1314,8 +1079,6 @@ const actionGroups = computed(() => {
     }))
     .sort((a, b) => a.category.localeCompare(b.category, 'zh-CN'))
 })
-const modelCostSummary = computed(() => auditCosts.value?.model || {})
-const toolCostSummary = computed(() => auditCosts.value?.tools || {})
 const skillMarketSummary = computed(() => skillMarketplace.value?.summary || {})
 const a2aOverview = computed(() => ({
   total: a2aPagination.total || a2aTasks.value.length,
@@ -1429,24 +1192,6 @@ function skillRecommendedToolCount(skill = {}) {
   return skillRecommendedTools(skill).length
 }
 
-function formatSkillCoverage(skill = {}) {
-  const examples = (skill.examples || []).filter(Boolean)
-  if (!examples.length) return '适用场景：未配置样例'
-  return `适用场景：${examples.slice(0, 2).join('、')}${examples.length > 2 ? '…' : ''}`
-}
-
-function formatSkillToolDependencies(skill = {}) {
-  const tools = skillRecommendedTools(skill)
-  if (!tools.length) return '工具依赖：未声明'
-  return `工具依赖：${tools.slice(0, 4).join('、')}${tools.length > 4 ? '…' : ''}`
-}
-
-function formatActionExamples(action = {}) {
-  const examples = (action.suggested_questions || []).filter(Boolean)
-  if (!examples.length) return '--'
-  return examples.slice(0, 2).join('、') + (examples.length > 2 ? '…' : '')
-}
-
 function actionSkillCount(action = {}) {
   return new Set(action.skills || []).size
 }
@@ -1454,13 +1199,6 @@ function actionSkillCount(action = {}) {
 function formatActionName(code) {
   const action = actionRegistry.value.find(item => item.code === code)
   return action?.display_name || code
-}
-
-function formatActionSkillNames(action = {}) {
-  const skillsBySlug = new Map(skills.value.map(item => [item.slug, item.name]))
-  const names = (action.skills || []).map(slug => skillsBySlug.get(slug) || slug).filter(Boolean)
-  if (!names.length) return '--'
-  return names.join('、')
 }
 
 function formatEnabledTools(tools) {
@@ -1471,6 +1209,89 @@ function formatEnabledTools(tools) {
 function formatActionList(items) {
   if (!Array.isArray(items) || !items.length) return '--'
   return items.join('、')
+}
+
+function openStatDetail({ title, subtitle, items, emptyText }) {
+  statDetail.title = title
+  statDetail.subtitle = subtitle || ''
+  statDetail.items = Array.isArray(items) ? items : []
+  statDetail.emptyText = emptyText || '暂无详情'
+  statDetailDialogVisible.value = true
+}
+
+function openSkillStatDetail(skill = {}, type) {
+  const skillName = skill.name || skill.slug || '--'
+  if (type === 'tools') {
+    const builtinTools = new Set((skill.builtin_tools || []).filter(Boolean))
+    const recommendedTools = new Set((skill.recommended_tools || []).filter(Boolean))
+    const items = skillRecommendedTools(skill).map(tool => ({
+      label: tool,
+      tag: builtinTools.has(tool) ? '核心工具' : '补充工具',
+      desc: builtinTools.has(tool) && recommendedTools.has(tool) ? '同时声明在补充依赖中' : '',
+    }))
+    openStatDetail({
+      title: '工具依赖详情',
+      subtitle: `Skill：${skillName}`,
+      items,
+      emptyText: '当前 Skill 未声明工具依赖',
+    })
+    return
+  }
+  const items = (skill.examples || []).filter(Boolean).map((example, index) => ({
+    label: example,
+    tag: `场景 ${index + 1}`,
+  }))
+  openStatDetail({
+    title: '适用场景详情',
+    subtitle: `Skill：${skillName}`,
+    items,
+    emptyText: '当前 Skill 未配置适用场景',
+  })
+}
+
+function openActionStatDetail(action = {}, type) {
+  const actionName = action.display_name || action.code || '--'
+  if (type === 'examples') {
+    const items = (action.suggested_questions || []).filter(Boolean).map((example, index) => ({
+      label: example,
+      tag: `示例 ${index + 1}`,
+    }))
+    openStatDetail({
+      title: '示例入口详情',
+      subtitle: `Action：${actionName}`,
+      items,
+      emptyText: '当前 Action 未配置示例入口',
+    })
+    return
+  }
+  if (type === 'skills') {
+    const skillsBySlug = new Map(skills.value.map(item => [item.slug, item]))
+    const items = Array.from(new Set(action.skills || [])).filter(Boolean).map((slug) => {
+      const skill = skillsBySlug.get(slug)
+      return {
+        label: skill?.name || slug,
+        desc: skill?.description || `标识：${slug}`,
+        tag: skill?.is_builtin ? '内置' : '自定义',
+      }
+    })
+    openStatDetail({
+      title: '默认 Skill 详情',
+      subtitle: `Action：${actionName}`,
+      items,
+      emptyText: '当前 Action 未绑定默认 Skill',
+    })
+    return
+  }
+  const items = (action.output_blocks || []).filter(Boolean).map(block => ({
+    label: block,
+    tag: '输出块',
+  }))
+  openStatDetail({
+    title: '结构化输出详情',
+    subtitle: `Action：${actionName}`,
+    items,
+    emptyText: '当前 Action 未配置结构化输出块',
+  })
 }
 
 function formatActionMode(mode) {
@@ -1514,6 +1335,14 @@ function formatProviderModelLabel(item = {}) {
   return `${item.id}${owner}`
 }
 
+function currencySymbol(currency) {
+  return String(currency || '').toUpperCase() === 'CNY' ? '¥' : '$'
+}
+
+function formatProviderCurrency(currency) {
+  return String(currency || '').toUpperCase() === 'CNY' ? '人民币' : '美元'
+}
+
 function providerOptionLabel(provider = {}) {
   if (provider.runtime_ready) return provider.name
   return `${provider.name}（${provider.is_enabled ? '待配置' : '停用'}）`
@@ -1554,6 +1383,7 @@ function applyProviderPreset(key) {
     temperature: preset.temperature ?? providerForm.temperature,
     max_tokens: preset.max_tokens || providerForm.max_tokens,
     timeout_seconds: preset.timeout_seconds || providerForm.timeout_seconds,
+    price_currency: preset.price_currency || providerForm.price_currency || 'USD',
   })
   providerModels.value = []
   providerModelRecommendation.value = null
@@ -1571,6 +1401,7 @@ function resetProviderForm() {
     temperature: 0.2,
     max_tokens: 1200,
     timeout_seconds: 30,
+    price_currency: 'USD',
     input_token_price_per_1m: 0,
     output_token_price_per_1m: 0,
     is_enabled: true,
@@ -1668,7 +1499,7 @@ async function optionalLoad(loader, fallback) {
 async function loadAll() {
   loading.page = true
   try {
-    const [config, providerData, presetData, mcpData, skillData, marketData, actionData, auditData, costData, mcpManifestData] = await Promise.all([
+    const [config, providerData, presetData, mcpData, skillData, marketData, actionData, mcpManifestData] = await Promise.all([
       getAIOpsConfig(),
       getAIOpsProviders(),
       getAIOpsProviderPresets(),
@@ -1676,8 +1507,6 @@ async function loadAll() {
       getAIOpsSkills(),
       getAIOpsSkillMarketplace(),
       getAIOpsActions(),
-      optionalLoad(() => getAIOpsAuditOverview({ skipErrorMessage: true })),
-      optionalLoad(() => getAIOpsAuditCosts({ days: 7 }, { skipErrorMessage: true })),
       optionalLoad(() => getAIOpsPlatformMcpManifest({ skipErrorMessage: true })),
     ])
     applyConfig(config)
@@ -1688,29 +1517,8 @@ async function loadAll() {
     skillMarketplace.value = marketData || { summary: {}, items: [] }
     actionRegistry.value = actionData?.actions || []
     actionRegistrySummary.value = actionData?.summary || {}
-    auditOverview.value = auditData || {}
-    auditCosts.value = costData || {}
     platformMcpManifest.value = mcpManifestData || { tools: [], rate_limit: {} }
     await Promise.all([
-      optionalLoad(() => loadAuditSessions(auditSessionPagination.page, { skipErrorMessage: true }), () => {
-        auditSessionPagination.total = 0
-        auditSessions.value = []
-        selectedAuditSessionIds.value = []
-      }),
-      optionalLoad(() => loadAuditTools(auditToolPagination.page, { skipErrorMessage: true }), () => {
-        auditToolPagination.total = 0
-        auditTools.value = []
-        selectedAuditToolIds.value = []
-      }),
-      optionalLoad(() => loadAuditModels(auditModelPagination.page, { skipErrorMessage: true }), () => {
-        auditModelPagination.total = 0
-        auditModels.value = []
-      }),
-      optionalLoad(() => loadAuditActions(auditActionPagination.page, { skipErrorMessage: true }), () => {
-        auditActionPagination.total = 0
-        auditActions.value = []
-        selectedAuditActionIds.value = []
-      }),
       optionalLoad(() => loadA2ATasks(a2aPagination.page, { skipErrorMessage: true }), () => {
         a2aPagination.total = 0
         a2aTasks.value = []
@@ -1726,69 +1534,6 @@ async function loadAll() {
     ])
   } finally {
     loading.page = false
-  }
-}
-
-async function loadAuditSessions(page = 1, config = {}) {
-  try {
-    const sessionData = await getAIOpsAuditSessions({ page }, config)
-    auditSessionPagination.page = page
-    auditSessionPagination.total = sessionData.count || 0
-    auditSessions.value = sessionData.results || sessionData || []
-    selectedAuditSessionIds.value = []
-  } catch (error) {
-    const message = String(error?.response?.data?.detail || '')
-    if (page > 1 && message.includes('无效页面')) {
-      return loadAuditSessions(page - 1, config)
-    }
-    throw error
-  }
-}
-
-async function loadAuditTools(page = 1, config = {}) {
-  try {
-    const toolData = await getAIOpsAuditToolInvocations({ page, page_size: auditToolPagination.pageSize }, config)
-    auditToolPagination.page = page
-    auditToolPagination.total = toolData.count || 0
-    auditTools.value = toolData.results || toolData || []
-    selectedAuditToolIds.value = []
-  } catch (error) {
-    const message = String(error?.response?.data?.detail || '')
-    if (page > 1 && message.includes('无效页面')) {
-      return loadAuditTools(page - 1, config)
-    }
-    throw error
-  }
-}
-
-async function loadAuditModels(page = 1, config = {}) {
-  try {
-    const modelData = await getAIOpsAuditModelInvocations({ page, page_size: auditModelPagination.pageSize }, config)
-    auditModelPagination.page = page
-    auditModelPagination.total = modelData.count || 0
-    auditModels.value = modelData.results || modelData || []
-  } catch (error) {
-    const message = String(error?.response?.data?.detail || '')
-    if (page > 1 && message.includes('无效页面')) {
-      return loadAuditModels(page - 1, config)
-    }
-    throw error
-  }
-}
-
-async function loadAuditActions(page = 1, config = {}) {
-  try {
-    const actionData = await getAIOpsAuditActions({ page, page_size: auditActionPagination.pageSize }, config)
-    auditActionPagination.page = page
-    auditActionPagination.total = actionData.count || 0
-    auditActions.value = actionData.results || actionData || []
-    selectedAuditActionIds.value = []
-  } catch (error) {
-    const message = String(error?.response?.data?.detail || '')
-    if (page > 1 && message.includes('无效页面')) {
-      return loadAuditActions(page - 1, config)
-    }
-    throw error
   }
 }
 
@@ -1863,6 +1608,7 @@ async function saveProvider() {
   saving.provider = true
   try {
     const payload = { ...providerForm }
+    payload.price_currency = payload.price_currency || 'USD'
     if (!payload.api_key) delete payload.api_key
     if (providerForm.id) await updateAIOpsProvider(providerForm.id, payload)
     else await createAIOpsProvider(payload)
@@ -2191,118 +1937,6 @@ function formatJsonCompact(value) {
   }
 }
 
-async function handleDeleteAuditSession(row) {
-  await ElMessageBox.confirm(`确认删除会话《${row.title}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
-  await deleteAIOpsAuditSession(row.id)
-  const shouldFallbackPage = auditSessions.value.length === 1 && auditSessionPagination.page > 1
-  ElMessage.success('会话已删除')
-  await Promise.all([
-    getAIOpsAuditOverview().then((data) => {
-      auditOverview.value = data || {}
-    }),
-    loadAuditSessions(shouldFallbackPage ? auditSessionPagination.page - 1 : auditSessionPagination.page),
-  ])
-}
-
-function handleAuditSessionSelectionChange(rows) {
-  selectedAuditSessionIds.value = rows.map((item) => item.id)
-}
-
-async function handleBatchDeleteAuditSessions() {
-  if (!selectedAuditSessionIds.value.length) return
-  await ElMessageBox.confirm(`确认批量删除已选中的 ${selectedAuditSessionIds.value.length} 个会话吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
-  const shouldFallbackPage = selectedAuditSessionIds.value.length === auditSessions.value.length && auditSessionPagination.page > 1
-  const deletedCount = selectedAuditSessionIds.value.length
-  await bulkDeleteAIOpsAuditSessions(selectedAuditSessionIds.value)
-  ElMessage.success(`已删除 ${deletedCount} 个会话`)
-  await Promise.all([
-    getAIOpsAuditOverview().then((data) => {
-      auditOverview.value = data || {}
-    }),
-    loadAuditSessions(shouldFallbackPage ? auditSessionPagination.page - 1 : auditSessionPagination.page),
-  ])
-}
-
-function handleAuditToolSelectionChange(rows) {
-  selectedAuditToolIds.value = rows.map((item) => item.id)
-}
-
-async function handleDeleteAuditTool(row) {
-  const shouldFallbackPage = auditTools.value.length === 1 && auditToolPagination.page > 1
-  await ElMessageBox.confirm(`确认删除工具调用《${row.tool_name}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
-  await deleteAIOpsAuditToolInvocation(row.id)
-  ElMessage.success('工具调用已删除')
-  await Promise.all([
-    getAIOpsAuditOverview().then((data) => {
-      auditOverview.value = data || {}
-    }),
-    loadAuditTools(shouldFallbackPage ? auditToolPagination.page - 1 : auditToolPagination.page),
-  ])
-}
-
-async function handleBatchDeleteAuditTools() {
-  if (!selectedAuditToolIds.value.length) return
-  const shouldFallbackPage = selectedAuditToolIds.value.length === auditTools.value.length && auditToolPagination.page > 1
-  const deletedCount = selectedAuditToolIds.value.length
-  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个工具调用吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
-  await bulkDeleteAIOpsAuditToolInvocations(selectedAuditToolIds.value)
-  ElMessage.success(`已删除 ${deletedCount} 个工具调用`)
-  await Promise.all([
-    getAIOpsAuditOverview().then((data) => {
-      auditOverview.value = data || {}
-    }),
-    loadAuditTools(shouldFallbackPage ? auditToolPagination.page - 1 : auditToolPagination.page),
-  ])
-}
-
-async function handleDeleteAuditModel(row) {
-  const shouldFallbackPage = auditModels.value.length === 1 && auditModelPagination.page > 1
-  await ElMessageBox.confirm(`确认删除模型调用《${row.resolved_model || row.requested_model}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
-  await deleteAIOpsAuditModelInvocation(row.id)
-  ElMessage.success('模型调用已删除')
-  await Promise.all([
-    getAIOpsAuditOverview().then((data) => {
-      auditOverview.value = data || {}
-    }),
-    getAIOpsAuditCosts({ days: 7 }).then((data) => {
-      auditCosts.value = data || {}
-    }),
-    loadAuditModels(shouldFallbackPage ? auditModelPagination.page - 1 : auditModelPagination.page),
-  ])
-}
-
-function handleAuditActionSelectionChange(rows) {
-  selectedAuditActionIds.value = rows.map((item) => item.id)
-}
-
-async function handleDeleteAuditAction(row) {
-  const shouldFallbackPage = auditActions.value.length === 1 && auditActionPagination.page > 1
-  await ElMessageBox.confirm(`确认删除动作《${row.title}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
-  await deleteAIOpsAuditAction(row.id)
-  ElMessage.success('动作已删除')
-  await Promise.all([
-    getAIOpsAuditOverview().then((data) => {
-      auditOverview.value = data || {}
-    }),
-    loadAuditActions(shouldFallbackPage ? auditActionPagination.page - 1 : auditActionPagination.page),
-  ])
-}
-
-async function handleBatchDeleteAuditActions() {
-  if (!selectedAuditActionIds.value.length) return
-  const shouldFallbackPage = selectedAuditActionIds.value.length === auditActions.value.length && auditActionPagination.page > 1
-  const deletedCount = selectedAuditActionIds.value.length
-  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个动作吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
-  await bulkDeleteAIOpsAuditActions(selectedAuditActionIds.value)
-  ElMessage.success(`已删除 ${deletedCount} 个动作`)
-  await Promise.all([
-    getAIOpsAuditOverview().then((data) => {
-      auditOverview.value = data || {}
-    }),
-    loadAuditActions(shouldFallbackPage ? auditActionPagination.page - 1 : auditActionPagination.page),
-  ])
-}
-
 onMounted(async () => {
   resetProviderForm()
   resetMcpForm()
@@ -2400,7 +2034,7 @@ onMounted(async () => {
 
 .hero h2 {
   margin: 0;
-  font-size: 24px;
+  font-size: 23px;
   line-height: 1.1;
   color: #0f172a;
 }
@@ -2409,7 +2043,7 @@ onMounted(async () => {
   margin: 0;
   color: #646a73;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.45;
 }
 
 .hero-actions {
@@ -2522,6 +2156,13 @@ onMounted(async () => {
   margin-bottom: 8px;
 }
 
+.runtime-note {
+  margin: -2px 0 10px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .switch-list {
   flex-direction: column;
 }
@@ -2535,6 +2176,46 @@ onMounted(async () => {
   border-radius: 14px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
+}
+
+.switch-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.switch-copy span {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.switch-copy small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.runtime-form {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+}
+
+.runtime-form :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+
+.runtime-field-tip {
+  width: 100%;
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .section-toolbar {
@@ -2581,6 +2262,26 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 10px;
+}
+
+.price-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.price-input-row .el-input-number {
+  flex: 1;
+  min-width: 0;
+}
+
+.price-input-row span {
+  flex: none;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .audit-grid {
@@ -2971,27 +2672,6 @@ onMounted(async () => {
   margin-top: 8px;
 }
 
-.skill-package-hints {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.skill-package-hints span {
-  min-width: 0;
-  padding: 6px 8px;
-  border-radius: 10px;
-  background: #f8fafc;
-  border: 1px solid #edf2f7;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.45;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .skill-package-side {
   display: flex;
   align-items: center;
@@ -3010,6 +2690,27 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   gap: 3px;
+}
+
+.stat-detail-button {
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.stat-detail-button:hover {
+  border-color: rgba(36, 91, 219, 0.22);
+  background: #f8fbff;
+  box-shadow: 0 8px 18px rgba(36, 91, 219, 0.06);
+  transform: translateY(-1px);
+}
+
+.stat-detail-button:focus-visible {
+  outline: 2px solid rgba(36, 91, 219, 0.22);
+  outline-offset: 2px;
 }
 
 .skill-package-stat span {
@@ -3137,40 +2838,6 @@ onMounted(async () => {
   margin-top: 8px;
 }
 
-.action-contract-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.action-contract-grid div {
-  min-width: 0;
-  padding: 7px 8px;
-  border-radius: 10px;
-  background: #f8fbff;
-  border: 1px solid #e0ecff;
-}
-
-.action-contract-grid span {
-  display: block;
-  margin-bottom: 4px;
-  color: #94a3b8;
-  font-size: 11px;
-  line-height: 1;
-}
-
-.action-contract-grid strong {
-  display: block;
-  color: #475569;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.45;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .action-package-side {
   display: flex;
   align-items: center;
@@ -3200,6 +2867,64 @@ onMounted(async () => {
   color: #0f172a;
   font-size: 16px;
   line-height: 1;
+}
+
+.stat-detail-subtitle {
+  margin: -2px 0 10px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.stat-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.stat-detail-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.stat-detail-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-detail-label {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.stat-detail-desc {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.stat-detail-empty {
+  padding: 18px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px dashed rgba(148, 163, 184, 0.36);
+  color: #94a3b8;
+  font-size: 13px;
+  text-align: center;
 }
 
 .skill-detail-card {
@@ -3298,9 +3023,7 @@ onMounted(async () => {
     padding: 0 12px;
   }
 
-  .concept-note,
-  .skill-package-hints,
-  .action-contract-grid {
+  .concept-note {
     grid-template-columns: 1fr;
   }
 

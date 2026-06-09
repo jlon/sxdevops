@@ -86,6 +86,7 @@ onMounted(reloadResourceTree)
 
 .task-hero-panel h2 {
   color: #0f172a;
+  font-size: 23px;
   margin: 0;
 }
 
@@ -95,6 +96,7 @@ onMounted(reloadResourceTree)
   line-height: 1.45;
   margin: 0;
   flex: 0 1 auto;
+  transform: translateY(1px);
 }
 
 .task-header-icon {

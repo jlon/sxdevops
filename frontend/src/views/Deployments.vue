@@ -943,7 +943,7 @@ onMounted(async () => {
 .release-page{display:flex;flex-direction:column;gap:6px}
 .panel{background:linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(250,252,255,.96) 100%);border:1px solid rgba(15,23,42,.08);border-radius:18px;box-shadow:0 8px 24px rgba(15,23,42,.04);padding:14px 16px}
 .hero{background:linear-gradient(135deg,#fbfdff 0%,#f7faff 52%,#f9fbfd 100%);display:flex;gap:12px;justify-content:space-between;border-color:rgba(36,91,219,.09)}
-.hero h2{color:#0f172a;margin:0}
+.hero h2{color:#0f172a;font-size:23px;margin:0}
 .subtitle{color:#475569;margin:8px 0 0;max-width:620px}
 .status-meta{display:flex;gap:10px}
 .release-hero-title-row{display:flex;align-items:center;gap:12px}

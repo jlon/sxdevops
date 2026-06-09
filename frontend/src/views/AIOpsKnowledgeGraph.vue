@@ -1415,6 +1415,7 @@ onBeforeUnmount(() => {
 
 .hero-title-row h2 {
   margin: 0;
+  font-size: 23px;
   color: #0f172a;
 }
 
@@ -1422,6 +1423,7 @@ onBeforeUnmount(() => {
   margin: 0;
   color: #64748b;
   font-size: 13px;
+  line-height: 1.45;
 }
 
 .inline-subtitle {

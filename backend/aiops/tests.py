@@ -36,8 +36,10 @@ from .services import (
     AIOpsModelCallError,
     DEFAULT_SUGGESTED_QUESTIONS,
     DEFAULT_WELCOME_MESSAGE,
+    _apply_dispatch_result_to_message,
     _ensure_followup_line,
     _formatter_repair_issue,
+    _build_history_messages,
     _is_formatted_answer_valid,
     _is_direct_log_question,
     _normalize_formatter_output,
@@ -475,6 +477,7 @@ class AIOpsApiTests(TestCase):
             provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
             base_url='https://example.com/v1',
             default_model='mock-model',
+            price_currency=AIOpsModelProvider.CURRENCY_CNY,
             input_token_price_per_1m=Decimal('1.000000'),
             output_token_price_per_1m=Decimal('2.000000'),
             is_enabled=True,
@@ -502,6 +505,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(invocation.username, self.user.username)
         self.assertEqual(invocation.total_tokens, 3000)
         self.assertEqual(invocation.estimated_cost_usd, Decimal('0.005000'))
+        self.assertEqual(invocation.estimated_cost_currency, AIOpsModelProvider.CURRENCY_CNY)
 
     def test_audit_cost_overview_includes_model_and_tool_stats(self):
         provider = AIOpsModelProvider.objects.create(
@@ -520,6 +524,7 @@ class AIOpsApiTests(TestCase):
             prompt_tokens=80,
             completion_tokens=40,
             estimated_cost_usd=Decimal('0.001200'),
+            estimated_cost_currency=AIOpsModelProvider.CURRENCY_CNY,
         )
         AIOpsToolInvocation.objects.create(
             session=session,
@@ -533,8 +538,41 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['model']['total_calls'], 1)
         self.assertEqual(response.data['model']['total_tokens'], 120)
+        self.assertEqual(response.data['model']['cost_currency'], AIOpsModelProvider.CURRENCY_CNY)
+        self.assertEqual(response.data['model']['by_currency'][0]['currency'], AIOpsModelProvider.CURRENCY_CNY)
+        self.assertEqual(response.data['model']['by_provider'][0]['cost_currency'], AIOpsModelProvider.CURRENCY_CNY)
         self.assertEqual(response.data['tools']['total_calls'], 1)
         self.assertEqual(response.data['tools']['by_tool'][0]['tool_name'], 'query_alerts')
+
+    def test_audit_cost_overview_all_range_includes_old_stats(self):
+        provider = AIOpsModelProvider.objects.create(
+            name='overview-all-provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            default_model='mock-model',
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='cost-overview-all')
+        old_invocation = AIOpsModelInvocation.objects.create(
+            provider=provider,
+            session=session,
+            username=self.user.username,
+            requested_model='mock-model',
+            resolved_model='mock-model',
+            total_tokens=3000000,
+            prompt_tokens=2000000,
+            completion_tokens=1000000,
+            estimated_cost_usd=Decimal('0.030000'),
+        )
+        AIOpsModelInvocation.objects.filter(id=old_invocation.id).update(created_at=timezone.now() - timedelta(days=120))
+
+        recent_response = self.client.get('/api/aiops/admin/audit/costs/', {'days': 7})
+        all_response = self.client.get('/api/aiops/admin/audit/costs/', {'range': 'all'})
+
+        self.assertEqual(recent_response.status_code, 200)
+        self.assertEqual(all_response.status_code, 200)
+        self.assertEqual(recent_response.data['model']['total_calls'], 0)
+        self.assertEqual(all_response.data['window_label'], '全部时间')
+        self.assertEqual(all_response.data['model']['total_calls'], 1)
+        self.assertEqual(all_response.data['model']['total_tokens'], 3000000)
 
     def test_audit_cost_overview_accepts_missing_trailing_slash(self):
         response = self.client.get('/api/aiops/admin/audit/costs')
@@ -3168,6 +3206,8 @@ class AIOpsApiTests(TestCase):
 
         self.assertEqual(len(result['traces']), 1)
         self.assertEqual(result['traces'][0]['trace_id'], 'trace-live-1')
+        self.assertTrue(result['citations'])
+        self.assertEqual(result['citations'][0]['title'], '链路追踪')
         self.assertEqual(result['tracing']['provider'], 'skywalking')
         self.assertTrue(any('bcp-server@梧桐港-SaaS-PRO' in item for item in result['sections'][0]['items']))
 
@@ -4903,6 +4943,57 @@ class AIOpsApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertIsNone(response.data['pending_action'])
+
+    def test_analysis_only_blocks_pending_action_creation(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='analysis-only')
+        Host.objects.create(hostname='legacy-data-sync', ip_address='10.20.30.20', environment='prod', status='offline')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='为 legacy-data-sync 生成巡检任务',
+            metadata={'analysis_only': True},
+        )
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_ASSISTANT, content='')
+        draft = build_task_draft(
+            self.user,
+            '为 legacy-data-sync 生成巡检任务',
+            {'request_summary': '为 legacy-data-sync 生成巡检任务', 'environment': 'prod'},
+        )
+        self.assertFalse(draft.get('error'))
+
+        assistant_message, pending_action = _apply_dispatch_result_to_message(
+            session,
+            assistant_message,
+            {
+                'content': '已完成分析。',
+                'message_type': AIOpsChatMessage.TYPE_ACTION,
+                'pending_action_draft': draft,
+            },
+            self.user,
+            question=user_message.content,
+            analysis_only=True,
+        )
+
+        self.assertIsNone(pending_action)
+        self.assertFalse(AIOpsPendingAction.objects.filter(session=session).exists())
+        self.assertTrue(assistant_message.metadata.get('analysis_only'))
+        self.assertTrue(assistant_message.metadata.get('analysis_only_enforced'))
+        pending_block = next(block for block in assistant_message.metadata.get('response_blocks', []) if block.get('id') == 'pending-action')
+        self.assertEqual(pending_block['status'], 'disabled')
+        self.assertEqual(pending_block['status_display'], '只分析')
+
+    def test_history_window_limits_model_context_messages(self):
+        config = get_agent_config()
+        config.max_history_messages = 4
+        config.save(update_fields=['max_history_messages'])
+        session = AIOpsChatSession.objects.create(user=self.user, title='context-window')
+        for index in range(6):
+            role = AIOpsChatMessage.ROLE_USER if index % 2 == 0 else AIOpsChatMessage.ROLE_ASSISTANT
+            AIOpsChatMessage.objects.create(session=session, role=role, content=f'msg-{index}')
+
+        history = _build_history_messages(session, config)
+
+        self.assertEqual([item['content'] for item in history], ['msg-2', 'msg-3', 'msg-4', 'msg-5'])
 
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_uses_llm_tool_calling_runtime(self, mocked_completion):

@@ -71,7 +71,13 @@ Key patterns:
 Key values:
 
 - inner tab shell padding `3px`
+- inner tab shell gap `8px`
 - inner tab height `38px`
+- inner tab padding `0 18px`
+- inner tab border radius `8px`
+- inner tab text `13px` / `700`
+- inner tab icon size `15px`
+- active inner tab background `#e8f0ff`, text `#245bdb`, inset pale blue border
 - history stats grid `repeat(4, minmax(0, 1fr))`
 - one-line stats cards with label left / value right
 - card min-height `68px`

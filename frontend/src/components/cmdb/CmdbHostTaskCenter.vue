@@ -985,6 +985,7 @@ const tasks = ref([])
 const templates = ref([])
 const taskTotal = ref(0)
 const taskPage = ref(1)
+const openedRouteTaskId = ref('')
 const taskStats = ref({ total: 0, running: 0, pending: 0, canceled: 0, success_rate: 0, aiops_pending: 0, high_risk: 0, by_source: {} })
 const targetFilters = ref({ search: '', environment: '', system: '', status: '' })
 const taskFilters = ref({ search: '', target_type: '', execution_kind: '', status: '', trigger_source: '', risk_level: '' })
@@ -1491,18 +1492,42 @@ async function submitTemplateDraft() {
   } finally { creatingTemplate.value = false }
 }
 async function openDetail(task) {
+  if (!task?.id) return false
   detailVisible.value = true
   detailLoading.value = true
   detailTask.value = task
   try {
     detailTask.value = await getHostTask(task.id)
+    return true
   } catch (error) {
     detailVisible.value = false
+    detailTask.value = null
     ElMessage.error(ui.loadTaskDetailFailed)
+    return false
   } finally {
     detailLoading.value = false
   }
 }
+
+async function openRouteTaskDetail(taskId, force = false) {
+  const normalizedTaskId = String(Array.isArray(taskId) ? taskId[0] : taskId || '').trim()
+  if (!normalizedTaskId) return
+  if (!force && openedRouteTaskId.value === normalizedTaskId && detailVisible.value) return
+  openedRouteTaskId.value = normalizedTaskId
+  activeTab.value = 'history'
+  const nextTriggerSource = route.query.source === 'aiopsAudit' ? 'aiops' : taskFilters.value.trigger_source
+  if (taskFilters.value.trigger_source !== nextTriggerSource) {
+    taskFilters.value.trigger_source = nextTriggerSource
+    taskPage.value = 1
+    await fetchTasks()
+  }
+  const currentListTask = tasks.value.find(item => String(item.id) === normalizedTaskId)
+  const opened = await openDetail(currentListTask || { id: normalizedTaskId })
+  if (opened && !currentListTask && detailTask.value?.id && String(detailTask.value.id) === normalizedTaskId) {
+    tasks.value = [detailTask.value, ...tasks.value]
+  }
+}
+
 async function copyTaskToDraft(task) {
   const sourceTask = task?.executions ? task : await getHostTask(task.id)
   await applyTaskDraft(buildPrefillDraftFromTask(sourceTask), '历史任务草稿')
@@ -1705,6 +1730,7 @@ onMounted(async () => {
   }
   await reloadAll()
   await hydratePrefillTaskDraft()
+  await openRouteTaskDetail(route.query.taskId, true)
 })
 watch(() => route.query.aiopsDraft, async (value, previousValue) => {
   if (!value || value === previousValue) return
@@ -1713,6 +1739,10 @@ watch(() => route.query.aiopsDraft, async (value, previousValue) => {
 watch(() => route.query.taskDraft, async (value, previousValue) => {
   if (!value || value === previousValue) return
   await hydratePrefillTaskDraft()
+})
+watch(() => route.query.taskId, async (value, previousValue) => {
+  if (!value || value === previousValue) return
+  await openRouteTaskDetail(value)
 })
 </script>
 <style scoped>

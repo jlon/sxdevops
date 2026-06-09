@@ -80,24 +80,25 @@ onMounted(reloadResourceTree)
 }
 
 .hero-title-row {
-  align-items: baseline;
+  align-items: center;
   display: flex;
   gap: 10px;
 }
 
 .hero-title-row h2 {
   color: #0f172a;
-  font-size: 22px;
+  font-size: 23px;
   font-weight: 700;
   line-height: 1.1;
   margin: 0;
 }
 
 .page-inline-desc {
-  color: #64748b;
-  font-size: 12px;
+  color: #475569;
+  font-size: 13px;
   line-height: 1.45;
   margin: 0;
+  flex: 0 1 auto;
 }
 
 .hero-icon {

@@ -232,7 +232,7 @@ onMounted(loadOverview)
 .hero-tagline {
   color: #64748b;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .hero-icon {

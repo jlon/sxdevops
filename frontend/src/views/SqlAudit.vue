@@ -267,6 +267,7 @@ onMounted(loadSnapshotStats)
 
 .hero h2 {
   margin: 0;
+  font-size: 23px;
   color: #0f172a;
 }
 

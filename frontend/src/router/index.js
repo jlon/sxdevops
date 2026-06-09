@@ -372,6 +372,16 @@ const routes = [
         },
       },
       {
+        path: 'aiops/audit',
+        name: 'AIOpsAudit',
+        component: () => import('@/views/AIOpsAudit.vue'),
+        meta: {
+          title: '智能体审计',
+          icon: 'Tickets',
+          permission: 'aiops.audit.view',
+        },
+      },
+      {
         path: 'sql',
         redirect: (to) => ({ path: '/workorders/sql', query: to.query }),
         meta: { hidden: true },
