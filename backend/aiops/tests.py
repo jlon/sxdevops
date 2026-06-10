@@ -93,6 +93,11 @@ class AIOpsApiTests(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
         Host.objects.create(hostname='prod-web-01', ip_address='10.0.0.10', environment='prod', status='online')
 
+    def response_results(self, response):
+        if isinstance(response.data, dict) and 'results' in response.data:
+            return response.data['results']
+        return response.data
+
     def ensure_prod_knowledge_environment(self):
         AIOpsKnowledgeEnvironment.objects.create(
             name='prod',
@@ -580,6 +585,110 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('model', response.data)
         self.assertIn('tools', response.data)
+
+    def test_audit_lists_support_filters(self):
+        provider = AIOpsModelProvider.objects.create(
+            name='filter-provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            default_model='filter-model',
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='生产订单排障')
+        archived_session = AIOpsChatSession.objects.create(user=self.user, title='历史归档会话', status=AIOpsChatSession.STATUS_ARCHIVED)
+        other_user = User.objects.create_user(username='audit_other', password='Passw0rd!123')
+        other_session = AIOpsChatSession.objects.create(user=other_user, title='其他用户会话')
+        AIOpsToolInvocation.objects.create(
+            session=session,
+            tool_name='query_alerts',
+            status=AIOpsToolInvocation.STATUS_SUCCESS,
+            latency_ms=12,
+        )
+        AIOpsToolInvocation.objects.create(
+            session=archived_session,
+            tool_name='query_logs',
+            status=AIOpsToolInvocation.STATUS_FAILED,
+            latency_ms=24,
+        )
+        AIOpsToolInvocation.objects.create(
+            session=other_session,
+            tool_name='query_hosts',
+            status=AIOpsToolInvocation.STATUS_SUCCESS,
+            latency_ms=36,
+        )
+        AIOpsModelInvocation.objects.create(
+            provider=provider,
+            session=session,
+            username=self.user.username,
+            purpose=AIOpsModelInvocation.PURPOSE_CHAT_PLANNING,
+            requested_model='filter-model',
+            resolved_model='filter-model',
+            status=AIOpsModelInvocation.STATUS_SUCCESS,
+            estimated_cost_currency=AIOpsModelProvider.CURRENCY_CNY,
+        )
+        AIOpsPendingAction.objects.create(
+            session=session,
+            action_type=AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK,
+            title='重启订单服务',
+            risk_level=AIOpsPendingAction.RISK_HIGH,
+            status=AIOpsPendingAction.STATUS_PENDING,
+            confirmed_by='ops-lead',
+        )
+
+        sessions_response = self.client.get('/api/aiops/admin/audit/sessions/', {'q': '订单', 'status': AIOpsChatSession.STATUS_ACTIVE})
+        self.assertEqual(sessions_response.status_code, 200)
+        self.assertEqual([item['title'] for item in self.response_results(sessions_response)], ['生产订单排障'])
+
+        sessions_user_response = self.client.get('/api/aiops/admin/audit/sessions/', {'username': 'audit_other'})
+        self.assertEqual(sessions_user_response.status_code, 200)
+        self.assertEqual([item['title'] for item in self.response_results(sessions_user_response)], ['其他用户会话'])
+
+        tools_response = self.client.get('/api/aiops/admin/audit/tool-invocations/', {'status': AIOpsToolInvocation.STATUS_FAILED})
+        self.assertEqual(tools_response.status_code, 200)
+        self.assertEqual([item['tool_name'] for item in self.response_results(tools_response)], ['query_logs'])
+
+        tools_search_response = self.client.get('/api/aiops/admin/audit/tool-invocations/', {'q': 'alerts'})
+        self.assertEqual(tools_search_response.status_code, 200)
+        self.assertEqual([item['tool_name'] for item in self.response_results(tools_search_response)], ['query_alerts'])
+
+        tools_user_response = self.client.get('/api/aiops/admin/audit/tool-invocations/', {'username': 'audit_other'})
+        self.assertEqual(tools_user_response.status_code, 200)
+        self.assertEqual([item['tool_name'] for item in self.response_results(tools_user_response)], ['query_hosts'])
+
+        models_response = self.client.get('/api/aiops/admin/audit/model-invocations/', {
+            'purpose': AIOpsModelInvocation.PURPOSE_CHAT_PLANNING,
+            'currency': AIOpsModelProvider.CURRENCY_CNY,
+            'q': 'filter',
+        })
+        self.assertEqual(models_response.status_code, 200)
+        self.assertEqual(len(self.response_results(models_response)), 1)
+        self.assertEqual(self.response_results(models_response)[0]['estimated_cost_currency'], AIOpsModelProvider.CURRENCY_CNY)
+
+        actions_response = self.client.get('/api/aiops/admin/audit/actions/', {
+            'status': AIOpsPendingAction.STATUS_PENDING,
+            'risk_level': AIOpsPendingAction.RISK_HIGH,
+            'q': '订单',
+        })
+        self.assertEqual(actions_response.status_code, 200)
+        self.assertEqual([item['title'] for item in self.response_results(actions_response)], ['重启订单服务'])
+
+    def test_audit_lists_page_size_defaults_to_20_and_caps_at_100(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='audit-page-size')
+        for index in range(105):
+            AIOpsToolInvocation.objects.create(
+                session=session,
+                tool_name=f'page_size_tool_{index}',
+                status=AIOpsToolInvocation.STATUS_SUCCESS,
+            )
+
+        default_response = self.client.get('/api/aiops/admin/audit/tool-invocations/')
+        twenty_response = self.client.get('/api/aiops/admin/audit/tool-invocations/', {'page_size': 20})
+        max_response = self.client.get('/api/aiops/admin/audit/tool-invocations/', {'page_size': 999})
+
+        self.assertEqual(default_response.status_code, 200)
+        self.assertEqual(twenty_response.status_code, 200)
+        self.assertEqual(max_response.status_code, 200)
+        self.assertEqual(len(self.response_results(default_response)), 20)
+        self.assertEqual(len(self.response_results(twenty_response)), 20)
+        self.assertEqual(len(self.response_results(max_response)), 100)
 
     def test_a2a_external_task_can_be_created_and_canceled(self):
         get_agent_config()

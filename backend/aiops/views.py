@@ -1,6 +1,9 @@
+from datetime import datetime, time as datetime_time
+
 from django.core.cache import cache
 from django.db.models import Count, Q
 from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework import pagination, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -86,7 +89,7 @@ from .knowledge_graph import build_knowledge_graph
 
 K8S_NAMESPACE_OPTIONS_CACHE_TTL = 60
 K8S_NAMESPACE_OPTIONS_STALE_CACHE_TTL = 300
-AUDIT_RECENT_PAGE_SIZE = 10
+AUDIT_RECENT_PAGE_SIZE = 20
 
 
 DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
@@ -250,6 +253,44 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 class _AuditRecentPagination(pagination.PageNumberPagination):
     page_size = AUDIT_RECENT_PAGE_SIZE
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+def _audit_query_param(request, *names):
+    for name in names:
+        value = request.query_params.get(name)
+        if value not in (None, ''):
+            return str(value).strip()
+    return ''
+
+
+def _audit_range_datetime(value, end_of_day=False):
+    if not value:
+        return None
+    parsed = parse_datetime(str(value))
+    if parsed is None:
+        parsed_date = parse_date(str(value))
+        if parsed_date:
+            parsed = datetime.combine(
+                parsed_date,
+                datetime_time.max if end_of_day else datetime_time.min,
+            )
+    if parsed is None:
+        return None
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+    return parsed
+
+
+def _filter_audit_time_range(queryset, request, field_name):
+    start_at = _audit_range_datetime(_audit_query_param(request, 'start', 'start_at'))
+    end_at = _audit_range_datetime(_audit_query_param(request, 'end', 'end_at'), end_of_day=True)
+    if start_at:
+        queryset = queryset.filter(**{f'{field_name}__gte': start_at})
+    if end_at:
+        queryset = queryset.filter(**{f'{field_name}__lte': end_at})
+    return queryset
 
 
 def _clean_catalog_value(value):
@@ -662,6 +703,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
 class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsAuditSessionSerializer
+    pagination_class = _AuditRecentPagination
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
     rbac_permissions = {
         'list': ['aiops.audit.view'],
@@ -670,7 +712,18 @@ class AIOpsAuditSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        return AIOpsChatSession.objects.filter(mirror_source__isnull=True).select_related('user').annotate(message_count=Count('messages')).order_by('-last_message_at', '-id')
+        queryset = AIOpsChatSession.objects.filter(mirror_source__isnull=True).select_related('user').annotate(message_count=Count('messages'))
+        query = _audit_query_param(self.request, 'q', 'search')
+        if query:
+            queryset = queryset.filter(Q(title__icontains=query) | Q(user__username__icontains=query))
+        status_value = _audit_query_param(self.request, 'status')
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        username = _audit_query_param(self.request, 'username', 'user')
+        if username:
+            queryset = queryset.filter(user__username__icontains=username)
+        queryset = _filter_audit_time_range(queryset, self.request, 'last_message_at')
+        return queryset.order_by('-last_message_at', '-id')
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -746,7 +799,22 @@ class AIOpsToolInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        return AIOpsToolInvocation.objects.select_related('session', 'session__user', 'message').order_by('-created_at', '-id')
+        queryset = AIOpsToolInvocation.objects.select_related('session', 'session__user', 'message')
+        query = _audit_query_param(self.request, 'q', 'search')
+        if query:
+            queryset = queryset.filter(
+                Q(tool_name__icontains=query)
+                | Q(session__title__icontains=query)
+                | Q(session__user__username__icontains=query)
+            )
+        status_value = _audit_query_param(self.request, 'status')
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        username = _audit_query_param(self.request, 'username', 'user')
+        if username:
+            queryset = queryset.filter(session__user__username__icontains=username)
+        queryset = _filter_audit_time_range(queryset, self.request, 'created_at')
+        return queryset.order_by('-created_at', '-id')
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -815,7 +883,27 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        return AIOpsPendingAction.objects.filter(mirror_source__isnull=True, session__mirror_source__isnull=True).select_related('session', 'session__user', 'message').order_by('-created_at', '-id')
+        queryset = AIOpsPendingAction.objects.filter(mirror_source__isnull=True, session__mirror_source__isnull=True).select_related('session', 'session__user', 'message')
+        query = _audit_query_param(self.request, 'q', 'search')
+        if query:
+            queryset = queryset.filter(
+                Q(title__icontains=query)
+                | Q(action_type__icontains=query)
+                | Q(confirmed_by__icontains=query)
+                | Q(session__title__icontains=query)
+                | Q(session__user__username__icontains=query)
+            )
+        status_value = _audit_query_param(self.request, 'status')
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        risk_level = _audit_query_param(self.request, 'risk_level', 'risk')
+        if risk_level:
+            queryset = queryset.filter(risk_level=risk_level)
+        username = _audit_query_param(self.request, 'username', 'user')
+        if username:
+            queryset = queryset.filter(session__user__username__icontains=username)
+        queryset = _filter_audit_time_range(queryset, self.request, 'updated_at')
+        return queryset.order_by('-created_at', '-id')
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -884,7 +972,30 @@ class AIOpsModelInvocationViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        return AIOpsModelInvocation.objects.select_related('provider', 'session', 'session__user', 'message').order_by('-created_at', '-id')
+        queryset = AIOpsModelInvocation.objects.select_related('provider', 'session', 'session__user', 'message')
+        query = _audit_query_param(self.request, 'q', 'search')
+        if query:
+            queryset = queryset.filter(
+                Q(provider__name__icontains=query)
+                | Q(requested_model__icontains=query)
+                | Q(resolved_model__icontains=query)
+                | Q(username__icontains=query)
+                | Q(session__title__icontains=query)
+            )
+        status_value = _audit_query_param(self.request, 'status')
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        purpose = _audit_query_param(self.request, 'purpose')
+        if purpose:
+            queryset = queryset.filter(purpose=purpose)
+        currency = _audit_query_param(self.request, 'currency', 'estimated_cost_currency')
+        if currency:
+            queryset = queryset.filter(estimated_cost_currency=currency.upper())
+        username = _audit_query_param(self.request, 'username', 'user')
+        if username:
+            queryset = queryset.filter(username__icontains=username)
+        queryset = _filter_audit_time_range(queryset, self.request, 'created_at')
+        return queryset.order_by('-created_at', '-id')
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

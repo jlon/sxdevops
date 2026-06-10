@@ -66,7 +66,7 @@
           >
             全部时间
           </el-button>
-          <el-button class="filter-refresh-btn" :loading="loading.overview" @click="loadOverview">
+          <el-button class="filter-refresh-btn audit-flat-action-btn" size="small" plain :loading="loading.overview" @click="loadOverview">
             <el-icon><RefreshRight /></el-icon>
             刷新
           </el-button>
@@ -193,13 +193,15 @@
           <span class="toolbar-desc">{{ activeTabMeta.desc }}</span>
         </div>
         <div class="workbench-card-actions">
-          <el-button class="filter-refresh-btn" :loading="activeLoading" @click="refreshActiveTab">
+          <el-button class="filter-refresh-btn audit-flat-action-btn" size="small" plain :loading="activeLoading" @click="refreshActiveTab">
             <el-icon><RefreshRight /></el-icon>
             刷新
           </el-button>
           <el-button
             v-if="activeTab === 'sessions' && canManageAudit"
+            class="audit-flat-action-btn"
             type="danger"
+            size="small"
             plain
             :disabled="!selectedAuditSessionIds.length"
             @click="handleBatchDeleteAuditSessions"
@@ -209,7 +211,9 @@
           </el-button>
           <el-button
             v-if="activeTab === 'tools' && canManageAudit"
+            class="audit-flat-action-btn"
             type="danger"
+            size="small"
             plain
             :disabled="!selectedAuditToolIds.length"
             @click="handleBatchDeleteAuditTools"
@@ -219,7 +223,9 @@
           </el-button>
           <el-button
             v-if="activeTab === 'actions' && canManageAudit"
+            class="audit-flat-action-btn"
             type="danger"
+            size="small"
             plain
             :disabled="!selectedAuditActionIds.length"
             @click="handleBatchDeleteAuditActions"
@@ -227,6 +233,52 @@
             <el-icon><Delete /></el-icon>
             批量删除
           </el-button>
+        </div>
+      </div>
+
+      <div class="workbench-toolbar workbench-toolbar--history audit-list-toolbar">
+        <div class="workbench-toolbar-left">
+          <template v-if="activeTab === 'sessions'">
+            <el-input v-model="auditFilters.sessions.q" class="audit-filter-search" size="small" clearable placeholder="搜索会话标题" @keyup.enter="applyAuditFilters" />
+            <el-input v-model="auditFilters.sessions.username" class="audit-filter-user" size="small" clearable placeholder="用户" @keyup.enter="applyAuditFilters" />
+            <el-select v-model="auditFilters.sessions.status" size="small" clearable placeholder="状态" @change="applyAuditFilters">
+              <el-option v-for="item in sessionStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-date-picker v-model="auditFilters.sessions.timeRange" class="audit-filter-time" size="small" type="datetimerange" format="YYYY-MM-DD HH:mm" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable @change="applyAuditFilters" />
+          </template>
+          <template v-else-if="activeTab === 'tools'">
+            <el-input v-model="auditFilters.tools.q" class="audit-filter-search" size="small" clearable placeholder="搜索工具 / 会话" @keyup.enter="applyAuditFilters" />
+            <el-input v-model="auditFilters.tools.username" class="audit-filter-user" size="small" clearable placeholder="用户" @keyup.enter="applyAuditFilters" />
+            <el-select v-model="auditFilters.tools.status" size="small" clearable placeholder="状态" @change="applyAuditFilters">
+              <el-option v-for="item in toolStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-date-picker v-model="auditFilters.tools.timeRange" class="audit-filter-time" size="small" type="datetimerange" format="YYYY-MM-DD HH:mm" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable @change="applyAuditFilters" />
+          </template>
+          <template v-else-if="activeTab === 'models'">
+            <el-input v-model="auditFilters.models.q" class="audit-filter-search" size="small" clearable placeholder="搜索供应商 / 模型" @keyup.enter="applyAuditFilters" />
+            <el-select v-model="auditFilters.models.status" size="small" clearable placeholder="状态" @change="applyAuditFilters">
+              <el-option v-for="item in modelStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-select v-model="auditFilters.models.purpose" size="small" clearable placeholder="用途" @change="applyAuditFilters">
+              <el-option v-for="item in modelPurposeOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-date-picker v-model="auditFilters.models.timeRange" class="audit-filter-time" size="small" type="datetimerange" format="YYYY-MM-DD HH:mm" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable @change="applyAuditFilters" />
+          </template>
+          <template v-else-if="activeTab === 'actions'">
+            <el-input v-model="auditFilters.actions.q" class="audit-filter-search" size="small" clearable placeholder="搜索动作 / 会话" @keyup.enter="applyAuditFilters" />
+            <el-input v-model="auditFilters.actions.username" class="audit-filter-user" size="small" clearable placeholder="用户" @keyup.enter="applyAuditFilters" />
+            <el-select v-model="auditFilters.actions.status" size="small" clearable placeholder="状态" @change="applyAuditFilters">
+              <el-option v-for="item in actionFilterStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-select v-model="auditFilters.actions.risk_level" size="small" clearable placeholder="风险" @change="applyAuditFilters">
+              <el-option v-for="item in actionRiskOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-date-picker v-model="auditFilters.actions.timeRange" class="audit-filter-time" size="small" type="datetimerange" format="YYYY-MM-DD HH:mm" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable @change="applyAuditFilters" />
+          </template>
+        </div>
+        <div class="workbench-toolbar-right">
+          <el-button size="small" type="primary" plain @click="applyAuditFilters">筛选</el-button>
+          <el-button size="small" @click="resetAuditFilters">重置</el-button>
         </div>
       </div>
 
@@ -388,13 +440,13 @@
       </el-table>
 
       <div class="pagination-row">
-        <el-pagination
-          v-model:current-page="activePagination.page"
-          :page-size="activePagination.pageSize"
-          :total="activePagination.total"
-          layout="total, prev, pager, next"
-          @current-change="loadActiveTabPage"
-        />
+        <div class="pagination-size-control">
+          <span class="audit-page-size-label">每页</span>
+          <el-select v-model="activePageSize" class="audit-page-size-select" size="small" @change="handleAuditPageSizeChange">
+            <el-option v-for="size in auditPageSizeOptions" :key="size" :label="`${size} 条`" :value="size" />
+          </el-select>
+        </div>
+        <el-pagination :current-page="activePagination.page" :page-size="activePagination.pageSize" :total="activePagination.total" layout="total, prev, pager, next" @current-change="loadActiveTabPage" />
       </div>
     </section>
   </div>
@@ -442,10 +494,51 @@ const loading = reactive({
   models: false,
   actions: false,
 })
-const auditSessionPagination = reactive({ page: 1, pageSize: 10, total: 0 })
-const auditToolPagination = reactive({ page: 1, pageSize: 10, total: 0 })
-const auditModelPagination = reactive({ page: 1, pageSize: 10, total: 0 })
-const auditActionPagination = reactive({ page: 1, pageSize: 10, total: 0 })
+const AUDIT_DEFAULT_PAGE_SIZE = 20
+const auditPageSizeOptions = [20, 50, 100]
+const auditSessionPagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
+const auditToolPagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
+const auditModelPagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
+const auditActionPagination = reactive({ page: 1, pageSize: AUDIT_DEFAULT_PAGE_SIZE, total: 0 })
+const auditFilters = reactive({
+  sessions: { q: '', username: '', status: '', timeRange: [] },
+  tools: { q: '', username: '', status: '', timeRange: [] },
+  models: { q: '', status: '', purpose: '', timeRange: [] },
+  actions: { q: '', username: '', status: '', risk_level: '', timeRange: [] },
+})
+const sessionStatusOptions = [
+  { label: '进行中', value: 'active' },
+  { label: '已归档', value: 'archived' },
+]
+const toolStatusOptions = [
+  { label: '成功', value: 'success' },
+  { label: '失败', value: 'failed' },
+  { label: '待处理', value: 'pending' },
+]
+const modelStatusOptions = [
+  { label: '成功', value: 'success' },
+  { label: '失败', value: 'failed' },
+]
+const modelPurposeOptions = [
+  { label: '聊天规划', value: 'chat_planning' },
+  { label: '回答整形', value: 'answer_formatting' },
+  { label: '参数抽取', value: 'parameter_extraction' },
+  { label: '模型探测', value: 'model_probe' },
+  { label: '连接测试', value: 'connection_test' },
+]
+const actionFilterStatusOptions = [
+  { label: '待确认', value: 'pending' },
+  { label: '已确认', value: 'confirmed' },
+  { label: '已执行', value: 'executed' },
+  { label: '执行失败', value: 'failed' },
+  { label: '已取消', value: 'canceled' },
+]
+const actionRiskOptions = [
+  { label: '低', value: 'low' },
+  { label: '中', value: 'medium' },
+  { label: '高', value: 'high' },
+  { label: '极高', value: 'critical' },
+]
 const OVERVIEW_DEFAULT_DAYS = 7
 const overviewAllTime = ref(false)
 const overviewRecentDays = ref(OVERVIEW_DEFAULT_DAYS)
@@ -544,6 +637,10 @@ const activePagination = computed(() => {
   if (activeTab.value === 'actions') return auditActionPagination
   return auditSessionPagination
 })
+const activePageSize = computed({
+  get: () => activePagination.value.pageSize,
+  set: size => setAuditPageSize(size),
+})
 
 function toNumber(value) {
   const numberValue = Number(value)
@@ -583,6 +680,78 @@ function buildOverviewCostParams() {
     return { start: startParam, end: endParam }
   }
   return { days: OVERVIEW_DEFAULT_DAYS }
+}
+
+function appendTimeRangeParams(params, range) {
+  const [start, end] = Array.isArray(range) ? range : []
+  const startParam = formatDateTimeParam(start)
+  const endParam = formatDateTimeParam(end)
+  if (startParam) params.start = startParam
+  if (endParam) params.end = endParam
+}
+
+function compactParams(params) {
+  return Object.fromEntries(Object.entries(params).reduce((entries, [key, value]) => {
+    const normalized = typeof value === 'string' ? value.trim() : value
+    if (normalized === '' || normalized === null || normalized === undefined) return entries
+    if (Array.isArray(normalized) && !normalized.length) return entries
+    entries.push([key, normalized])
+    return entries
+  }, []))
+}
+
+function auditPageSize(tab) {
+  if (tab === 'tools') return auditToolPagination.pageSize
+  if (tab === 'models') return auditModelPagination.pageSize
+  if (tab === 'actions') return auditActionPagination.pageSize
+  return auditSessionPagination.pageSize
+}
+
+function buildAuditListParams(tab, page = 1) {
+  const base = { page, page_size: auditPageSize(tab) }
+  if (tab === 'sessions') {
+    const filters = auditFilters.sessions
+    appendTimeRangeParams(base, filters.timeRange)
+    return compactParams({ ...base, q: filters.q, username: filters.username, status: filters.status })
+  }
+  if (tab === 'tools') {
+    const filters = auditFilters.tools
+    appendTimeRangeParams(base, filters.timeRange)
+    return compactParams({ ...base, q: filters.q, username: filters.username, status: filters.status })
+  }
+  if (tab === 'models') {
+    const filters = auditFilters.models
+    appendTimeRangeParams(base, filters.timeRange)
+    return compactParams({ ...base, q: filters.q, status: filters.status, purpose: filters.purpose })
+  }
+  const filters = auditFilters.actions
+  appendTimeRangeParams(base, filters.timeRange)
+  return compactParams({ ...base, q: filters.q, username: filters.username, status: filters.status, risk_level: filters.risk_level })
+}
+
+function clearAuditFilterGroup(group) {
+  Object.keys(group).forEach((key) => {
+    group[key] = Array.isArray(group[key]) ? [] : ''
+  })
+}
+
+function applyAuditFilters() {
+  return loadActiveTabPage(1)
+}
+
+function resetAuditFilters() {
+  if (!auditFilters[activeTab.value]) return
+  clearAuditFilterGroup(auditFilters[activeTab.value])
+  return loadActiveTabPage(1)
+}
+
+function setAuditPageSize(size) {
+  activePagination.value.pageSize = Math.min(Math.max(Number(size) || AUDIT_DEFAULT_PAGE_SIZE, AUDIT_DEFAULT_PAGE_SIZE), 100)
+}
+
+function handleAuditPageSizeChange(size) {
+  setAuditPageSize(size)
+  return loadActiveTabPage(1)
 }
 
 async function handleOverviewRangeChange() {
@@ -746,7 +915,7 @@ async function loadOverview() {
 async function loadAuditSessions(page = 1, config = {}) {
   loading.sessions = true
   try {
-    const data = await getAIOpsAuditSessions({ page, page_size: auditSessionPagination.pageSize }, config)
+    const data = await getAIOpsAuditSessions(buildAuditListParams('sessions', page), config)
     auditSessionPagination.page = page
     auditSessionPagination.total = data.count || 0
     auditSessions.value = data.results || data || []
@@ -763,7 +932,7 @@ async function loadAuditSessions(page = 1, config = {}) {
 async function loadAuditTools(page = 1, config = {}) {
   loading.tools = true
   try {
-    const data = await getAIOpsAuditToolInvocations({ page, page_size: auditToolPagination.pageSize }, config)
+    const data = await getAIOpsAuditToolInvocations(buildAuditListParams('tools', page), config)
     auditToolPagination.page = page
     auditToolPagination.total = data.count || 0
     auditTools.value = data.results || data || []
@@ -780,7 +949,7 @@ async function loadAuditTools(page = 1, config = {}) {
 async function loadAuditModels(page = 1, config = {}) {
   loading.models = true
   try {
-    const data = await getAIOpsAuditModelInvocations({ page, page_size: auditModelPagination.pageSize }, config)
+    const data = await getAIOpsAuditModelInvocations(buildAuditListParams('models', page), config)
     auditModelPagination.page = page
     auditModelPagination.total = data.count || 0
     auditModels.value = data.results || data || []
@@ -796,7 +965,7 @@ async function loadAuditModels(page = 1, config = {}) {
 async function loadAuditActions(page = 1, config = {}) {
   loading.actions = true
   try {
-    const data = await getAIOpsAuditActions({ page, page_size: auditActionPagination.pageSize }, config)
+    const data = await getAIOpsAuditActions(buildAuditListParams('actions', page), config)
     auditActionPagination.page = page
     auditActionPagination.total = data.count || 0
     auditActions.value = data.results || data || []
@@ -948,6 +1117,10 @@ watch(
   flex-wrap: wrap;
 }
 
+.release-hero-copy {
+  min-width: 0;
+}
+
 .hero h2 {
   color: #0f172a;
   font-size: 23px;
@@ -1097,9 +1270,10 @@ watch(
 }
 
 .toolbar-head {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
   min-width: 0;
 }
 
@@ -1113,6 +1287,7 @@ watch(
 .toolbar-desc {
   color: #64748b;
   font-size: 12px;
+  line-height: 1.4;
 }
 
 .workbench-card-actions {
@@ -1141,6 +1316,101 @@ watch(
 
 .filter-refresh-btn {
   min-height: 28px;
+}
+
+.audit-flat-action-btn {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.audit-flat-action-btn :deep(.el-icon),
+.audit-flat-action-btn .el-icon {
+  margin-right: 4px;
+  font-size: 14px;
+}
+
+.audit-flat-action-btn.el-button--danger.is-plain {
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.18);
+  background: rgba(254, 242, 242, 0.72);
+}
+
+.audit-flat-action-btn.el-button--danger.is-plain:hover {
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.28);
+  background: rgba(254, 226, 226, 0.86);
+}
+
+.audit-flat-action-btn.is-disabled,
+.audit-flat-action-btn.is-disabled:hover {
+  color: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(248, 250, 252, 0.8);
+}
+
+.audit-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.88));
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.03);
+}
+
+.audit-list-toolbar .workbench-toolbar-left,
+.audit-list-toolbar .workbench-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.audit-list-toolbar .workbench-toolbar-left {
+  flex: 1 1 auto;
+}
+
+.audit-list-toolbar .workbench-toolbar-right {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.audit-list-toolbar :deep(.el-input),
+.audit-list-toolbar :deep(.el-select) {
+  width: 112px;
+}
+
+.audit-filter-search {
+  width: 220px !important;
+}
+
+.audit-filter-user {
+  width: 112px !important;
+}
+
+.audit-filter-time {
+  width: 310px !important;
+}
+
+.audit-page-size-label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.audit-page-size-select {
+  width: 94px !important;
 }
 
 .overview-metric-strip {
@@ -1395,8 +1665,16 @@ watch(
 
 .pagination-row {
   display: flex;
+  align-items: center;
+  gap: 12px;
   justify-content: flex-end;
   margin-top: 10px;
+}
+
+.pagination-size-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 @media (max-width: 860px) {
@@ -1417,6 +1695,30 @@ watch(
 
   .overview-time-picker {
     width: 100%;
+  }
+
+  .audit-list-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .audit-list-toolbar .workbench-toolbar-left,
+  .audit-list-toolbar .workbench-toolbar-right {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .audit-list-toolbar :deep(.el-input),
+  .audit-list-toolbar :deep(.el-select),
+  .audit-filter-search,
+  .audit-filter-user,
+  .audit-filter-time {
+    width: 100% !important;
+  }
+
+  .pagination-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 
