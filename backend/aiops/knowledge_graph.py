@@ -2247,6 +2247,28 @@ def build_knowledge_graph(params=None):
                 )
                 .order_by('resource_type', 'name', 'id')
             )
+            resource_env_node_id = ''
+            if _clean(resource_env.name) != _clean(environment):
+                resource_env_node_id = _node_key('infrastructure', 'task_resource_env', resource_env.id)
+                add_node(
+                    resource_env_node_id,
+                    resource_env.name,
+                    'infrastructure',
+                    '资源底座环境',
+                    route='/tasks/resources',
+                    status='enabled',
+                    metric=len(resources),
+                    description=f'任务中心资源底座环境：{resource_env.name}',
+                    environment=environment,
+                    source_environment=resource_env.name,
+                    infra_type='task_resource_environment',
+                    details=[
+                        {'label': '来源', 'value': '任务中心资源底座'},
+                        {'label': '资源环境', 'value': resource_env.name},
+                    ],
+                )
+                add_edge(env_id, resource_env_node_id, '关联资源底座', 'environment_resource_base', 1)
+                infrastructure_node_ids.append(resource_env_node_id)
             for resource in resources:
                 if task_resource_is_represented(resource, concrete_infra_names, concrete_infra_ips, concrete_cluster_ids):
                     continue
@@ -2281,6 +2303,8 @@ def build_knowledge_graph(params=None):
                     details=details,
                 )
                 add_edge(env_id, node_id, '关联资源底座', 'environment_resource_base', 1)
+                if resource_env_node_id:
+                    add_edge(resource_env_node_id, node_id, '包含资源', 'infrastructure_member', 1)
                 infrastructure_node_ids.append(node_id)
 
     def ensure_runtime_component_node(component):

@@ -205,6 +205,7 @@ ANSWER_FORMATTER_SKILL_SLUG = 'answer-formatter'
 STOPWORDS = {
     '帮我', '一下', '当前', '最近', '平台', '资源', '信息', '告警', '分析', '排查', '问题',
     '哪些', '多少', '怎么', '情况', '查看', '查询', '生成', '执行', '触发', '自动', '任务', '中心',
+    '的', '了', '吗', '呢', '和', '与', '及',
 }
 
 CMDB_QUERY_NOISE_PATTERNS = [
@@ -218,7 +219,7 @@ ALERT_QUERY_NOISE_PATTERNS = [
     '\u544a\u8b66', '\u4e25\u91cd', '\u9ad8\u5371', '\u8b66\u544a', '\u4fe1\u606f', '\u672a\u786e\u8ba4', '\u5df2\u786e\u8ba4', '\u786e\u8ba4',
     '\u72b6\u6001', '\u67e5\u770b', '\u67e5\u8be2', '\u5217\u51fa', '\u5e2e\u6211', '\u770b\u4e0b', '\u4e00\u4e0b', '\u5168\u90e8', '\u6240\u6709',
     '今天', '今日', '当天', '这个', '环境', '活跃', '现存', '未恢复', '还在', '仍在', '还有啥', '还有哪些',
-    '请', '一下', '风险', '影响', '情况', '怎么样', '是否',
+    '请', '一下', '风险', '影响', '情况', '怎么样', '是否', '产生', '发生', '出现', '最新',
     '最近一小时', '近一小时', '过去一小时', '最近 1 小时', '近 1 小时', '过去 1 小时', '一小时', '1小时', '1 小时',
     '交易系统', '交易',
 ]
@@ -1942,6 +1943,7 @@ def _action_question_matches(action_code, question, analysis_scope=None):
         has_root_cause_intent = _question_contains_any(lowered, ['根因', '原因', '为什么', '可能原因', '定位', '最新', '最近一条', '最后一条', '这条'])
         has_alert_scope = _question_contains_any(lowered, ['告警', 'alert'])
         has_alert_listing_intent = _question_contains_any(lowered, ['当前', '未确认', '严重', '有哪些', '哪些', '列表', '最新', '最近一条', '最后一条'])
+        has_alert_analysis_intent = _question_contains_any(lowered, ['分析', '排查', '定位'])
         has_service_scope = (
             bool(_action_detected_service(question, analysis_scope=analysis_scope))
             or _question_contains_any(lowered, ['服务', '系统', '应用', '订单'])
@@ -1957,6 +1959,7 @@ def _action_question_matches(action_code, question, analysis_scope=None):
                 and (
                     has_alert_listing_intent
                     or has_root_cause_intent
+                    or has_alert_analysis_intent
                     or (has_service_scope and _question_contains_any(lowered, ['排查', '分析', '定位', '异常']))
                 )
             )
@@ -3269,6 +3272,77 @@ def _service_candidates_from_text(text, analysis_scope=None, knowledge_environme
     return candidates[:12]
 
 
+def _analysis_scope_service_options(analysis_scope=None, knowledge_environment=None):
+    service_options = []
+    if analysis_scope:
+        service_options.extend(analysis_scope.get('services') or [])
+        service_options.extend(analysis_scope.get('runtime_components') or [])
+    if knowledge_environment:
+        service_options.extend(_service_options_from_knowledge_environment(knowledge_environment))
+    deduped = []
+    for item in service_options:
+        text = str(item or '').strip()
+        if text and text not in deduped:
+            deduped.append(text)
+    return deduped
+
+
+def _environment_scope_terms(knowledge_environment=None, analysis_scope=None):
+    terms = []
+    if knowledge_environment:
+        terms.extend([
+            knowledge_environment.get('name'),
+            *(knowledge_environment.get('aliases') or []),
+            *(knowledge_environment.get('alert_environments') or []),
+            *(knowledge_environment.get('event_environments') or []),
+            *(knowledge_environment.get('posture_environments') or []),
+        ])
+    if analysis_scope:
+        terms.append(analysis_scope.get('environment'))
+        terms.extend(analysis_scope.get('systems') or [])
+    normalized_terms = set()
+    for term in terms:
+        text = str(term or '').strip()
+        if not text:
+            continue
+        normalized_terms.add(text)
+        normalized_terms.add(_normalize_candidate_text(text))
+        if re.search(r'[\u4e00-\u9fff]', text):
+            normalized_terms.add(text.replace('环境', '').replace('系统', '').strip())
+    return {item for item in normalized_terms if item}
+
+
+def _filter_service_candidates_for_observability(candidates, knowledge_environment=None, analysis_scope=None):
+    service_options = _analysis_scope_service_options(analysis_scope, knowledge_environment)
+    environment_terms = _environment_scope_terms(knowledge_environment, analysis_scope)
+    filtered = []
+    for candidate in candidates or []:
+        text = str(candidate or '').strip()
+        if not text:
+            continue
+        normalized = _normalize_candidate_text(text)
+        if text in environment_terms or normalized in environment_terms:
+            continue
+        matched = _match_service_from_options(text, service_options)
+        candidate_value = matched or text
+        if candidate_value and candidate_value not in filtered:
+            filtered.append(candidate_value)
+    return filtered
+
+
+def _detect_observability_service(text, analysis_scope=None, knowledge_environment=None):
+    candidates = _service_candidates_from_text(text, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+    filtered = _filter_service_candidates_for_observability(candidates, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope)
+    if not filtered:
+        return ''
+    service_options = _analysis_scope_service_options(analysis_scope, knowledge_environment)
+    matched = _match_service_from_options(' '.join(filtered), service_options)
+    service = matched or filtered[0]
+    if service in {'订单服务', '订单'} and any(candidate in filtered for candidate in ['order-service', 'order']):
+        return 'order-service'
+    return service
+
+
 def _posture_system_match_score(system, candidates):
     if not candidates:
         return 0
@@ -3567,6 +3641,7 @@ def _query_live_log_datasources(knowledge_environment, query='', service='', lev
 
 def _normalize_alert_query_request(query='', level='', only_unacknowledged=False, status='', date_filter=''):
     raw_query = query or ''
+    raw_query_lower = raw_query.lower()
     normalized_query = raw_query
     resolved_level = (level or '').strip().lower()
     resolved_unacknowledged = bool(only_unacknowledged)
@@ -3598,7 +3673,16 @@ def _normalize_alert_query_request(query='', level='', only_unacknowledged=False
     if not resolved_status and status_match:
         status_value = status_match.group(1).lower()
         resolved_status = 'active' if status_value in {'open', 'pending'} else status_value
-    if not resolved_status and any(keyword in raw_query for keyword in ['活跃', '当前', '现存', '未恢复', '还在', '仍在', 'active', 'open']):
+    if (
+        not resolved_status
+        and any(keyword in raw_query_lower for keyword in ['活跃', '现存', '未恢复', '还在', '仍在', 'active', 'open'])
+    ):
+        resolved_status = Alert.STATUS_ACTIVE
+    if (
+        not resolved_status
+        and '当前' in raw_query
+        and not any(keyword in raw_query for keyword in ['最近', '最新', '最近一小时', '近一小时', '过去一小时'])
+    ):
         resolved_status = Alert.STATUS_ACTIVE
     if not resolved_status and any(keyword in raw_query for keyword in ['已恢复', '恢复了', 'resolved']):
         resolved_status = Alert.STATUS_RESOLVED
@@ -3608,6 +3692,12 @@ def _normalize_alert_query_request(query='', level='', only_unacknowledged=False
         '最近一小时', '近一小时', '过去一小时', '最近 1 小时', '近 1 小时', '过去 1 小时',
         '1小时', '1 小时', '一小时', 'last hour', 'last 1 hour',
     ]):
+        resolved_date_filter = 'last_hour'
+    if (
+        not resolved_date_filter
+        and any(keyword in raw_query for keyword in ['最近', '近期', '近来'])
+        and any(keyword in raw_query_lower for keyword in ['告警', 'alert', 'alerts', '异常'])
+    ):
         resolved_date_filter = 'last_hour'
 
     filter_patterns = [
@@ -4600,9 +4690,10 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
             | Q(host__business_line__icontains=system_name)
         )
     if tokens:
-        queryset = _queryset_search(queryset, ['title', 'source', 'message', 'host__hostname'], tokens)
-    alerts = list(queryset.order_by('-created_at')[:limit])
+        queryset = _queryset_search(queryset, ['title', 'source', 'message', 'host__hostname', 'service', 'resource'], tokens)
+    alerts = list(queryset.order_by('-last_received_at', '-created_at', '-id')[:limit])
     counter = Counter(alert.level for alert in alerts)
+    status_counter = Counter(alert.status for alert in alerts)
     sections = [{
         'title': '告警明细',
         'items': [
@@ -4620,6 +4711,10 @@ def query_alerts(session, user_message, user, query='', level='', only_unacknowl
         'critical': counter.get('critical', 0),
         'warning': counter.get('warning', 0),
         'info': counter.get('info', 0),
+        'active': status_counter.get(Alert.STATUS_ACTIVE, 0),
+        'resolved': status_counter.get(Alert.STATUS_RESOLVED, 0),
+        'closed': status_counter.get(Alert.STATUS_CLOSED, 0),
+        'muted': status_counter.get(Alert.STATUS_MUTED, 0),
         'status': status,
         'date_filter': date_filter,
         'system_name': system_name,
@@ -4685,6 +4780,7 @@ def _alert_metric_promql(alert):
         return ''
     labels = dict(alert.labels if isinstance(alert.labels, dict) else {})
     for key, value in {
+        'environment': alert.environment,
         'cluster': alert.cluster,
         'namespace': alert.namespace,
         'service': alert.service,
@@ -4704,7 +4800,7 @@ def _alert_metric_promql(alert):
         elif resource_type in {'service', 'services'}:
             labels.setdefault('service', resource)
     selectors = []
-    for key in ['cluster', 'namespace', 'pod', 'deployment', 'service', 'job', 'instance', 'node', 'container']:
+    for key in ['environment', 'cluster', 'namespace', 'pod', 'deployment', 'service', 'job', 'instance', 'node', 'container']:
         value = labels.get(key)
         if value not in [None, '']:
             escaped = str(value).replace('\\', '\\\\').replace('"', '\\"')
@@ -4735,7 +4831,7 @@ def _promql_escape_label_value(value):
 
 
 def _promql_selector(label_values, allowed_labels=None, max_labels=6):
-    allowed = allowed_labels or ['cluster', 'namespace', 'pod', 'deployment', 'service', 'job', 'instance', 'node', 'container']
+    allowed = allowed_labels or ['environment', 'cluster', 'namespace', 'pod', 'deployment', 'service', 'job', 'instance', 'node', 'container']
     selectors = []
     for key in allowed:
         value = label_values.get(key) if isinstance(label_values, dict) else ''
@@ -4747,7 +4843,7 @@ def _promql_selector(label_values, allowed_labels=None, max_labels=6):
 
 
 def _promql_regex_selector(label_values, allowed_labels=None, max_labels=4):
-    allowed = allowed_labels or ['cluster', 'namespace', 'service', 'deployment', 'pod', 'job', 'instance', 'node']
+    allowed = allowed_labels or ['environment', 'cluster', 'namespace', 'service', 'deployment', 'pod', 'job', 'instance', 'node']
     selectors = []
     for key in allowed:
         value = label_values.get(key) if isinstance(label_values, dict) else ''
@@ -4776,6 +4872,7 @@ def _promql_with_extra_matchers(selector, extra_matchers):
 def _alert_metric_label_context(alert):
     labels = dict(alert.labels if isinstance(alert.labels, dict) else {})
     for key, value in {
+        'environment': alert.environment,
         'cluster': alert.cluster,
         'namespace': alert.namespace,
         'service': alert.service,
@@ -5032,11 +5129,11 @@ def _summarize_metric_query_result(plan_item, payload, series_limit=ALERT_METRIC
 
 
 def _format_metric_evidence_item(item):
-    status_map = {'abnormal': '异常', 'normal': '有数据', 'missing': '无数据', 'failed': '失败'}
+    status_map = {'abnormal': '异常', 'normal': '有数据', 'missing': '无数据', 'failed': '未完成'}
     status_text = status_map.get(item.get('status'), item.get('status') or '未知')
     series = item.get('series') or []
     if item.get('status') == 'failed':
-        return f"{item.get('name')}：查询失败，{item.get('error') or '未知错误'}"
+        return f"{item.get('name')}：查询未完成，{item.get('error') or '未返回详细原因'}"
     if not series:
         return f"{item.get('name')}：{status_text}，未返回时间序列；PromQL={item.get('promql')}"
     first = series[0]
@@ -5129,7 +5226,7 @@ def query_alert_metrics(session, user_message, user, query='', alert_id=None, fi
         _finish_tool_invocation(invocation, summary, started_at, success=True)
         return {
             'summary': summary,
-            'sections': [{'title': '告警指标证据', 'items': ['没有找到可查询指标的告警。']}],
+            'sections': [{'title': '指标查询结果', 'items': ['没有找到可查询指标的告警。']}],
             'citations': [{'title': '指标查询', 'path': '/observability/metrics'}],
             'evidence': [],
         }
@@ -5171,26 +5268,30 @@ def query_alert_metrics(session, user_message, user, query='', alert_id=None, fi
 
     abnormal_items = [item for item in evidence if item.get('status') == 'abnormal']
     missing_items = [item for item in evidence if item.get('status') == 'missing']
-    sections = [
-        {
-            'title': '指标查询计划',
-            'items': [
-                f"{index + 1}. {item.get('name')} / {item.get('category')} / {item.get('intent')}"
-                for index, item in enumerate(plan)
-            ] or ['未生成可执行指标查询计划。'],
-        },
-        {
-            'title': '指标证据摘要',
-            'items': [_format_metric_evidence_item(item) for item in evidence] or ['未查询到指标证据。'],
-        },
+    result_items = [
+        (
+            f"计划 {len(plan)} 项，执行 {len(evidence)} 项，异常 {len(abnormal_items)} 项，"
+            f"无数据 {len(missing_items)} 项，未完成 {len(failures)} 项。"
+        )
     ]
+    if plan:
+        result_items.append('查询项：' + '；'.join(item.get('name') for item in plan if item.get('name')))
+    else:
+        result_items.append('未生成可执行指标查询计划。')
+    result_items.extend([_format_metric_evidence_item(item) for item in evidence[:6]])
+    if not evidence:
+        result_items.append('未返回指标时间序列。')
+    sections = [{
+        'title': '指标查询结果',
+        'items': result_items,
+    }]
     if missing_items or failures:
         sections.append({
-            'title': '指标证据不足',
+            'title': '指标查询状态',
             'items': [
-                *[f"{item.get('name')} 未返回时间序列，不能据此判断正常。" for item in missing_items[:4]],
-                *[f"{item.get('name')} 查询失败：{item.get('error')}" for item in failures[:4]],
-            ] or ['当前指标证据无明显缺口。'],
+                *[f"{item.get('name')}：未返回时间序列，暂不参与趋势判断。" for item in missing_items[:4]],
+                *[f"{item.get('name')}：查询未完成，{item.get('error') or '未返回详细原因'}" for item in failures[:4]],
+            ],
         })
     summary = {
         'count': 1,
@@ -5347,7 +5448,7 @@ def _infer_alert_root_cause(
     if metric_result:
         summary = metric_result.get('summary') or {}
         if summary.get('error'):
-            _append_unique(pending, f"指标查询失败：{summary.get('error')}", limit=10)
+            _append_unique(pending, f"指标查询未完成：{summary.get('error')}", limit=10)
         else:
             abnormal_count = _safe_int(summary.get('abnormal_count'))
             missing_count = _safe_int(summary.get('missing_count'))
@@ -5367,7 +5468,7 @@ def _infer_alert_root_cause(
             if missing_count:
                 _append_unique(pending, f'有 {missing_count} 项指标模板无数据，不能据此判断正常', limit=10)
             if failed_count:
-                _append_unique(pending, f'有 {failed_count} 项指标查询失败，需要检查指标数据源或 PromQL 模板', limit=10)
+                _append_unique(pending, f'有 {failed_count} 项指标查询未完成，可按需检查指标数据源或 PromQL 模板', limit=10)
 
     if not evidence:
         _append_unique(
@@ -5451,19 +5552,27 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
 
     posture_result = query_system_posture(session, user_message, user, query=scoped_query, limit=3)
     event_result = query_events(session, user_message, user, query=scoped_query, date_filter='', limit=5)
-    log_result = query_logs(session, user_message, user, query=scoped_query, limit=5)
+    log_result = None
     trace_result = None
     alert_text = f'{alert.title} {alert.message} {alert.service} {alert.resource}'.lower()
-    if alert.service or any(keyword in alert_text for keyword in ['5xx', 'error', 'timeout', 'latency', '慢', '错误', '失败', '超时']):
+    if alert.service:
+        log_result = query_logs(session, user_message, user, query=scoped_query, service=alert.service, limit=5)
         trace_result = query_traces(
             session,
             user_message,
             user,
-            query=scoped_query,
+            query=alert.service,
             errors_only=any(keyword in alert_text for keyword in ['5xx', 'error', 'timeout', '错误', '失败', '超时']),
             limit=5,
             duration_minutes=60,
         )
+    else:
+        log_result = {
+            'summary': {'count': 0, 'skipped': True, 'reason': 'missing_service'},
+            'sections': [{'title': '日志与链路跳过', 'items': ['告警未携带明确服务名，已跳过日志与链路查询。']}],
+            'citations': [],
+            'logs': [],
+        }
     metric_result = None
     try:
         metric_result = query_alert_metrics(
@@ -5479,7 +5588,7 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
             budget=ALERT_METRIC_QUERY_BUDGET,
         )
     except Exception as exc:
-        metric_result = {'summary': {'error': str(exc)[:200]}, 'sections': [{'title': '指标证据查询失败', 'items': [str(exc)[:200]]}]}
+        metric_result = {'summary': {'error': str(exc)[:200]}, 'sections': [{'title': '指标查询状态', 'items': [f"指标查询未完成：{str(exc)[:200]}"]}]}
     analysis = _infer_alert_root_cause(
         alert,
         k8s_result=k8s_result,
@@ -5520,7 +5629,7 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         + (k8s_result.get('citations', []) if k8s_result else [])
         + posture_result.get('citations', [])
         + event_result.get('citations', [])
-        + log_result.get('citations', [])
+        + (log_result.get('citations', []) if log_result else [])
         + (trace_result.get('citations', []) if trace_result else [])
         + (metric_result.get('citations', []) if metric_result else [])
     )
@@ -6190,7 +6299,7 @@ def _is_direct_alert_analysis_question(question):
         return False
     return bool(_extract_alert_fingerprint(question) or _extract_alert_id(question)) or (
         any(keyword in lowered for keyword in ['分析', '根因', '原因', '为什么', '排查', '怎么处理', '鍒嗘瀽', '鏍瑰洜', '鍘熷洜'])
-        and any(keyword in lowered for keyword in ['最新', '最后一条', '最近一条', 'latest', 'last', '这条'])
+        and any(keyword in lowered for keyword in ['最新一条', '最新告警', '最后一条', '最近一条', 'latest alert', 'last alert', '这条'])
     )
 
 
@@ -6199,12 +6308,34 @@ def _is_direct_alert_list_question(question):
     lowered = text.lower()
     if not any(keyword in lowered for keyword in ['告警', 'alert', 'alerts']):
         return False
-    if any(keyword in lowered for keyword in ['根因', '为什么', '原因', '排查', '分析', '怎么处理']):
+    if _extract_alert_fingerprint(text) or _extract_alert_id(text):
+        return False
+    if any(keyword in lowered for keyword in ['根因', '为什么', '原因', '怎么处理']):
+        return False
+    if any(keyword in lowered for keyword in ['自愈', '推荐', '方案', '建议', '脚本', '修复', '处置']):
+        return False
+    if any(keyword in lowered for keyword in ['最新一条', '最后一条', '最近一条', '这条']):
+        return False
+    if any(keyword in lowered for keyword in ['分析', '排查', '定位']):
         return False
     return any(keyword in lowered for keyword in [
-        '今天', '今日', '当天', '当前', '活跃', '未恢复', '还在', '还有啥', '有哪些', '多少', '列表',
+        '今天', '今日', '当天', '当前', '活跃', '未恢复', '还在', '还有啥', '有哪些', '多少', '列表', '最近', '近期',
         'active', 'open', 'today', 'list',
     ])
+
+
+def _is_alert_environment_analysis_question(question):
+    text = str(question or '').strip()
+    lowered = text.lower()
+    if not any(keyword in lowered for keyword in ['告警', 'alert', 'alerts']):
+        return False
+    if _extract_alert_fingerprint(text) or _extract_alert_id(text):
+        return False
+    if any(keyword in lowered for keyword in ['自愈', '推荐', '方案', '建议', '脚本', '修复', '处置']):
+        return False
+    if any(keyword in lowered for keyword in ['最新一条', '最后一条', '最近一条', '这条']):
+        return False
+    return any(keyword in lowered for keyword in ['分析', '排查', '定位'])
 
 
 def _direct_alert_query_arguments(question, scoped_question):
@@ -6661,7 +6792,8 @@ def _is_latest_alert_root_cause_question(question):
     text = str(question or '').lower()
     return (
         any(keyword in text for keyword in ['告警', 'alert'])
-        and any(keyword in text for keyword in ['最新', '最近一条', '最后一条', '根因', '原因', '为什么', '可能原因'])
+        and any(keyword in text for keyword in ['最新一条', '最新告警', '最近一条', '最后一条', '这条', 'latest alert', 'last alert'])
+        and any(keyword in text for keyword in ['根因', '原因', '为什么', '可能原因', '分析', '排查'])
     )
 
 
@@ -6927,8 +7059,7 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
     )
     sections, citations, tool_names, collected = [], [], [], []
     duration_minutes = _detect_log_duration_minutes(question)
-    service_candidates = _service_candidates_from_text(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
-    service = _match_service_from_options(' '.join(service_candidates), (analysis_scope or {}).get('services') or []) or (service_candidates[0] if service_candidates else '')
+    service = _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
     system_name = _extract_system_name(scoped_question) or ((analysis_scope or {}).get('systems') or [''])[0]
     health_query = ' '.join(item for item in [
         knowledge_environment.get('name'),
@@ -6939,7 +7070,13 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 8, 'analysis_scope': analysis_scope}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': health_query or scoped_question, 'status': '', 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_dashboard_panel_data', {'query': health_query or scoped_question, 'duration_minutes': duration_minutes, 'limit': 3}, emit=emit)
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_traces', {'query': service or health_query or scoped_question, 'errors_only': True, 'duration_minutes': duration_minutes, 'limit': 6}, emit=emit)
+    if service:
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_traces', {'query': service, 'errors_only': True, 'duration_minutes': duration_minutes, 'limit': 6}, emit=emit)
+    else:
+        sections.append({
+            'title': '链路追踪跳过',
+            'items': ['未识别到明确服务名，已跳过 Trace 查询，避免用环境名或系统名误查。'],
+        })
     _run_scoped_tool(
         session,
         user_message,
@@ -6984,12 +7121,7 @@ def _run_service_anomaly_evidence(session, user_message, user, question, scoped_
     )
     sections, citations, tool_names, collected = [], [], [], []
     duration_minutes = _detect_log_duration_minutes(question)
-    service_candidates = _service_candidates_from_text(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
-    service = _detect_log_service(scoped_question, service_options=(analysis_scope or {}).get('services') or [])
-    if service_candidates:
-        service = _match_service_from_options(' '.join(service_candidates), (analysis_scope or {}).get('services') or []) or service_candidates[0]
-    if service in {'订单服务', '订单'} and any(candidate in service_candidates for candidate in ['order-service', 'order']):
-        service = 'order-service'
+    service = _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
     log_levels = _detect_log_levels_filter(question) or ['error', 'warning']
     evidence_query = ' '.join(item for item in [knowledge_environment.get('name'), service] if item).strip() or scoped_question
     alert_args = {
@@ -7001,8 +7133,14 @@ def _run_service_anomaly_evidence(session, user_message, user, question, scoped_
     }
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', alert_args, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_logs', {'query': evidence_query, 'service': service, 'levels': log_levels, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_traces', {'query': service or evidence_query, 'errors_only': True, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
+    if service:
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_logs', {'query': evidence_query, 'service': service, 'levels': log_levels, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_traces', {'query': service, 'errors_only': True, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
+    else:
+        sections.append({
+            'title': '日志与链路跳过',
+            'items': ['未识别到明确服务名，已跳过日志与链路查询，避免用环境名或系统名误查。'],
+        })
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': evidence_query, 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
     if analysis_scope.get('k8s_cluster_ids'):
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_k8s_resources', {'query': scoped_question, 'resource_type': 'workloads', 'limit': 8}, emit=emit)
@@ -7020,6 +7158,123 @@ def _run_service_anomaly_evidence(session, user_message, user, question, scoped_
         execution_mode='deterministic_service_rca',
         extra_metadata={'service': service, 'duration_minutes': duration_minutes, 'log_levels': log_levels},
     )
+
+
+def _select_alert_for_metric_evidence(alert_result):
+    alerts = (alert_result or {}).get('alerts') or []
+    if not alerts:
+        return None
+    level_rank = {'critical': 0, 'warning': 1, 'info': 2}
+    status_rank = {Alert.STATUS_ACTIVE: 0, Alert.STATUS_MUTED: 1, Alert.STATUS_RESOLVED: 2, Alert.STATUS_CLOSED: 3}
+    return sorted(
+        alerts,
+        key=lambda alert: (
+            level_rank.get(alert.level, 9),
+            status_rank.get(alert.status, 9),
+            -(alert.last_received_at.timestamp() if alert.last_received_at else 0),
+            -alert.id,
+        ),
+    )[0]
+
+
+def _run_alert_environment_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+    emit(
+        step={'title': '告警分析证据收集', 'detail': '先查询环境告警，再补充态势、事件和告警指标证据；未识别服务时跳过日志与链路。', 'status': PROCESSING_STATUS_COMPLETED},
+        text='正在分析环境告警',
+    )
+    sections, citations, tool_names, collected = [], [], [], []
+    duration_minutes = _detect_log_duration_minutes(question)
+    service = _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+    alert_query = ' '.join(item for item in [knowledge_environment.get('name'), service] if item).strip() or scoped_question
+    alert_args = {
+        'query': alert_query,
+        'status': '',
+        'date_filter': 'last_hour' if duration_minutes <= 60 else '',
+        'system_name': _extract_system_name(scoped_question),
+        'limit': 8,
+    }
+    alert_tool_result = _run_scoped_tool(
+        session,
+        user_message,
+        user,
+        collected,
+        sections,
+        citations,
+        tool_names,
+        'query_alerts',
+        alert_args,
+        emit=emit,
+    )
+    alert_output = alert_tool_result.get('tool_output') or {}
+    metric_alert = _select_alert_for_metric_evidence(alert_output)
+    if metric_alert:
+        _run_scoped_tool(
+            session,
+            user_message,
+            user,
+            collected,
+            sections,
+            citations,
+            tool_names,
+            'query_alert_metrics',
+            {
+                'query': alert_query,
+                'alert_id': metric_alert.id,
+                'fingerprint': metric_alert.fingerprint,
+                'duration_minutes': max(60, duration_minutes or 60),
+                'step': ALERT_METRIC_DEFAULT_STEP_SECONDS,
+                'budget': ALERT_METRIC_QUERY_BUDGET,
+            },
+            emit=emit,
+        )
+    else:
+        sections.append({
+            'title': '指标查询结果',
+            'items': ['未查询到可用于指标分析的告警。'],
+        })
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': alert_query, 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
+    if service:
+        log_levels = _detect_log_levels_filter(question) or ['error', 'warning']
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_logs', {'query': alert_query, 'service': service, 'levels': log_levels, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_traces', {'query': service, 'errors_only': True, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
+    else:
+        sections.append({
+            'title': '日志与链路跳过',
+            'items': ['未识别到明确服务名，已跳过日志与链路查询，避免用环境名或系统名误查。'],
+        })
+    if analysis_scope.get('k8s_cluster_ids'):
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_k8s_resources', {'query': scoped_question, 'resource_type': 'workloads', 'limit': 8}, emit=emit)
+    metric_context = _collect_metric_context(collected)
+    result = _build_evidence_bundle_result(
+        question=question,
+        scoped_question=scoped_question,
+        knowledge_environment=knowledge_environment,
+        analysis_scope=analysis_scope,
+        provider=provider,
+        active_skills=active_skills,
+        sections=sections,
+        citations=citations,
+        tool_names=tool_names,
+        collected_tool_outputs=collected,
+        execution_mode='deterministic_alert_environment_analysis',
+        extra_metadata={
+            'service': service,
+            'duration_minutes': duration_minutes,
+            'alert_filters': alert_args,
+            'metric_alert_id': metric_alert.id if metric_alert else None,
+            'metric_query': {
+                'called': metric_context.get('called'),
+                'planned_count': metric_context.get('planned_count'),
+                'executed_count': metric_context.get('executed_count'),
+                'abnormal_count': metric_context.get('abnormal_count'),
+                'missing_count': metric_context.get('missing_count'),
+                'failed_count': metric_context.get('failed_count'),
+            },
+            'skipped_observability_service_lookup': not bool(service),
+        },
+    )
+    return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'alert_environment_analysis'})
 
 
 def _run_latest_alert_rca_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
@@ -7142,8 +7397,7 @@ def _run_change_correlation_evidence(session, user_message, user, question, scop
         text='正在收集变更关联证据',
     )
     sections, citations, tool_names, collected = [], [], [], []
-    service_candidates = _service_candidates_from_text(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
-    service = _match_service_from_options(' '.join(service_candidates), (analysis_scope or {}).get('services') or []) or (service_candidates[0] if service_candidates else '')
+    service = _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
     system_name = _extract_system_name(scoped_question) or ((analysis_scope or {}).get('systems') or [''])[0]
     correlation_query = ' '.join(item for item in [
         knowledge_environment.get('name'),
@@ -7224,8 +7478,7 @@ def _run_self_heal_recommendation_evidence(session, user_message, user, question
         text='正在生成自愈推荐',
     )
     sections, citations, tool_names, collected = [], [], [], []
-    service_candidates = _service_candidates_from_text(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
-    service = _match_service_from_options(' '.join(service_candidates), (analysis_scope or {}).get('services') or []) or (service_candidates[0] if service_candidates else '')
+    service = _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
     system_name = _extract_system_name(scoped_question) or ((analysis_scope or {}).get('systems') or [''])[0]
     recommendation_scope = ' '.join(item for item in [
         knowledge_environment.get('name'),
@@ -7254,41 +7507,47 @@ def _run_self_heal_recommendation_evidence(session, user_message, user, question
         emit=emit,
     )
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_recent_changes', {'limit': 6}, emit=emit)
-    _run_scoped_tool(
-        session,
-        user_message,
-        user,
-        collected,
-        sections,
-        citations,
-        tool_names,
-        'query_logs',
-        {
-            'query': recommendation_scope,
-            'service': service,
-            'levels': ['warning', 'error'],
-            'duration_minutes': 60,
-            'limit': 8,
-        },
-        emit=emit,
-    )
-    _run_scoped_tool(
-        session,
-        user_message,
-        user,
-        collected,
-        sections,
-        citations,
-        tool_names,
-        'query_traces',
-        {
-            'query': service or recommendation_scope,
-            'errors_only': True,
-            'duration_minutes': 60,
-            'limit': 8,
-        },
-        emit=emit,
-    )
+    if service:
+        _run_scoped_tool(
+            session,
+            user_message,
+            user,
+            collected,
+            sections,
+            citations,
+            tool_names,
+            'query_logs',
+            {
+                'query': recommendation_scope,
+                'service': service,
+                'levels': ['warning', 'error'],
+                'duration_minutes': 60,
+                'limit': 8,
+            },
+            emit=emit,
+        )
+        _run_scoped_tool(
+            session,
+            user_message,
+            user,
+            collected,
+            sections,
+            citations,
+            tool_names,
+            'query_traces',
+            {
+                'query': service,
+                'errors_only': True,
+                'duration_minutes': 60,
+                'limit': 8,
+            },
+            emit=emit,
+        )
+    else:
+        sections.append({
+            'title': '日志与链路跳过',
+            'items': ['未识别到明确服务名，已跳过日志与链路查询，避免用环境名或系统名误查。'],
+        })
     sections.insert(0, {
         'title': '自愈推荐',
         'items': [
@@ -7391,6 +7650,20 @@ def _run_action_root_cause(session, user_message, user, question, scoped_questio
     if _is_latest_alert_root_cause_question(question) or _extract_alert_fingerprint(question) or _extract_alert_id(question):
         result = _run_latest_alert_rca_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit)
         return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'latest_alert_root_cause'})
+    if any(keyword in str(question or '').lower() for keyword in ['告警', 'alert', 'alerts']):
+        return _run_alert_environment_analysis_evidence(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            provider,
+            active_skills,
+            action,
+            emit,
+        )
     result = _run_service_anomaly_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit)
     return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'service_anomaly_evidence'})
 
@@ -8785,7 +9058,13 @@ def _summarize_response_block_tool_output(tool_name, tool_output):
         alert = tool_output.get('alert') or {}
         return f"分析告警：{alert.get('title') or summary.get('alert_id') or '未定位到告警'}"
     if tool_name == 'query_alert_metrics':
-        return f"返回 {summary.get('executed_count', 0)} 项指标证据，异常 {summary.get('abnormal_count', 0)} 项"
+        return (
+            f"计划 {summary.get('planned_count', 0)} 项指标查询，"
+            f"执行 {summary.get('executed_count', 0)} 项，"
+            f"异常 {summary.get('abnormal_count', 0)} 项，"
+            f"无数据 {summary.get('missing_count', 0)} 项，"
+            f"未完成 {summary.get('failed_count', 0)} 项"
+        )
     if tool_name == 'query_logs':
         count = summary.get('count', len(tool_output.get('logs') or []))
         service = summary.get('service') or ''
@@ -8914,6 +9193,9 @@ def _collect_alert_context(collected_tool_outputs, sections):
     sources = Counter()
     hosts = Counter()
     title_counter = Counter()
+    statuses = Counter()
+    levels = Counter()
+    latest_received_at = ''
     total_count = 0
 
     for item in collected_tool_outputs or []:
@@ -8928,11 +9210,16 @@ def _collect_alert_context(collected_tool_outputs, sections):
             total_count = max(total_count, len(alerts))
         for alert in alerts:
             host_name = alert.host.hostname if getattr(alert, 'host', None) else '无主机关联'
-            line = f'{alert.get_level_display()} / {alert.title} / {alert.source} / {host_name}'
+            received_at = _alert_display_time(alert)
+            line = f'{alert.get_level_display()} / {alert.title} / {alert.source} / {host_name} / {alert.get_status_display()} / {received_at}'
             entries.append(line)
             sources[alert.source] += 1
             hosts[host_name] += 1
             title_counter[alert.title] += 1
+            statuses[alert.status] += 1
+            levels[alert.level] += 1
+            if received_at and received_at != '-' and (not latest_received_at or received_at > latest_received_at):
+                latest_received_at = received_at
 
     if not entries:
         for section in sections or []:
@@ -8952,6 +9239,10 @@ def _collect_alert_context(collected_tool_outputs, sections):
                     title_counter[parts[1]] += 1
                     sources[parts[2]] += 1
                     hosts[parts[3]] += 1
+                if len(parts) >= 6:
+                    statuses[parts[4]] += 1
+                    if parts[5] and parts[5] != '-' and (not latest_received_at or parts[5] > latest_received_at):
+                        latest_received_at = parts[5]
 
     return {
         'count': total_count or len(entries),
@@ -8959,6 +9250,9 @@ def _collect_alert_context(collected_tool_outputs, sections):
         'sources': sources,
         'hosts': hosts,
         'titles': title_counter,
+        'statuses': statuses,
+        'levels': levels,
+        'latest_received_at': latest_received_at,
     }
 
 
@@ -9002,6 +9296,34 @@ def _build_alert_suggestions(question, alert_context):
     return suggestions[:4]
 
 
+def _collect_metric_context(collected_tool_outputs):
+    context = {
+        'called': False,
+        'planned_count': 0,
+        'executed_count': 0,
+        'abnormal_count': 0,
+        'missing_count': 0,
+        'failed_count': 0,
+        'items': [],
+    }
+    for item in collected_tool_outputs or []:
+        if item.get('tool_name') != 'query_alert_metrics':
+            continue
+        context['called'] = True
+        tool_output = item.get('tool_output') or {}
+        summary = tool_output.get('summary') or {}
+        context['planned_count'] += _safe_int(summary.get('planned_count'))
+        context['executed_count'] += _safe_int(summary.get('executed_count'))
+        context['abnormal_count'] += _safe_int(summary.get('abnormal_count'))
+        context['missing_count'] += _safe_int(summary.get('missing_count'))
+        context['failed_count'] += _safe_int(summary.get('failed_count'))
+        for evidence in tool_output.get('evidence') or []:
+            if len(context['items']) >= 4:
+                break
+            context['items'].append(_format_metric_evidence_item(evidence) if isinstance(evidence, dict) else str(evidence))
+    return context
+
+
 def _build_alert_structured_answer(question, sections, citations, collected_tool_outputs):
     alert_context = _collect_alert_context(collected_tool_outputs, sections)
     if not alert_context.get('entries'):
@@ -9010,24 +9332,68 @@ def _build_alert_structured_answer(question, sections, citations, collected_tool
     count = alert_context.get('count') or len(alert_context.get('entries') or [])
     focus = _summarize_alert_focus(alert_context)
     subject = _extract_analysis_subject(question)
+    statuses = alert_context.get('statuses') or Counter()
+    status_parts = []
+    for key, label in [
+        (Alert.STATUS_ACTIVE, '活跃'),
+        (Alert.STATUS_RESOLVED, '已恢复'),
+        (Alert.STATUS_MUTED, '已静默'),
+        (Alert.STATUS_CLOSED, '已关闭'),
+    ]:
+        if statuses.get(key):
+            status_parts.append(f'{label} {statuses[key]} 条')
+    status_text = '，'.join(status_parts)
+    latest_received_at = alert_context.get('latest_received_at') or ''
+    question_text = str(question or '')
+    recent_intent = any(keyword in question_text for keyword in ['最近', '近期', '近来', '最新'])
+    current_intent = any(keyword in question_text for keyword in ['当前', '活跃', '未恢复', '还在', '现存'])
 
     lines = ['结论：']
     if '异常' in (question or '') or '分析' in (question or ''):
-        target = subject or '目标服务'
-        base = f'已定位到 {target} 的近期异常：发现 {count} 条相关告警。'
+        target = subject or '目标范围'
+        scope_text = '最近接收/产生过' if recent_intent and not current_intent else '发现'
+        base = f'已定位到 {target} 的近期异常：{scope_text} {count} 条相关告警。'
         if focus:
             base += '异常点主要集中在' + '、'.join(focus) + '。'
+        if status_text:
+            base += f'状态分布：{status_text}。'
+        if latest_received_at:
+            base += f'最近接收时间：{latest_received_at}。'
         lines.append(base)
     else:
-        base = f'当前未确认的严重告警共 {count} 条。'
+        if recent_intent and not current_intent:
+            base = f'最近接收/产生的告警共 {count} 条。'
+        else:
+            base = f'当前未确认的严重告警共 {count} 条。'
         if focus:
             base += '风险主要集中在' + '、'.join(focus) + '。'
+        if status_text:
+            base += f'状态分布：{status_text}。'
+        if latest_received_at:
+            base += f'最近接收时间：{latest_received_at}。'
         lines.append(base)
 
     lines.append('依据：')
     lines.append('告警明细')
     for item in alert_context.get('entries', [])[:8]:
         lines.append(f'- {item}')
+
+    metric_context = _collect_metric_context(collected_tool_outputs)
+    if metric_context.get('called'):
+        lines.append('指标查询')
+        lines.append(
+            f"- 计划 {metric_context.get('planned_count') or 0} 项，"
+            f"执行 {metric_context.get('executed_count') or 0} 项，"
+            f"异常 {metric_context.get('abnormal_count') or 0} 项，"
+            f"无数据 {metric_context.get('missing_count') or 0} 项，"
+            f"未完成 {metric_context.get('failed_count') or 0} 项。"
+        )
+        if not metric_context.get('planned_count'):
+            lines.append('- 当前告警未生成可执行指标查询计划。')
+        elif not metric_context.get('executed_count'):
+            lines.append('- 指标查询计划已生成，但未返回可用执行结果。')
+        for item in metric_context.get('items') or []:
+            lines.append(f'- {item}')
 
     suggestions = _build_alert_suggestions(question, alert_context)
     if suggestions:
@@ -13944,6 +14310,21 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         )
         alert_action = selected_action if selected_action and selected_action.get('code') == 'alert.root_cause' else _action_registry_item_by_code('alert.root_cause', user=user)
         return _attach_selected_action_metadata(result, alert_action, extra_metadata={'action_route': 'latest_alert_root_cause'}) if alert_action else result
+    if _is_alert_environment_analysis_question(question):
+        alert_action = selected_action if selected_action and selected_action.get('code') == 'alert.root_cause' else _action_registry_item_by_code('alert.root_cause', user=user)
+        return _run_alert_environment_analysis_evidence(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            formatter_provider,
+            active_skills,
+            alert_action,
+            emit,
+        )
     if _is_direct_k8s_resource_lookup_question(question):
         resource_type = _detect_k8s_resource_type(question)
         tool_name = 'query_k8s_cluster_summary' if resource_type == 'pods' else 'query_k8s_resources'

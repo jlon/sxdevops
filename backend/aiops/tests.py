@@ -2259,7 +2259,10 @@ class AIOpsApiTests(TestCase):
         self.assertGreaterEqual(result['summary']['abnormal_count'], 1)
         self.assertEqual(result['summary']['metric_datasource_id'], metric_source.id)
         self.assertTrue(result['plan'])
-        self.assertIn('指标证据摘要', result['sections'][1]['title'])
+        section_titles = [section['title'] for section in result['sections']]
+        self.assertIn('指标查询结果', section_titles)
+        self.assertNotIn('指标证据不足', section_titles)
+        self.assertLessEqual(len([title for title in section_titles if '指标查询' in title]), 2)
         mocked_promql.assert_called()
         self.assertEqual(mocked_promql.call_args.kwargs['metric_datasource_id'], metric_source.id)
         self.assertTrue(mocked_promql.call_args.kwargs['prefer_metric_datasource'])
@@ -2305,7 +2308,46 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(result['metrics']['summary']['alert_id'], alert.id)
         self.assertGreaterEqual(result['metrics']['summary']['executed_count'], 1)
         self.assertIn('指标证据', '\n'.join(result['analysis']['evidence']))
-        self.assertTrue(any(section['title'] == '指标证据摘要' for section in result['sections']))
+        section_titles = [section['title'] for section in result['sections']]
+        self.assertIn('指标查询结果', section_titles)
+        self.assertNotIn('指标证据不足', section_titles)
+        self.assertLessEqual(len([title for title in section_titles if '指标查询' in title]), 2)
+
+    @mock.patch('aiops.services.execute_promql_query')
+    def test_query_alert_metrics_empty_series_is_query_status_not_risk(self, mocked_promql):
+        self.ensure_prod_knowledge_environment()
+        alert = Alert.objects.create(
+            title='prod checkout 5xx high',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='checkout error rate high',
+            environment='prod',
+            service='checkout',
+            metric_name='http_requests_total',
+            labels={'service': 'checkout'},
+            starts_at=timezone.now() - timedelta(minutes=15),
+            is_acknowledged=False,
+        )
+        mocked_promql.return_value = {
+            'query': 'mock',
+            'range': True,
+            'source': 'metric_datasource',
+            'series_count': 0,
+            'result': [],
+            'sample': [],
+        }
+        session = AIOpsChatSession.objects.create(user=self.user, title='alert-metrics-empty')
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content=f'分析告警ID {alert.id} 的指标')
+
+        result = query_alert_metrics(session, user_message, self.user, query=f'prod 分析告警ID {alert.id} 的指标', alert_id=alert.id)
+
+        section_titles = [section['title'] for section in result['sections']]
+        self.assertIn('指标查询结果', section_titles)
+        self.assertIn('指标查询状态', section_titles)
+        self.assertNotIn('指标证据不足', section_titles)
+        self.assertLessEqual(len([title for title in section_titles if '指标查询' in title]), 2)
+        self.assertTrue(any('无数据' in item for section in result['sections'] for item in section['items']))
 
     def test_knowledge_graph_filters_k8s_services_by_configured_namespaces(self):
         cluster = K8sCluster.objects.create(
@@ -3216,6 +3258,56 @@ class AIOpsApiTests(TestCase):
         self.assertNotIn(other_business.id, [item.id for item in result['alerts']])
         self.assertNotIn(other_env.id, [item.id for item in result['alerts']])
 
+    def test_query_alerts_recent_environment_includes_resolved_recent_alerts(self):
+        self.ensure_ecommerce_knowledge_environment()
+        recent_resolved = Alert.objects.create(
+            title='Ecommerce HTTP 5xx rate is high',
+            level='critical',
+            status=Alert.STATUS_RESOLVED,
+            source='prometheus',
+            message='api-gateway 5xx recovered',
+            environment='电商测试',
+            service='api-gateway',
+            is_acknowledged=True,
+        )
+        old_active = Alert.objects.create(
+            title='old ecommerce active alert',
+            level='warning',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='old active warning',
+            environment='电商测试',
+            service='catalog',
+        )
+        other_environment = Alert.objects.create(
+            title='prod active alert',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='prod warning',
+            environment='prod',
+        )
+        two_hours_ago = timezone.now() - timedelta(hours=2)
+        Alert.objects.filter(pk=old_active.pk).update(
+            created_at=two_hours_ago,
+            starts_at=two_hours_ago,
+            last_received_at=two_hours_ago,
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='ecommerce-recent-alerts')
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='帮我分析下电商测试环境最近的告警')
+
+        result = query_alerts(session, user_message, self.user, query='电商测试环境 帮我分析下电商测试环境最近的告警')
+
+        self.assertEqual(result['summary']['count'], 1)
+        self.assertEqual(result['summary']['date_filter'], 'last_hour')
+        self.assertEqual(result['summary']['status'], '')
+        self.assertEqual(result['summary']['environment'], '电商测试环境')
+        self.assertEqual(result['summary']['resolved'], 1)
+        self.assertEqual(result['alerts'][0].id, recent_resolved.id)
+        self.assertNotIn(old_active.id, [item.id for item in result['alerts']])
+        self.assertNotIn(other_environment.id, [item.id for item in result['alerts']])
+        self.assertIn('已恢复', result['sections'][0]['items'][0])
+
     def test_query_alerts_handles_order_center_incident_query(self):
         prod_host = Host.objects.create(hostname='trade-prod-hz-app-01', ip_address='10.20.1.10', environment='prod', status='online')
         Alert.objects.create(
@@ -3743,6 +3835,171 @@ class AIOpsApiTests(TestCase):
         self.assertIn('query_alerts', assistant_message['tool_calls'])
         self.assertIn(matched.title, assistant_message['content'])
         self.assertNotIn(old_alert.title, assistant_message['content'])
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_send_message_recent_ecommerce_alerts_include_resolved_alerts(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        recent_resolved = Alert.objects.create(
+            title='Ecommerce HTTP 5xx rate is high',
+            level='critical',
+            status=Alert.STATUS_RESOLVED,
+            source='prometheus',
+            message='api-gateway 5xx recovered',
+            environment='电商测试',
+            service='api-gateway',
+            is_acknowledged=True,
+        )
+        old_active = Alert.objects.create(
+            title='old ecommerce active alert',
+            level='warning',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='old active warning',
+            environment='电商测试',
+            service='catalog',
+        )
+        two_hours_ago = timezone.now() - timedelta(hours=2)
+        Alert.objects.filter(pk=old_active.pk).update(
+            created_at=two_hours_ago,
+            starts_at=two_hours_ago,
+            last_received_at=two_hours_ago,
+        )
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'recent-ecommerce-alerts'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '帮我分析下电商测试环境最近的告警'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'deterministic_alert_environment_analysis')
+        self.assertEqual(assistant_message['metadata']['alert_filters']['date_filter'], 'last_hour')
+        self.assertEqual(assistant_message['metadata']['alert_filters']['status'], '')
+        self.assertIn('query_alerts', assistant_message['tool_calls'])
+        self.assertIn('query_alert_metrics', assistant_message['tool_calls'])
+        self.assertNotIn('query_logs', assistant_message['tool_calls'])
+        self.assertNotIn('query_traces', assistant_message['tool_calls'])
+        self.assertIn(recent_resolved.title, assistant_message['content'])
+        self.assertIn('已恢复', assistant_message['content'])
+        self.assertNotIn(old_active.title, assistant_message['content'])
+        self.assertNotIn('当前没有符合筛选条件的告警', assistant_message['content'])
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services.execute_promql_query')
+    @mock.patch('aiops.services._request_model_completion')
+    def test_send_message_environment_alert_analysis_uses_metrics_without_fake_service(self, mocked_completion, mocked_promql):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        Alert.objects.create(
+            title='Ecommerce HTTP 5xx rate is high',
+            level='critical',
+            status=Alert.STATUS_RESOLVED,
+            source='prometheus',
+            message='ecommerce 5xx recovered',
+            environment='电商测试',
+            metric_name='http_requests_total',
+            labels={'environment': '电商测试'},
+            starts_at=timezone.now() - timedelta(minutes=20),
+        )
+        mocked_promql.return_value = {
+            'query': 'mock',
+            'range': True,
+            'source': 'metric_datasource',
+            'series_count': 1,
+            'result': [{
+                'metric': {'environment': '电商测试'},
+                'values': [
+                    [1710000000, '0.01'],
+                    [1710000060, '0.03'],
+                    [1710000120, '0.20'],
+                ],
+            }],
+            'sample': [],
+        }
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'environment-alert-analysis'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '帮我分析下电商测试环境告警'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        tool_calls = assistant_message['tool_calls']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'deterministic_alert_environment_analysis')
+        self.assertIn('query_alerts', tool_calls)
+        self.assertIn('query_alert_metrics', tool_calls)
+        self.assertNotIn('query_logs', tool_calls)
+        self.assertNotIn('query_traces', tool_calls)
+        self.assertTrue(assistant_message['metadata']['skipped_observability_service_lookup'])
+        block_titles = {item.get('title') for item in assistant_message['blocks']}
+        self.assertIn('日志与链路跳过', block_titles)
+        self.assertIn('指标查询', assistant_message['content'])
+        self.assertNotIn('指标证据不足', assistant_message['content'])
+        self.assertNotIn('查询失败', assistant_message['content'])
+        self.assertIn('Ecommerce HTTP 5xx rate is high', assistant_message['content'])
+        metric_block_titles = [title for title in block_titles if title and '指标查询' in title]
+        self.assertLessEqual(len(metric_block_titles), 2)
+        self.assertNotIn('指标证据不足', block_titles)
+        mocked_promql.assert_called()
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services.execute_promql_query')
+    @mock.patch('aiops.services._request_model_completion')
+    def test_send_message_service_alert_analysis_keeps_log_trace_when_service_explicit(self, mocked_completion, mocked_promql):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+        Alert.objects.create(
+            title='order service 5xx high',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='order service 5xx is high',
+            environment='电商测试',
+            service='order-service',
+            metric_name='http_requests_total',
+            labels={'service': 'order-service'},
+            starts_at=timezone.now() - timedelta(minutes=10),
+        )
+        LogEntry.objects.create(service='order-service', level='error', message='order service error')
+        mocked_promql.return_value = {
+            'query': 'mock',
+            'range': True,
+            'source': 'metric_datasource',
+            'series_count': 1,
+            'result': [{'metric': {'service': 'order-service'}, 'values': [[1710000000, '1'], [1710000060, '2']]}],
+            'sample': [],
+        }
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'service-alert-analysis'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '帮我分析下电商测试环境订单服务告警'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        tool_calls = assistant_message['tool_calls']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'deterministic_alert_environment_analysis')
+        self.assertIn('query_alerts', tool_calls)
+        self.assertIn('query_alert_metrics', tool_calls)
+        self.assertIn('query_logs', tool_calls)
+        self.assertIn('query_traces', tool_calls)
+        self.assertEqual(assistant_message['metadata']['service'], 'order-service')
+        self.assertFalse(assistant_message['metadata']['skipped_observability_service_lookup'])
+        mocked_promql.assert_called()
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
