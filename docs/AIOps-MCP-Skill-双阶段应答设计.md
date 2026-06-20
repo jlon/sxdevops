@@ -28,7 +28,7 @@ AIOps 智能助手需要同时满足两类目标：
 - 可观测性 MCP：`query_observability`
 - 工单系统 MCP：`query_workorders`
 - 任务中心 MCP：`query_task_center`、`generate_host_task`
-- 事件墙 MCP：`query_event_wall`
+- 时间中心 MCP：`query_event_wall`
 - 容器管理 MCP：`query_container_assets`
 - 中间件 MCP：`query_middleware_assets`
 

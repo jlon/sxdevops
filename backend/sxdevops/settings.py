@@ -299,6 +299,33 @@ OBSERVABILITY_CONFIG = {
     },
 }
 
+CACHE_REDIS_URL = os.getenv('REDIS_URL') or os.getenv('CACHE_REDIS_URL')
+CACHE_KEY_PREFIX = os.getenv('CACHE_KEY_PREFIX', 'sxdevops')
+CACHE_DEFAULT_TIMEOUT = int(os.getenv('CACHE_DEFAULT_TIMEOUT', '300'))
+
+if CACHE_REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': CACHE_REDIS_URL,
+            'TIMEOUT': CACHE_DEFAULT_TIMEOUT,
+            'KEY_PREFIX': CACHE_KEY_PREFIX,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+                'IGNORE_EXCEPTIONS': os.getenv('CACHE_IGNORE_EXCEPTIONS', '1') != '0',
+            },
+        },
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'sxdevops-local-cache',
+            'TIMEOUT': CACHE_DEFAULT_TIMEOUT,
+            'KEY_PREFIX': CACHE_KEY_PREFIX,
+        },
+    }
+
 # ASGI / Channels
 ASGI_APPLICATION = 'sxdevops.asgi.application'
 CHANNEL_LAYERS = {

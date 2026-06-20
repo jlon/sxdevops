@@ -322,7 +322,7 @@ BUILTIN_MCP_SERVERS = [
         'tool_whitelist': ['query_task_resources', 'generate_host_task'],
     },
     {
-        'name': '事件墙 MCP',
+        'name': '时间中心 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询事件墙中的关键事件与最近动态。',
         'tool_whitelist': ['query_event_wall'],

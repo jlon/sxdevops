@@ -198,6 +198,15 @@ python -m daphne -b 0.0.0.0 -p 8000 sxdevops.asgi:application
 
 后端默认地址：`http://localhost:8000`
 
+可选 Redis 缓存：
+
+```bash
+# 不配置时默认使用本进程内存缓存，适合本地开发
+export REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+配置后，K8s 资源缓存、AIOps 知识图谱缓存和 MCP 调用限流等会共享到 Redis。
+
 ### 2. 启动前端
 
 ```bash

@@ -37,7 +37,7 @@
         </el-tab-pane>
         <el-tab-pane name="orchestration">
           <template #label>
-            <span class="tab-label"><el-icon><Message /></el-icon>协同任务 / Runbook</span>
+            <span class="tab-label"><el-icon><Message /></el-icon>拓展功能-待实现</span>
           </template>
         </el-tab-pane>
         <el-tab-pane name="providers">
@@ -58,7 +58,7 @@
           <el-button size="small" type="primary" :loading="saving.config" @click="saveConfig">保存策略</el-button>
         </div>
         <div class="config-grid">
-          <div class="config-section surface-card">
+          <div class="config-section config-section--main surface-card">
             <div class="section-title">基础策略</div>
             <el-form :model="configForm" label-width="118px">
               <el-form-item label="默认提供商">
@@ -93,7 +93,7 @@
               </el-form-item>
             </el-form>
           </div>
-          <div class="config-section surface-card">
+          <div class="config-section config-section--runtime surface-card">
             <div class="section-title">运行生效项</div>
             <div class="runtime-note">这些配置会被聊天入口或后端任务生成逻辑直接读取。</div>
             <div class="switch-list">
@@ -140,6 +140,31 @@
             <span>复盘知识</span>
             <strong>{{ reviewOverview.total }}</strong>
           </div>
+        </div>
+        <div v-if="canViewMcpServer" class="mcp-server-panel">
+          <div class="section-toolbar audit-toolbar">
+            <div class="toolbar-head">
+              <span class="toolbar-title">sxdevops 对外 MCP Server</span>
+              <span class="toolbar-desc">外部 Agent 通过 Token 鉴权调用平台只读工具，所有调用进入审计</span>
+            </div>
+          </div>
+          <el-table :data="platformMcpManifest.tools || []" stripe size="small" class="console-table">
+            <el-table-column prop="title" label="工具" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="name" label="MCP 名称" min-width="230" show-overflow-tooltip />
+            <el-table-column prop="permission" label="权限" min-width="160" />
+            <el-table-column label="状态" width="96">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.available === false ? 'warning' : 'success'">{{ row.available === false ? '受限' : '可用' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="安全" width="96">
+              <template #default="{ row }">
+                <el-tag size="small" effect="plain" :type="row.annotations?.readOnlyHint ? 'success' : 'danger'">
+                  {{ row.annotations?.readOnlyHint ? '只读' : '写入' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
         </div>
         <div class="audit-section">
           <div class="section-toolbar audit-toolbar">
@@ -303,49 +328,6 @@
       </template>
 
       <template v-else-if="activeTab === 'mcp'">
-        <div v-if="canViewMcpServer" class="skill-summary-row">
-          <div class="skill-summary-item">
-            <span>对外 MCP 工具</span>
-            <strong>{{ platformMcpOverview.total }}</strong>
-          </div>
-          <div class="skill-summary-item">
-            <span>当前可用</span>
-            <strong>{{ platformMcpOverview.available }}</strong>
-          </div>
-          <div class="skill-summary-item">
-            <span>每分钟限流</span>
-            <strong>{{ platformMcpOverview.rateLimit }}</strong>
-          </div>
-          <div class="skill-summary-item">
-            <span>工具边界</span>
-            <strong>只读</strong>
-          </div>
-        </div>
-        <div v-if="canViewMcpServer" class="mcp-server-panel">
-          <div class="section-toolbar audit-toolbar">
-            <div class="toolbar-head">
-              <span class="toolbar-title">sxdevops 对外 MCP Server</span>
-              <span class="toolbar-desc">外部 Agent 通过 Token 鉴权调用平台只读工具，所有调用进入审计</span>
-            </div>
-          </div>
-          <el-table :data="platformMcpManifest.tools || []" stripe size="small" class="console-table">
-            <el-table-column prop="title" label="工具" min-width="180" show-overflow-tooltip />
-            <el-table-column prop="name" label="MCP 名称" min-width="230" show-overflow-tooltip />
-            <el-table-column prop="permission" label="权限" min-width="160" />
-            <el-table-column label="状态" width="96">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.available === false ? 'warning' : 'success'">{{ row.available === false ? '受限' : '可用' }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="安全" width="96">
-              <template #default="{ row }">
-                <el-tag size="small" effect="plain" :type="row.annotations?.readOnlyHint ? 'success' : 'danger'">
-                  {{ row.annotations?.readOnlyHint ? '只读' : '写入' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
         <div class="section-toolbar">
           <div class="toolbar-head">
             <span class="toolbar-title">外部 MCP 接入</span>
@@ -393,16 +375,12 @@
         <div class="section-toolbar">
           <div class="toolbar-head">
             <span class="toolbar-title">Skill 能力包</span>
-            <span class="toolbar-desc">沉淀 SOP、证据清单、工具依赖、查询规范和回答方法</span>
+            <span class="toolbar-desc">Skill = 能力包，用于声明专业方法和工具依赖，最终可用工具仍会经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤</span>
           </div>
           <div class="toolbar-actions">
             <el-button size="small" @click="openSkillMarketDialog">Skill 市场</el-button>
             <el-button size="small" type="primary" @click="openSkillDialog()">新增 Skill</el-button>
           </div>
-        </div>
-        <div class="concept-note concept-note--skill">
-          <strong>Skill = 能力包</strong>
-          <span>用于声明专业方法和工具依赖；最终可用工具仍会经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。</span>
         </div>
         <div class="skill-summary-row">
           <div class="skill-summary-item">
@@ -477,13 +455,9 @@
         <div class="section-toolbar">
           <div class="toolbar-head">
             <span class="toolbar-title">Action Registry</span>
-            <span class="toolbar-desc">定义 assistant 的任务入口、流程策略、预检查和结构化输出</span>
+            <span class="toolbar-desc">Action = 任务入口，用于把用户问题路由到任务类型，并决定上下文、预检、风险、输出结构和默认加载的 Skill</span>
           </div>
           <span class="audit-hint">已内置 {{ actionOverview.total }} 个 P0 action</span>
-        </div>
-        <div class="concept-note concept-note--action">
-          <strong>Action = 任务入口</strong>
-          <span>用于把用户问题路由到任务类型，并决定上下文、预检、风险、输出结构和默认加载的 Skill。</span>
         </div>
         <div class="action-summary-row">
           <div class="action-summary-item">
@@ -2192,11 +2166,26 @@ onMounted(async () => {
 }
 
 .config-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
   align-items: flex-start;
+  gap: 10px;
 }
 
 .config-section {
-  flex: 1;
+  width: 100%;
+}
+
+.config-section--main {
+  min-width: 0;
+}
+
+.config-section--runtime {
+  position: sticky;
+  top: 12px;
+  padding: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border-color: rgba(96, 165, 250, 0.22);
 }
 
 .surface-card {
@@ -2222,17 +2211,18 @@ onMounted(async () => {
 
 .switch-list {
   flex-direction: column;
+  gap: 8px;
 }
 
 .switch-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(226, 232, 240, 0.9);
 }
 
 .switch-copy {
@@ -2257,10 +2247,10 @@ onMounted(async () => {
 
 .runtime-form {
   margin-top: 10px;
-  padding: 12px 14px;
-  border-radius: 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
   background: #ffffff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(226, 232, 240, 0.92);
 }
 
 .runtime-form :deep(.el-form-item) {
@@ -2652,37 +2642,6 @@ onMounted(async () => {
   color: #64748b;
   font-size: 13px;
   line-height: 1.8;
-}
-
-.concept-note {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  padding: 9px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  background: #f8fafc;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.concept-note strong {
-  flex-shrink: 0;
-  color: #0f172a;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.concept-note--action {
-  background: #f8fbff;
-  border-color: rgba(96, 165, 250, 0.28);
-}
-
-.concept-note--skill {
-  background: #f8fafc;
-  border-color: rgba(148, 163, 184, 0.28);
 }
 
 .skill-summary-row {
@@ -3118,7 +3077,11 @@ onMounted(async () => {
   }
 
   .config-grid {
-    flex-direction: column;
+    grid-template-columns: 1fr;
+  }
+
+  .config-section--runtime {
+    position: static;
   }
 
   .skill-package-row,
@@ -3143,14 +3106,6 @@ onMounted(async () => {
     padding: 0 12px;
   }
 
-  .concept-note {
-    grid-template-columns: 1fr;
-  }
-
-  .concept-note {
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 
 @media (max-width: 760px) {
