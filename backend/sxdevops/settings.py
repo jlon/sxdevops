@@ -133,6 +133,18 @@ def _bool_value(value, default=False):
     return str(value).strip().lower() in {'1', 'true', 'yes', 'on', 'y'}
 
 
+FEATURE_CONFIG = _app_config_section('features')
+SYSTEM_POSTURE_ENABLED = _bool_value(
+    _setting_value(
+        FEATURE_CONFIG,
+        ('system_posture_enabled', 'systemPostureEnabled', 'system_posture', 'systemPosture'),
+        ('SXDEVOPS_SYSTEM_POSTURE_ENABLED', 'SYSTEM_POSTURE_ENABLED'),
+        True,
+    ),
+    True,
+)
+
+
 def _int_value(value, name, default=None):
     if value in (None, ''):
         return default

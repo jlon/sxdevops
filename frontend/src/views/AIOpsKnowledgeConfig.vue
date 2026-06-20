@@ -119,7 +119,7 @@
               <el-option v-for="item in catalog.observability_links" :key="item.id" :label="observabilityLinkLabel(item)" :value="item.id" />
             </el-select>
           </el-form-item>
-          <el-form-item label="系统态势环境">
+          <el-form-item v-if="systemPostureEnabled" label="系统态势环境">
             <el-select v-model="form.posture_environments" multiple filterable clearable placeholder="选择一个或多个系统态势环境">
               <el-option v-for="item in catalog.posture_environments" :key="item.key" :label="postureEnvironmentLabel(item)" :value="item.key" />
             </el-select>
@@ -184,6 +184,7 @@ import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'v
 import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 import { Plus, RefreshRight, Setting } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
 import {
   createAIOpsKnowledgeEnvironment,
   deleteAIOpsKnowledgeEnvironment,
@@ -213,6 +214,7 @@ defineProps({
 })
 
 const authStore = useAuthStore()
+const systemPostureEnabled = SYSTEM_POSTURE_ENABLED
 const canManage = computed(() => authStore.hasPermission('aiops.knowledge.manage'))
 const loading = ref(false)
 const saving = ref(false)
@@ -272,7 +274,7 @@ function resetForm(row = null) {
   form.tracing_datasource_ids = [...(row?.tracing_datasource_ids || [])]
   form.observability_link_ids = [...(row?.observability_link_ids || [])]
   form.alert_environments = [...(row?.alert_environments || [])]
-  form.posture_environments = [...(row?.posture_environments || [])]
+  form.posture_environments = systemPostureEnabled ? [...(row?.posture_environments || [])] : []
   form.k8s_cluster_ids = [...(row?.k8s_cluster_ids || [])]
   form.k8s_namespaces = { ...(row?.k8s_namespaces || {}) }
   form.docker_host_ids = [...(row?.docker_host_ids || [])]
@@ -289,7 +291,7 @@ function hasAnyBinding() {
     form.tracing_datasource_ids,
     form.observability_link_ids,
     form.alert_environments,
-    form.posture_environments,
+    ...(systemPostureEnabled ? [form.posture_environments] : []),
     form.k8s_cluster_ids,
     form.docker_host_ids,
     form.task_resource_environment_ids,
@@ -361,7 +363,7 @@ function observabilityLinkNames(ids = []) {
 function observabilityNames(row) {
   return [
     ...(row.alert_environments || []).map(name => `告警: ${name}`),
-    ...(row.posture_environments || []).map(name => `系统态势: ${postureEnvironmentNames([name])[0]}`),
+    ...(systemPostureEnabled ? (row.posture_environments || []).map(name => `系统态势: ${postureEnvironmentNames([name])[0]}`) : []),
     ...(row.observability_link_ids || []).map(name => `关联: ${observabilityLinkNames([name])[0]}`),
     ...(row.grafana_folder_keys || []).map(name => `看板: ${name}`),
     ...(row.metric_datasource_ids || []).map(name => `指标: ${datasourceNames([name], 'metric')[0]}`),
@@ -401,7 +403,7 @@ async function loadData() {
       tracing_datasources: options.tracing_datasources || [],
       observability_links: options.observability_links || [],
       alert_environments: options.alert_environments || [],
-      posture_environments: options.posture_environments || [],
+      posture_environments: systemPostureEnabled ? (options.posture_environments || []) : [],
       k8s_clusters: options.k8s_clusters || [],
       docker_hosts: options.docker_hosts || [],
       task_resource_environments: options.task_resource_environments || [],
@@ -435,7 +437,7 @@ async function submitForm() {
       tracing_datasource_ids: form.tracing_datasource_ids,
       observability_link_ids: form.observability_link_ids,
       alert_environments: form.alert_environments,
-      posture_environments: form.posture_environments,
+      posture_environments: systemPostureEnabled ? form.posture_environments : [],
       k8s_cluster_ids: form.k8s_cluster_ids,
       k8s_namespaces: form.k8s_namespaces,
       docker_host_ids: form.docker_host_ids,

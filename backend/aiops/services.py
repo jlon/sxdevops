@@ -60,6 +60,7 @@ from ops.log_views import _merge_config as merge_log_config
 from ops.log_views import _run_query as run_log_provider_query
 from ops.observability_views import execute_dashboard_panel_queries, execute_promql_query
 from rbac.services import is_demo_account, user_has_permissions
+from sxdevops.features import filter_feature_tools, is_system_posture_enabled, tool_feature_enabled
 
 from .knowledge_graph import build_knowledge_graph, resolve_knowledge_environment, resolve_knowledge_environments_from_text
 from .action_handlers import (
@@ -1239,7 +1240,7 @@ def _build_action_registry_item(definition, user=None):
     item['agent_mode_display'] = ACTION_AGENT_MODE_LABELS.get(item.get('agent_mode'), item.get('agent_mode') or '未知')
     item['permission_summary'] = _action_registry_permission_summary(item)
     item['required_context'] = [str(value or '').strip() for value in (item.get('required_context') or []) if str(value or '').strip()]
-    item['allowed_tools'] = [str(value or '').strip() for value in (item.get('allowed_tools') or []) if str(value or '').strip()]
+    item['allowed_tools'] = filter_feature_tools([str(value or '').strip() for value in (item.get('allowed_tools') or []) if str(value or '').strip()])
     item['skills'] = [str(value or '').strip() for value in (item.get('skills') or []) if str(value or '').strip()]
     item['output_blocks'] = [str(value or '').strip() for value in (item.get('output_blocks') or []) if str(value or '').strip()]
     item['preflight_fields'] = [
@@ -1457,13 +1458,17 @@ AGENT_ORCHESTRATION_PROFILES = [
 
 
 def _agent_sequence_for_action(action):
-    allowed_tools = set((action or {}).get('allowed_tools') or [])
+    allowed_tools = set(filter_feature_tools((action or {}).get('allowed_tools') or []))
     selected = []
     for profile in AGENT_ORCHESTRATION_PROFILES:
-        if allowed_tools.intersection(profile['preferred_tools']):
-            selected.append(profile)
+        preferred_tools = filter_feature_tools(profile['preferred_tools'])
+        if allowed_tools.intersection(preferred_tools):
+            selected.append({**profile, 'preferred_tools': preferred_tools})
     if not selected:
-        selected = AGENT_ORCHESTRATION_PROFILES[:2]
+        selected = [
+            {**profile, 'preferred_tools': filter_feature_tools(profile['preferred_tools'])}
+            for profile in AGENT_ORCHESTRATION_PROFILES[:2]
+        ]
     return selected
 
 
@@ -2515,6 +2520,10 @@ def _ensure_builtin_runtime_assets(config):
     for definition in BUILTIN_MCP_SERVERS:
         if definition['name'] in deprecated_builtin_mcp_names:
             continue
+        definition = {
+            **definition,
+            'tool_whitelist': filter_feature_tools(definition.get('tool_whitelist') or []),
+        }
         server, _ = AIOpsMCPServer.objects.get_or_create(
             name=definition['name'],
             defaults={
@@ -2558,6 +2567,11 @@ def _ensure_builtin_runtime_assets(config):
     AIOpsMCPServer.objects.filter(is_builtin=True).exclude(name__in=builtin_mcp_names).delete()
 
     for definition in BUILTIN_SKILLS:
+        definition = {
+            **definition,
+            'builtin_tools': filter_feature_tools(definition.get('builtin_tools') or []),
+            'recommended_tools': filter_feature_tools(definition.get('recommended_tools') or []),
+        }
         skill, _ = AIOpsSkill.objects.get_or_create(
             slug=definition['slug'],
             defaults={
@@ -3339,7 +3353,7 @@ def _environment_scope_terms(knowledge_environment=None, analysis_scope=None):
             *(knowledge_environment.get('aliases') or []),
             *(knowledge_environment.get('alert_environments') or []),
             *(knowledge_environment.get('event_environments') or []),
-            *(knowledge_environment.get('posture_environments') or []),
+            *((knowledge_environment.get('posture_environments') or []) if is_system_posture_enabled() else []),
         ])
     if analysis_scope:
         terms.append(analysis_scope.get('environment'))
@@ -3832,7 +3846,7 @@ def _resolve_chat_environment(session, question):
                     *(resolved.get('aliases') or []),
                     *(resolved.get('alert_environments') or []),
                     *(resolved.get('event_environments') or []),
-                    *(resolved.get('posture_environments') or []),
+                    *((resolved.get('posture_environments') or []) if is_system_posture_enabled() else []),
                 ]
                 alert_values = [alert.environment, alert.cluster, alert.namespace]
                 if any(value and value in candidates for value in alert_values):
@@ -3948,7 +3962,7 @@ def _build_analysis_scope(knowledge_environment):
         'edge_count': len(edges),
         'event_environments': knowledge_environment.get('event_environments') or [],
         'alert_environments': knowledge_environment.get('alert_environments') or [],
-        'posture_environments': knowledge_environment.get('posture_environments') or [],
+        'posture_environments': (knowledge_environment.get('posture_environments') or []) if is_system_posture_enabled() else [],
         'metric_datasource_ids': knowledge_environment.get('metric_datasource_ids') or [],
         'log_datasource_ids': knowledge_environment.get('log_datasource_ids') or [],
         'tracing_datasource_ids': knowledge_environment.get('tracing_datasource_ids') or [],
@@ -5600,7 +5614,7 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         except Exception as exc:
             k8s_result = {'summary': {'error': str(exc)[:200]}, 'sections': [{'title': 'K8s 关联快照', 'items': [str(exc)[:200]]}]}
 
-    posture_result = query_system_posture(session, user_message, user, query=scoped_query, limit=3)
+    posture_result = query_system_posture(session, user_message, user, query=scoped_query, limit=3) if is_system_posture_enabled() else None
     event_result = query_events(session, user_message, user, query=scoped_query, date_filter='', limit=5)
     log_result = None
     trace_result = None
@@ -5710,6 +5724,8 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
 
 def query_system_posture(session, user_message, user, query='', limit=6, analysis_scope=None):
     started_at = time.time()
+    if not is_system_posture_enabled():
+        return {'sections': [], 'citations': [], 'summary': {'disabled': True}, 'systems': []}
     knowledge_environment = _resolve_knowledge_environment_for_query(query)
     invocation = _create_tool_invocation(
         session,
@@ -7528,7 +7544,8 @@ def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_que
     environment_query = knowledge_environment.get('name') or scoped_question
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': environment_query, 'status': Alert.STATUS_ACTIVE, 'limit': 8}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': environment_query, 'date_filter': 'last_hour' if '一小时' in question else '', 'limit': 8}, emit=emit)
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 4, 'analysis_scope': analysis_scope}, emit=emit)
+    if is_system_posture_enabled():
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 4, 'analysis_scope': analysis_scope}, emit=emit)
     return _build_evidence_bundle_result(
         question=question,
         scoped_question=scoped_question,
@@ -7560,7 +7577,8 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
         service,
         scoped_question,
     ] if item).strip()
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 8, 'analysis_scope': analysis_scope}, emit=emit)
+    if is_system_posture_enabled():
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 8, 'analysis_scope': analysis_scope}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': health_query or scoped_question, 'status': '', 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_dashboard_panel_data', {'query': health_query or scoped_question, 'duration_minutes': duration_minutes, 'limit': 3}, emit=emit)
     if service:
@@ -7625,7 +7643,8 @@ def _run_service_anomaly_evidence(session, user_message, user, question, scoped_
         'limit': 8,
     }
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', alert_args, emit=emit)
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
+    if is_system_posture_enabled():
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
     if service:
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_logs', {'query': evidence_query, 'service': service, 'levels': log_levels, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_traces', {'query': service, 'errors_only': True, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
@@ -7725,7 +7744,8 @@ def _run_alert_environment_analysis_evidence(session, user_message, user, questi
             'title': '指标查询结果',
             'items': ['未查询到可用于指标分析的告警。'],
         })
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
+    if is_system_posture_enabled():
+        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': alert_query, 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
     if service:
         log_levels = _detect_log_levels_filter(question) or ['error', 'warning']
@@ -8520,7 +8540,7 @@ def query_cmdb_items(session, user_message, user, query='', environment='', limi
 
 def query_observability(session, user_message, user, query='', limit=6):
     alert_payload = query_alerts(session, user_message, user, query=query, limit=limit)
-    posture_payload = query_system_posture(session, user_message, user, query=query, limit=limit)
+    posture_payload = query_system_posture(session, user_message, user, query=query, limit=limit) if is_system_posture_enabled() else {'sections': [], 'citations': []}
     link_payload = query_observability_links(session, user_message, user, query=query, limit=limit)
     log_payload = query_logs(session, user_message, user, query=query, limit=limit)
     trace_payload = query_traces(session, user_message, user, query=query, errors_only='异常' in (query or '') or '错误' in (query or ''), limit=limit)
@@ -9167,7 +9187,11 @@ def _serialize_platform_mcp_tool(tool, user=None):
 
 
 def list_platform_mcp_tools(user=None):
-    return [_serialize_platform_mcp_tool(tool, user=user) for tool in PLATFORM_MCP_TOOL_DEFINITIONS]
+    return [
+        _serialize_platform_mcp_tool(tool, user=user)
+        for tool in PLATFORM_MCP_TOOL_DEFINITIONS
+        if tool_feature_enabled(tool.get('handler'))
+    ]
 
 
 def _mcp_rate_limit_key(user):
@@ -9205,6 +9229,8 @@ def _mcp_ephemeral_session(user, tool_name):
 
 
 def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
+    if not tool_feature_enabled(handler_name):
+        return {'sections': [], 'citations': [], 'error': 'tool_disabled'}
     arguments = arguments if isinstance(arguments, dict) else {}
     query = str(arguments.get('query') or '').strip()
     limit = _clamped_mcp_limit(arguments)
@@ -9298,6 +9324,8 @@ def invoke_platform_mcp_tool(tool_name, arguments=None, user=None, request=None)
     tool = _platform_mcp_tool_map().get(str(tool_name or '').strip())
     if not tool:
         raise ValueError('MCP 工具不存在')
+    if not tool_feature_enabled(tool.get('handler')):
+        raise ValueError('MCP 工具已关闭')
     if not user or not getattr(user, 'is_authenticated', False):
         raise ValueError('MCP 调用需要登录鉴权')
     if not user_has_permissions(user, ['aiops.mcp.invoke']):
@@ -13849,6 +13877,8 @@ def _build_history_messages(session, config):
 
 
 def _tool_allowed(user, tool_name):
+    if not tool_feature_enabled(tool_name):
+        return False
     if tool_name == 'query_knowledge_graph':
         return user_has_permissions(user, ['aiops.knowledge.view'])
     if tool_name == 'query_hosts':
@@ -13909,7 +13939,7 @@ def _tool_allowed(user, tool_name):
 def _tool_specs_for_runtime(active_mcp_servers, user):
     tool_names = []
     for server in active_mcp_servers:
-        for tool_name in server.tool_whitelist or []:
+        for tool_name in filter_feature_tools(server.tool_whitelist or []):
             if tool_name not in tool_names and _tool_allowed(user, tool_name):
                 tool_names.append(tool_name)
 
@@ -14184,7 +14214,7 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
     return [
         {'type': 'function', 'function': {'name': tool_name, 'description': catalog[tool_name]['description'], 'parameters': catalog[tool_name]['parameters']}}
         for tool_name in tool_names
-        if tool_name in catalog
+        if tool_name in catalog and tool_feature_enabled(tool_name)
     ]
 
 
@@ -14406,6 +14436,7 @@ def _scope_tool_arguments(session, tool_name, arguments):
         'query_k8s_resources',
         'query_task_resources',
     }
+    scoped_tools = set(filter_feature_tools(scoped_tools))
     if tool_name in scoped_tools:
         query = str(scoped.get('query') or '').strip()
         if environment_name not in query:
@@ -14416,6 +14447,13 @@ def _scope_tool_arguments(session, tool_name, arguments):
 
 
 def _run_tool_call(session, user_message, user, tool_name, arguments, registry_entry=None):
+    if not tool_feature_enabled(tool_name):
+        return {
+            'tool_output': {'sections': [], 'citations': [], 'error': 'tool_disabled'},
+            'sections': [],
+            'citations': [],
+            'message_type': AIOpsChatMessage.TYPE_ANALYSIS,
+        }
     arguments = _scope_tool_arguments(session, tool_name, arguments)
     platform_mcp_entry = registry_entry if registry_entry and registry_entry.get('kind') == 'platform_mcp' else None
     if registry_entry and registry_entry.get('kind') == 'external':
@@ -15101,7 +15139,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             provider=formatter_provider,
             active_skills=active_skills,
         )
-    if _is_direct_posture_question(question):
+    if is_system_posture_enabled() and _is_direct_posture_question(question):
         posture_action = _action_registry_item_by_code('slo.analysis', user=user)
         return _direct_tool_fastpath(
             session,

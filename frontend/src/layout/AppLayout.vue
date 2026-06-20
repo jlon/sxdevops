@@ -184,6 +184,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
 import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
 import { getModuleSettings } from '@/api/modules/rbac'
 import { getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
@@ -199,6 +200,9 @@ const notificationCount = ref(0)
 const moduleVisibility = ref({})
 const MODULE_SETTINGS_EVENT = 'sxdevops-module-settings-updated'
 const TASK_SCHEDULES_VISIBLE = false
+const observabilityBoardPermissions = SYSTEM_POSTURE_ENABLED
+  ? ['ops.grafana.view', 'ops.observability.system_posture.view']
+  : ['ops.grafana.view']
 const defaultOpenMenuKeys = ['aiops', 'observability', 'events']
 let notificationTimer = null
 
@@ -220,7 +224,7 @@ const menuItems = [
     title: '可观测性',
     icon: 'DataLine',
     children: [
-      { path: '/observability/boards', title: '可视化', icon: 'DataLine', anyPermissions: ['ops.grafana.view', 'ops.observability.system_posture.view'] },
+      { path: '/observability/boards', title: '可视化', icon: 'DataLine', anyPermissions: observabilityBoardPermissions },
       { path: '/observability/metrics', title: '指标查询', icon: 'DataAnalysis', permission: 'ops.metric.query' },
       { path: '/logs/query', title: '日志中心', icon: 'Search', permission: 'ops.log.query' },
       { path: '/observability/tracing', title: '链路追踪', icon: 'Connection', permission: 'ops.trace.view' },
@@ -282,8 +286,7 @@ const menuItems = [
 const observabilityBoardPaths = new Set([
   '/observability/boards',
   '/observability/grafana',
-  '/observability/system-posture',
-  '/observability/posture-history',
+  ...(SYSTEM_POSTURE_ENABLED ? ['/observability/system-posture', '/observability/posture-history'] : []),
 ])
 const observabilityQueryPaths = new Set([
   '/observability/query',

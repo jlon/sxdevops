@@ -71,14 +71,19 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Aim, Calendar, RefreshRight, Share } from '@element-plus/icons-vue'
 import { getObservabilityOverview } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
 import ObservabilityDataSourceLinks from './ObservabilityDataSourceLinks.vue'
-import ObservabilityPostureHistory from './ObservabilityPostureHistory.vue'
-import ObservabilitySystemPosture from './ObservabilitySystemPosture.vue'
+const ObservabilityPostureHistory = SYSTEM_POSTURE_ENABLED
+  ? defineAsyncComponent(() => import('./ObservabilityPostureHistory.vue'))
+  : null
+const ObservabilitySystemPosture = SYSTEM_POSTURE_ENABLED
+  ? defineAsyncComponent(() => import('./ObservabilitySystemPosture.vue'))
+  : null
 
 const authStore = useAuthStore()
 const route = useRoute()
@@ -86,7 +91,7 @@ const router = useRouter()
 const loading = ref(false)
 const overview = ref({ modules: {}, summary: {} })
 const canViewLinks = computed(() => authStore.hasPermission('ops.observability.link.view'))
-const canViewSystemPosture = computed(() => authStore.hasPermission('ops.observability.system_posture.view'))
+const canViewSystemPosture = computed(() => SYSTEM_POSTURE_ENABLED && authStore.hasPermission('ops.observability.system_posture.view'))
 const activeOverviewTab = ref(resolveOverviewTab(route.query.tab))
 
 const overviewHero = computed(() => {

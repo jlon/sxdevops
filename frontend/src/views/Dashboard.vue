@@ -16,7 +16,7 @@
       </article>
     </div>
 
-    <section class="panel dashboard-history-shell">
+    <section v-if="systemPostureEnabled" class="panel dashboard-history-shell">
       <div class="dashboard-history-shell__head">
         <div class="dashboard-history-shell__title">
           <div class="dashboard-history-shell__headline">
@@ -34,20 +34,40 @@
         </div>
       </div>
       <ObservabilityPostureHistory
+        v-if="ObservabilityPostureHistory"
         :initial-date-range="selectedDateRange"
         embedded
         @range-change="handleHistoryRangeChange"
       />
     </section>
+    <section v-else class="panel dashboard-history-shell">
+      <div class="dashboard-history-shell__head">
+        <div class="dashboard-history-shell__title">
+          <div class="dashboard-history-shell__headline">
+            <h3>运维概览</h3>
+            <span class="dashboard-history-shell__tag">开源版</span>
+          </div>
+        </div>
+        <div class="dashboard-history-shell__meta">
+          <span class="history-meta-pill">系统态势未启用</span>
+        </div>
+      </div>
+      <div class="dashboard-empty-state">当前版本未启用系统态势与态势历史，智能助手不会读取相关数据。</div>
+    </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Calendar, CircleCheck, QuestionFilled, WarningFilled } from '@element-plus/icons-vue'
 import { getObservabilitySystemPostureHistory } from '@/api/modules/ops'
-import ObservabilityPostureHistory from '@/views/ObservabilityPostureHistory.vue'
+import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
+
+const systemPostureEnabled = SYSTEM_POSTURE_ENABLED
+const ObservabilityPostureHistory = systemPostureEnabled
+  ? defineAsyncComponent(() => import('@/views/ObservabilityPostureHistory.vue'))
+  : null
 
 const loading = ref(false)
 const dashboardHistory = ref({ days: [], systems: [], summary: {}, context: {} })
@@ -183,6 +203,7 @@ function handleHistoryRangeChange(payload = {}) {
 }
 
 async function loadDashboardSummary(showMessage = false, refresh = false) {
+  if (!systemPostureEnabled) return
   loading.value = true
   try {
     dashboardHistory.value = await getObservabilitySystemPostureHistory({ days: 30, refresh: refresh ? 1 : undefined })

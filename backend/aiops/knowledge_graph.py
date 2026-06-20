@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from django.core.cache import cache
 from django.db.models import Count, Max, Q
 from django.utils import timezone
+from sxdevops.features import is_system_posture_enabled
 
 from eventwall.models import EventRecord, EventSource
 from ops.models import (
@@ -450,7 +451,7 @@ def resolve_knowledge_environment(name):
         'tracing_datasource_ids': _int_list(config.tracing_datasource_ids),
         'observability_link_ids': _int_list(getattr(config, 'observability_link_ids', []) or []),
         'alert_environments': _clean_list(config.alert_environments),
-        'posture_environments': _clean_list(getattr(config, 'posture_environments', []) or []),
+        'posture_environments': _clean_list(getattr(config, 'posture_environments', []) or []) if is_system_posture_enabled() else [],
         'k8s_cluster_ids': _int_list(config.k8s_cluster_ids),
         'k8s_namespaces': config.k8s_namespaces if isinstance(config.k8s_namespaces, dict) else {},
         'docker_host_ids': _int_list(config.docker_host_ids),
@@ -1548,9 +1549,10 @@ def build_knowledge_graph(params=None):
                 selected_alert_environments.add(environment)
                 alert_env_to_graph[environment] = config.name
                 source_env_to_graph.setdefault(environment, config.name)
-            for environment in _clean_list(getattr(config, 'posture_environments', []) or []):
-                selected_posture_environments.add(environment)
-                source_env_to_graph.setdefault(environment, config.name)
+            if is_system_posture_enabled():
+                for environment in _clean_list(getattr(config, 'posture_environments', []) or []):
+                    selected_posture_environments.add(environment)
+                    source_env_to_graph.setdefault(environment, config.name)
             selected_grafana_folders.update(_clean_list(config.grafana_folder_keys))
             selected_metric_datasource_ids.update(_int_list(getattr(config, 'metric_datasource_ids', []) or []))
             selected_log_datasource_ids.update(_int_list(config.log_datasource_ids))
@@ -1748,11 +1750,11 @@ def build_knowledge_graph(params=None):
         .exclude(source_type=EventRecord.SOURCE_SEED)
         .order_by('-occurred_at')
     )
-    posture_queryset = SystemPostureSystem.objects.filter(is_enabled=True).order_by('sort_order', 'name')
+    posture_queryset = SystemPostureSystem.objects.filter(is_enabled=True).order_by('sort_order', 'name') if is_system_posture_enabled() else SystemPostureSystem.objects.none()
     if use_knowledge_env:
         alert_queryset = alert_queryset.filter(environment__in=selected_alert_environments) if selected_alert_environments else Alert.objects.none()
         event_queryset = event_queryset.filter(environment__in=selected_event_environments) if selected_event_environments else EventRecord.objects.none()
-        source_environments = selected_posture_environments or set(source_env_to_graph)
+        source_environments = selected_posture_environments if is_system_posture_enabled() else set()
         posture_queryset = posture_queryset.filter(environment__in=source_environments) if source_environments else SystemPostureSystem.objects.none()
     alert_records = list(alert_queryset[:200])
     event_records = list(event_queryset[:240])
@@ -2129,7 +2131,7 @@ def build_knowledge_graph(params=None):
         concrete_infra_ips = set()
         concrete_cluster_ids = set()
 
-        posture_keys = _clean_list(getattr(config, 'posture_environments', []) or [])
+        posture_keys = _clean_list(getattr(config, 'posture_environments', []) or []) if is_system_posture_enabled() else []
         posture_environment_map = {
             item.key: item
             for item in SystemPostureEnvironment.objects.filter(key__in=posture_keys).order_by('sort_order', 'id')

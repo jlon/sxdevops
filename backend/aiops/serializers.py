@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from sxdevops.features import is_system_posture_enabled
+
 from .models import (
     AIOpsAgentConfig,
     AIOpsChatMessage,
@@ -175,6 +177,8 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        if not is_system_posture_enabled():
+            attrs['posture_environments'] = []
         list_fields = [
             'aliases',
             'event_environments',
@@ -237,6 +241,8 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
 
         instance = self.instance
         association_fields = [field for field in list_fields if field != 'aliases']
+        if not is_system_posture_enabled():
+            association_fields = [field for field in association_fields if field != 'posture_environments']
         has_association = any(
             attrs.get(field, getattr(instance, field, [])) for field in association_fields
         )

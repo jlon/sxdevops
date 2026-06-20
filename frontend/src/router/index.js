@@ -3,8 +3,41 @@ import { ElMessage } from 'element-plus'
 import AppLayout from '@/layout/AppLayout.vue'
 import { pinia } from '@/stores'
 import { useAuthStore } from '@/stores/auth'
+import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
 
 const TASK_SCHEDULES_VISIBLE = false
+const observabilityBoardPermissions = SYSTEM_POSTURE_ENABLED
+  ? ['ops.grafana.view', 'ops.observability.system_posture.view']
+  : ['ops.grafana.view']
+const observabilityOverviewPermissions = [
+  ...(SYSTEM_POSTURE_ENABLED ? ['ops.observability.system_posture.view'] : []),
+  'ops.metric.query',
+  'ops.metric.datasource.view',
+  'ops.log.query',
+  'ops.log.datasource.view',
+  'ops.alert.view',
+  'ops.alert.config.view',
+  'ops.trace.view',
+  'ops.trace.datasource.view',
+  'ops.observability.link.view',
+  'ops.grafana.view',
+]
+const systemPostureRoutes = SYSTEM_POSTURE_ENABLED
+  ? [
+      {
+        path: 'observability/system-posture',
+        name: 'ObservabilitySystemPosture',
+        component: () => import('@/views/ObservabilitySystemPosture.vue'),
+        meta: { title: '系统态势', icon: 'Aim', permission: 'ops.observability.system_posture.view' },
+      },
+      {
+        path: 'observability/posture-history',
+        name: 'ObservabilityPostureHistory',
+        component: () => import('@/views/ObservabilityPostureHistory.vue'),
+        meta: { title: '态势历史', icon: 'TrendCharts', permission: 'ops.observability.system_posture.view' },
+      },
+    ]
+  : []
 
 const routes = [
   {
@@ -227,7 +260,7 @@ const routes = [
         path: 'observability',
         redirect: () => {
           const authStore = useAuthStore(pinia)
-          if (authStore.hasAnyPermission(['ops.grafana.view', 'ops.observability.system_posture.view'])) return '/observability/boards'
+          if (authStore.hasAnyPermission(observabilityBoardPermissions)) return '/observability/boards'
           if (authStore.hasPermission('ops.metric.query')) return '/observability/metrics'
           if (authStore.hasPermission('ops.log.query')) return '/logs/query'
           if (authStore.hasPermission('ops.trace.view')) return '/observability/tracing'
@@ -241,10 +274,10 @@ const routes = [
         redirect: () => {
           const authStore = useAuthStore(pinia)
           if (authStore.hasPermission('ops.grafana.view')) return '/observability/grafana'
-          if (authStore.hasPermission('ops.observability.system_posture.view')) return '/observability/system-posture'
+          if (SYSTEM_POSTURE_ENABLED && authStore.hasPermission('ops.observability.system_posture.view')) return '/observability/system-posture'
           return '/403'
         },
-        meta: { hidden: true, anyPermissions: ['ops.grafana.view', 'ops.observability.system_posture.view'] },
+        meta: { hidden: true, anyPermissions: observabilityBoardPermissions },
       },
       {
         path: 'observability/query',
@@ -269,12 +302,7 @@ const routes = [
         },
         meta: { hidden: true, anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view', 'ops.trace.datasource.view', 'ops.observability.link.view'] },
       },
-      {
-        path: 'observability/system-posture',
-        name: 'ObservabilitySystemPosture',
-        component: () => import('@/views/ObservabilitySystemPosture.vue'),
-        meta: { title: '系统态势', icon: 'Aim', permission: 'ops.observability.system_posture.view' },
-      },
+      ...systemPostureRoutes,
       {
         path: 'observability/overview',
         name: 'ObservabilityOverview',
@@ -282,7 +310,7 @@ const routes = [
         meta: {
           title: '平台总览',
           icon: 'DataLine',
-          anyPermissions: ['ops.observability.system_posture.view', 'ops.metric.query', 'ops.metric.datasource.view', 'ops.log.query', 'ops.log.datasource.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.observability.link.view', 'ops.grafana.view'],
+          anyPermissions: observabilityOverviewPermissions,
         },
       },
       {
@@ -295,12 +323,6 @@ const routes = [
         path: 'observability/metrics/datasources',
         redirect: { path: '/observability/metrics', query: { tab: 'datasources' } },
         meta: { hidden: true, permission: 'ops.metric.datasource.view' },
-      },
-      {
-        path: 'observability/posture-history',
-        name: 'ObservabilityPostureHistory',
-        component: () => import('@/views/ObservabilityPostureHistory.vue'),
-        meta: { title: '态势历史', icon: 'TrendCharts', permission: 'ops.observability.system_posture.view' },
       },
       {
         path: 'observability/grafana',

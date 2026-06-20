@@ -1,4 +1,5 @@
 import json
+import importlib
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
@@ -6,7 +7,8 @@ from unittest import mock
 import requests
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.urls import NoReverseMatch, clear_url_caches, reverse
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
@@ -55,6 +57,7 @@ from .services import (
     _skills_for_action,
     _summarize_external_tool_result,
     _build_runtime_tool_registry,
+    list_platform_mcp_tools,
     recover_masked_suggested_question,
     build_action_preflight_contract,
     _should_materialize_host_task,
@@ -88,6 +91,63 @@ from .services import (
 
 
 User = get_user_model()
+
+
+@override_settings(SYSTEM_POSTURE_ENABLED=False)
+class AIOpsSystemPostureDisabledTests(TestCase):
+    def setUp(self):
+        ensure_builtin_rbac()
+        self.user = User.objects.create_user(username='aiops_open_user', password='Passw0rd!123')
+        self.user.rbac_roles.add(Role.objects.get(code='platform-admin'))
+        self.session = AIOpsChatSession.objects.create(user=self.user, title='open')
+        self.message = AIOpsChatMessage.objects.create(
+            session=self.session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='prod SLA 怎么样',
+        )
+
+    def test_system_posture_permission_and_mcp_tool_are_disabled(self):
+        from rbac.services import get_user_effective_permissions, user_has_permissions
+
+        self.assertNotIn('ops.observability.system_posture.view', get_user_effective_permissions(self.user))
+        self.assertFalse(user_has_permissions(self.user, ['ops.observability.system_posture.view']))
+        self.assertNotIn('sxdevops.query_system_posture', {tool['name'] for tool in list_platform_mcp_tools(self.user)})
+
+    def test_query_system_posture_returns_empty_when_feature_disabled(self):
+        SystemPostureSystem.objects.create(name='交易系统核心', environment='prod', base_status=SystemPostureSystem.STATUS_CRITICAL)
+
+        result = query_system_posture(self.session, self.message, self.user, query='prod SLA 怎么样')
+
+        self.assertEqual(result['systems'], [])
+        self.assertEqual(result['sections'], [])
+        self.assertTrue(result['summary']['disabled'])
+
+    def test_knowledge_graph_omits_posture_nodes_when_feature_disabled(self):
+        AIOpsKnowledgeEnvironment.objects.create(name='prod', alert_environments=['prod'], posture_environments=['prod'])
+        SystemPostureEnvironment.objects.create(key='prod', name='生产态势', is_enabled=True)
+        SystemPostureSystem.objects.create(name='交易系统核心', environment='prod', base_status=SystemPostureSystem.STATUS_CRITICAL)
+
+        graph = query_knowledge_graph(self.session, self.message, self.user, environment='prod')
+        node_kinds = {node.get('kind') for node in graph.get('graph', {}).get('nodes', [])}
+
+        self.assertNotIn('posture', node_kinds)
+
+    def test_system_posture_urls_are_not_registered_when_feature_disabled(self):
+        import ops.urls
+        import sxdevops.urls
+
+        importlib.reload(ops.urls)
+        importlib.reload(sxdevops.urls)
+        clear_url_caches()
+        try:
+            with self.assertRaises(NoReverseMatch):
+                reverse('observability-system-posture')
+            with self.assertRaises(NoReverseMatch):
+                reverse('observability-system-posture-history')
+        finally:
+            importlib.reload(ops.urls)
+            importlib.reload(sxdevops.urls)
+            clear_url_caches()
 
 
 class AIOpsApiTests(TestCase):

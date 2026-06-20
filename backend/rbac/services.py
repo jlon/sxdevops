@@ -1,6 +1,8 @@
 ﻿from django.contrib.auth import get_user_model
 from django.db import transaction
 
+from sxdevops.features import filter_feature_permissions, permission_feature_enabled
+
 from .models import PermissionDefinition, Role, SystemModuleSetting, UserGroup
 from .registry import BUILTIN_ROLES, PERMISSION_DEFINITIONS
 
@@ -27,6 +29,8 @@ SYSTEM_MODULE_CATALOG = [
 def ensure_builtin_rbac():
     permission_by_code = {}
     for index, (code, name, category, description) in enumerate(PERMISSION_DEFINITIONS, start=1):
+        if not permission_feature_enabled(code):
+            continue
         permission, _ = PermissionDefinition.objects.update_or_create(
             code=code,
             defaults={
@@ -50,9 +54,9 @@ def ensure_builtin_rbac():
         )
         codes = role_data['permissions']
         if '*' in codes:
-            role.permissions.set(PermissionDefinition.objects.all())
+            role.permissions.set(PermissionDefinition.objects.filter(code__in=permission_by_code))
         else:
-            role.permissions.set([permission_by_code[code] for code in codes if code in permission_by_code])
+            role.permissions.set([permission_by_code[code] for code in filter_feature_permissions(codes) if code in permission_by_code])
 
 
 @transaction.atomic
@@ -93,7 +97,7 @@ def get_user_effective_permissions(user):
     if not getattr(user, 'is_authenticated', False):
         return set()
     if getattr(user, 'is_superuser', False) or is_demo_account(user):
-        return set(PermissionDefinition.objects.values_list('code', flat=True))
+        return set(filter_feature_permissions(PermissionDefinition.objects.values_list('code', flat=True)))
 
     permission_codes = set(
         PermissionDefinition.objects.filter(roles__users=user).values_list('code', flat=True)
@@ -106,6 +110,8 @@ def get_user_effective_permissions(user):
 
 def user_has_permissions(user, codes):
     codes = [code for code in (codes or []) if code]
+    if any(not permission_feature_enabled(code) for code in codes):
+        return False
     if not codes:
         return True
     if not getattr(user, 'is_authenticated', False):
@@ -117,7 +123,12 @@ def user_has_permissions(user, codes):
 
 
 def get_permission_catalog():
-    return PermissionDefinition.objects.order_by('sort_order', 'code')
+    disabled_codes = [
+        code
+        for code in PermissionDefinition.objects.values_list('code', flat=True)
+        if not permission_feature_enabled(code)
+    ]
+    return PermissionDefinition.objects.exclude(code__in=disabled_codes).order_by('sort_order', 'code')
 
 
 def get_builtin_role_catalog():

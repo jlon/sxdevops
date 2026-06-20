@@ -14,6 +14,7 @@ from eventwall.services import record_event
 from ops.models import Alert, DockerHost, GrafanaSetting, K8sCluster, LogDataSource, MetricDataSource, ObservabilityDataSourceLink, SystemPostureEnvironment, TaskResource, TaskResourceGroup, TracingDataSource
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
+from sxdevops.features import is_system_posture_enabled
 
 from .models import (
     AIOpsChatMessage,
@@ -651,7 +652,7 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'name': item.name,
             }
             for item in SystemPostureEnvironment.objects.filter(is_enabled=True).order_by('sort_order', 'id')
-        ]
+        ] if is_system_posture_enabled() else []
         log_datasources = [
             {
                 'id': item.id,
