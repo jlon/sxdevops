@@ -30,6 +30,7 @@ from .models import (
     AIOpsSkill,
     AIOpsToolInvocation,
 )
+from .action_handlers import normalize_page_context
 from .serializers import (
     AIOpsAgentConfigSerializer,
     AIOpsAuditSessionSerializer,
@@ -859,9 +860,11 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         serializer = AIOpsCreateSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        page_context = normalize_page_context(serializer.validated_data.get('page_context'))
         session = AIOpsChatSession.objects.create(
             user=request.user,
             title=serializer.validated_data.get('title') or '新会话',
+            context={'page_context': page_context} if page_context else {},
         )
         sync_session_to_demo_if_needed(session)
         return Response(AIOpsChatSessionSerializer(session).data, status=status.HTTP_201_CREATED)
@@ -908,11 +911,20 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         analysis_only = bool(serializer.validated_data.get('analysis_only'))
+        page_context = normalize_page_context(serializer.validated_data.get('page_context'))
+        if page_context:
+            session.context = {**(session.context if isinstance(session.context, dict) else {}), 'page_context': page_context}
+            session.save(update_fields=['context', 'updated_at'])
+        user_metadata = {}
+        if analysis_only:
+            user_metadata['analysis_only'] = True
+        if page_context:
+            user_metadata['page_context'] = page_context
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
             content=content,
-            metadata={'analysis_only': True} if analysis_only else {},
+            metadata=user_metadata,
         )
         assistant_message, pending_action = dispatch_chat(session, user_message, request.user, user_message.content, analysis_only=analysis_only)
         return Response({
@@ -932,11 +944,20 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         analysis_only = bool(serializer.validated_data.get('analysis_only'))
+        page_context = normalize_page_context(serializer.validated_data.get('page_context'))
+        if page_context:
+            session.context = {**(session.context if isinstance(session.context, dict) else {}), 'page_context': page_context}
+            session.save(update_fields=['context', 'updated_at'])
+        user_metadata = {}
+        if analysis_only:
+            user_metadata['analysis_only'] = True
+        if page_context:
+            user_metadata['page_context'] = page_context
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
             content=content,
-            metadata={'analysis_only': True} if analysis_only else {},
+            metadata=user_metadata,
         )
         assistant_message = AIOpsChatMessage.objects.create(
             session=session,
@@ -947,6 +968,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 'processing_status': 'pending',
                 'processing_text': '请求已提交，正在排队处理',
                 'analysis_only': analysis_only,
+                'page_context': page_context,
                 'processing_steps': [{
                     'title': '排队中',
                     'detail': '已收到问题，正在准备上下文',

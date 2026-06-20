@@ -538,10 +538,12 @@ class AIOpsAuditSessionSerializer(_AIOpsAuditTraceMixin, serializers.ModelSerial
 class AIOpsChatInputSerializer(serializers.Serializer):
     content = serializers.CharField(max_length=4000)
     analysis_only = serializers.BooleanField(required=False, default=False)
+    page_context = serializers.JSONField(required=False, default=dict)
 
 
 class AIOpsCreateSessionSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=128, required=False, allow_blank=True, default='')
+    page_context = serializers.JSONField(required=False, default=dict)
 
 
 class AIOpsToolInvocationSerializer(_AIOpsAuditTraceMixin, serializers.ModelSerializer):

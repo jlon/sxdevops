@@ -89,6 +89,12 @@
                   <span class="environment-chip" :class="{ empty: !currentEnvironmentName }">
                     {{ currentEnvironmentName ? `环境：${currentEnvironmentName}` : '未指定环境' }}
                   </span>
+                  <span v-if="currentPageContextTitle" class="environment-chip page-context-chip">
+                    页面：{{ currentPageContextTitle }}
+                  </span>
+                  <span v-if="currentPageContextSubject" class="environment-chip page-context-chip">
+                    对象：{{ currentPageContextSubject }}
+                  </span>
                   <label class="analysis-toggle">
                     <span>只分析</span>
                     <el-switch v-model="analysisSwitchValue" size="small" :disabled="forcedAnalysisOnly" />
@@ -297,6 +303,21 @@
                               </div>
                               <div v-if="message.pending_action?.action_payload?.payload?.command" class="response-block-command">
                                 {{ message.pending_action.action_payload.payload.command }}
+                              </div>
+                            </div>
+
+                            <div v-else-if="responseBlock.type === 'context_form'" class="response-block-context-form">
+                              <div v-if="getBlockMetrics(responseBlock).length" class="response-block-metric-grid">
+                                <div v-for="metric in getBlockMetrics(responseBlock)" :key="`${responseBlock._key}-metric-${metric.label}`" class="response-block-metric">
+                                  <span>{{ metric.label }}</span>
+                                  <strong>{{ metric.value }}</strong>
+                                </div>
+                              </div>
+                              <div v-if="getBlockFields(responseBlock).length" class="response-block-field-list">
+                                <div v-for="field in getBlockFields(responseBlock)" :key="`${responseBlock._key}-field-${field.name || field.label}`" class="response-block-field">
+                                  <span>{{ field.label || field.name }}</span>
+                                  <strong>{{ field.value || field.placeholder || '待补充' }}</strong>
+                                </div>
                               </div>
                             </div>
 
@@ -545,7 +566,7 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCheck, CopyDocument, Delete, Fold, Plus, Promotion, TopRight } from '@element-plus/icons-vue'
 import {
@@ -574,6 +595,7 @@ const STORAGE_ANALYSIS_KEY = 'sxdevops_aiops_analysis_only'
 const STORAGE_DRAFT_PREFIX = 'sxdevops_aiops_draft_'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 
 const embedded = computed(() => props.embedded)
@@ -633,6 +655,16 @@ const currentEnvironmentName = computed(() => {
   const value = currentSession.value?.context?.current_environment
   if (!value) return ''
   return typeof value === 'string' ? value : (value.name || '')
+})
+const pageContext = computed(() => buildPageContext())
+const currentPageContextTitle = computed(() => {
+  const context = currentSession.value?.context?.page_context || pageContext.value
+  return context?.title || context?.page || ''
+})
+const currentPageContextSubject = computed(() => {
+  const context = currentSession.value?.context?.page_context || pageContext.value
+  const hints = context?.hints || {}
+  return hints.service || hints.cluster || hints.namespace || hints.alert_id || ''
 })
 const fabStyle = computed(() => {
   if (!fabPosition.value || visible.value) return null
@@ -712,6 +744,90 @@ function normalizeText(value) {
   return String(value || '').replace(/\r\n/g, '\n')
 }
 
+function firstTextValue(source = {}, keys = []) {
+  for (const key of keys) {
+    const value = source?.[key]
+    if (Array.isArray(value)) {
+      const first = value.find(item => String(item || '').trim())
+      if (first) return String(first).trim()
+    } else if (value != null && String(value).trim()) {
+      return String(value).trim()
+    }
+  }
+  return ''
+}
+
+function routePageCode(path = '') {
+  if (path.startsWith('/alerts')) return 'alerts'
+  if (path.startsWith('/logs/query')) return 'logs.query'
+  if (path.startsWith('/containers/k8s')) return 'containers.k8s'
+  if (path.startsWith('/containers/docker')) return 'containers.docker'
+  if (path.startsWith('/observability/system-posture')) return 'observability.posture'
+  if (path.startsWith('/observability/tracing')) return 'observability.tracing'
+  if (path.startsWith('/observability/metrics')) return 'observability.metrics'
+  if (path.startsWith('/observability/grafana')) return 'observability.grafana'
+  if (path.startsWith('/events')) return 'events'
+  if (path.startsWith('/workorders/releases')) return 'deployments'
+  if (path.startsWith('/tasks/resources')) return 'tasks.resources'
+  if (path.startsWith('/tasks/workbench')) return 'tasks.workbench'
+  if (path.startsWith('/aiops')) return 'aiops'
+  return path.replace(/^\//, '').replace(/\//g, '.') || 'dashboard'
+}
+
+function buildPageSuggestedQuestions(page, hints = {}) {
+  const env = hints.environment || '目标环境'
+  const service = hints.service || '目标服务'
+  const cluster = hints.cluster || '当前集群'
+  if (page === 'alerts') {
+    return [`分析${env}最新告警的可能原因`, `查看${env}当前未确认严重告警`]
+  }
+  if (page === 'logs.query') {
+    return [`查询${env}${service}最近 30 分钟 ERROR 日志`, `分析${service}日志里的异常模式`]
+  }
+  if (page === 'containers.k8s') {
+    return [`分析${cluster}异常工作负载`, `查看${cluster}当前异常 Pod`]
+  }
+  if (page.startsWith('observability')) {
+    return [`分析${env}${service}最近一小时服务健康`, `查看${service}错误率和延迟是否异常`]
+  }
+  if (page === 'events' || page === 'deployments') {
+    return [`分析${env}最近变更和告警是否相关`, `查看${env}今天关键事件时间线`]
+  }
+  if (page.startsWith('tasks')) {
+    return [`帮我生成${env}服务器巡检任务`, `根据当前资源范围生成任务草稿`]
+  }
+  return []
+}
+
+function buildPageContext() {
+  const query = { ...(route.query || {}) }
+  const params = { ...(route.params || {}) }
+  const merged = { ...query, ...params }
+  const hints = {
+    environment: firstTextValue(merged, ['environment', 'env', 'env_name', 'knowledge_environment']),
+    service: firstTextValue(merged, ['service', 'service_name', 'app', 'application', 'system', 'workload']),
+    cluster: firstTextValue(merged, ['cluster', 'cluster_name', 'k8s_cluster']),
+    namespace: firstTextValue(merged, ['namespace', 'ns']),
+    alert_id: firstTextValue(merged, ['alert_id', 'alertId', 'id']),
+    datasource_id: firstTextValue(merged, ['datasource_id', 'datasourceId', 'ds_id']),
+    datasource_type: firstTextValue(merged, ['datasource_type', 'datasourceType', 'ds_type']),
+  }
+  Object.keys(hints).forEach((key) => {
+    if (!hints[key]) delete hints[key]
+  })
+  const page = routePageCode(route.path)
+  const title = route.meta?.title || page
+  return {
+    page,
+    title,
+    route: route.path,
+    params,
+    query,
+    hints,
+    suggested_questions: buildPageSuggestedQuestions(page, hints),
+  }
+}
+
 function normalizeLinkHref(value) {
   const href = String(value || '').trim()
   if (!href) return ''
@@ -789,6 +905,8 @@ function getEnvironmentCandidates(message) {
 }
 
 const RESPONSE_BLOCK_TYPE_LABELS = {
+  context_summary: '上下文',
+  context_form: '预检',
   incident_card: '摘要',
   evidence_timeline: '证据',
   query_suggestion: '建议',
@@ -819,6 +937,25 @@ function normalizeResponseBlockItems(items) {
       return {
         ...item,
         text,
+      }
+    })
+    .filter(Boolean)
+}
+
+function normalizeResponseBlockFields(fields) {
+  if (!Array.isArray(fields)) return []
+  return fields
+    .map((field) => {
+      if (!field || typeof field !== 'object') return null
+      const name = String(field.name || '').trim()
+      const label = String(field.label || name || '').trim()
+      if (!name && !label) return null
+      return {
+        ...field,
+        name,
+        label,
+        value: String(field.value || '').trim(),
+        placeholder: String(field.placeholder || '').trim(),
       }
     })
     .filter(Boolean)
@@ -973,6 +1110,7 @@ function getMessageBlocks(message) {
         items: normalizedItems,
         actions: Array.isArray(block?.actions) ? block.actions.filter(Boolean) : [],
         metrics: Array.isArray(block?.metrics) ? block.metrics.filter(Boolean) : [],
+        fields: normalizeResponseBlockFields(block?.fields),
         _key: String(block?.id || block?.key || `${type}-${index}`),
       }
     })
@@ -1046,6 +1184,10 @@ function getBlockCopyValue(block) {
 
 function getBlockMetrics(block) {
   return Array.isArray(block?.metrics) ? block.metrics.filter(Boolean) : []
+}
+
+function getBlockFields(block) {
+  return Array.isArray(block?.fields) ? block.fields.filter(Boolean) : []
 }
 
 function getBlockItems(block) {
@@ -1604,7 +1746,7 @@ async function selectSession(sessionId) {
 
 async function handleCreateSession() {
   try {
-    const session = await createAIOpsSession({ title: '' })
+    const session = await createAIOpsSession({ title: '', page_context: pageContext.value })
     sessions.value.unshift(session)
     messages.value = []
     await selectSession(session.id)
@@ -1615,7 +1757,7 @@ async function handleCreateSession() {
 
 async function ensureSession() {
   if (currentSessionId.value) return currentSessionId.value
-  const session = await createAIOpsSession({ title: '' })
+  const session = await createAIOpsSession({ title: '', page_context: pageContext.value })
   sessions.value.unshift(session)
   currentSessionId.value = session.id
   localStorage.setItem(STORAGE_SESSION_KEY, String(session.id))
@@ -1649,7 +1791,11 @@ async function handleSend() {
   scrollToBottom(true)
 
   try {
-    const response = await sendAIOpsMessageAsync(sessionId, { content, analysis_only: effectiveAnalysisOnly.value })
+    const response = await sendAIOpsMessageAsync(sessionId, {
+      content,
+      analysis_only: effectiveAnalysisOnly.value,
+      page_context: pageContext.value,
+    })
     messages.value.push(response.user_message)
     messages.value.push(response.assistant_message)
     pendingAssistantMessage.value = null
@@ -2024,6 +2170,7 @@ onBeforeUnmount(() => {
 .session-indicator-label{font-size:12px;font-weight:700;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .environment-chip{display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:6px;background:#ecfdf5;border:1px solid #bbf7d0;color:#047857;font-size:12px;font-weight:700;white-space:nowrap}
 .environment-chip.empty{background:#fff7ed;border-color:#fed7aa;color:#c2410c}
+.page-context-chip{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
 .analysis-toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:#334155}
 .toolbar-hint{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .quick-palette{padding:6px 12px 0}
@@ -2060,6 +2207,8 @@ onBeforeUnmount(() => {
 .response-block-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .response-block-card{padding:9px 10px;border-radius:12px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#fbfdff 0%,#fff 100%);box-shadow:0 4px 12px rgba(15,23,42,.035)}
 .response-block-card.type-tool_trace{background:#f8fafc;border-color:#e2e8f0}
+.response-block-card.type-context_summary{background:linear-gradient(180deg,#f8fbff 0%,#fff 100%);border-color:#dbeafe}
+.response-block-card.type-context_form{background:linear-gradient(180deg,#fffaf5 0%,#fff 100%);border-color:#fed7aa}
 .response-block-card.type-query_suggestion{background:linear-gradient(180deg,#f8fbff 0%,#fff 100%);border-color:#bfdbfe}
 .response-block-card.type-risk_notice,.response-block-card.type-approval_form{background:linear-gradient(180deg,#fffaf5 0%,#fff 100%);border-color:#fed7aa}
 .response-block-card.type-k8s_action{background:linear-gradient(180deg,#f7fbff 0%,#fff 100%);border-color:#d7e8ff}
@@ -2081,6 +2230,10 @@ onBeforeUnmount(() => {
 .response-block-metric{padding:7px 8px;border-radius:10px;background:rgba(255,255,255,.72);border:1px solid rgba(226,232,240,.9);display:flex;flex-direction:column;gap:3px}
 .response-block-metric span{font-size:10px;color:#64748b}
 .response-block-metric strong{font-size:12px;color:#1f2937}
+.response-block-field-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px}
+.response-block-field{padding:7px 8px;border-radius:10px;background:rgba(255,255,255,.72);border:1px dashed rgba(251,146,60,.36);display:flex;flex-direction:column;gap:3px;min-width:0}
+.response-block-field span{font-size:10px;color:#9a3412}
+.response-block-field strong{font-size:12px;color:#7c2d12;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .response-block-command{margin-top:8px;padding:8px 10px;border-radius:10px;background:#111827;color:#f8fafc;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
 .response-block-trace{display:flex;flex-direction:column;gap:6px;margin-top:8px}
 .response-block-trace-item,.response-block-item{display:flex;align-items:flex-start;gap:8px;min-width:0}
@@ -2238,6 +2391,7 @@ onBeforeUnmount(() => {
   .aiops-session-list{display:none}
   .pending-detail-grid{grid-template-columns:1fr}
   .response-block-metric-grid{grid-template-columns:1fr}
+  .response-block-field-list{grid-template-columns:1fr}
   .response-block-actions{align-items:stretch}
   .chat-toolbar{flex-direction:column;align-items:flex-start;gap:6px}
   .chat-toolbar-left,.chat-toolbar-right{width:100%;justify-content:space-between}

@@ -62,6 +62,14 @@ from ops.observability_views import execute_dashboard_panel_queries, execute_pro
 from rbac.services import is_demo_account, user_has_permissions
 
 from .knowledge_graph import build_knowledge_graph, resolve_knowledge_environment, resolve_knowledge_environments_from_text
+from .action_handlers import (
+    build_context_form_block,
+    build_page_context_summary_block,
+    build_prompt_hint_lines,
+    normalize_page_context,
+    page_context_value,
+    select_action_by_handler,
+)
 from .models import (
     AIOpsAgentConfig,
     AIOpsChatMessage,
@@ -1346,6 +1354,7 @@ def clone_skill_to_team(skill, user=None, name='', slug=''):
 def build_action_preflight_contract(action_code, payload=None, user=None):
     payload = payload if isinstance(payload, dict) else {}
     question = str(payload.get('question') or '').strip()
+    page_context = normalize_page_context(payload.get('page_context'))
     action = _action_registry_item_by_code(action_code, user=user, include_unavailable=True)
     if not action:
         raise ValueError('Action 不存在')
@@ -1358,7 +1367,7 @@ def build_action_preflight_contract(action_code, payload=None, user=None):
         matches = resolve_knowledge_environments_from_text(question)
         if len(matches) == 1:
             knowledge_environment = matches[0]
-    environment_name = str(payload.get('environment') or '').strip()
+    environment_name = str(payload.get('environment') or page_context_value(page_context, 'environment') or '').strip()
     if environment_name:
         environment = resolve_knowledge_environment(environment_name)
         if environment:
@@ -1366,7 +1375,7 @@ def build_action_preflight_contract(action_code, payload=None, user=None):
     if knowledge_environment:
         analysis_scope = _build_analysis_scope(knowledge_environment)
 
-    missing_fields = _missing_action_context_fields(action, question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope)
+    missing_fields = _missing_action_context_fields(action, question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope, page_context=page_context)
     result = _build_action_preflight_result(
         action,
         knowledge_environment=knowledge_environment,
@@ -1375,6 +1384,7 @@ def build_action_preflight_contract(action_code, payload=None, user=None):
         summary=f"{action.get('display_name') or action_code} 的预检上下文。",
         suggestions=_action_preflight_suggestions(action, missing_fields, knowledge_environment=knowledge_environment),
         current_question=question,
+        page_context=page_context,
     )
     return result['metadata']
 
@@ -2099,7 +2109,7 @@ def _attach_selected_action_metadata(result, action, *, extra_metadata=None, ext
     return {**result, 'metadata': metadata}
 
 
-def _build_action_preflight_result(action, knowledge_environment=None, analysis_scope=None, missing_fields=None, summary='', suggestions=None, current_question=''):
+def _build_action_preflight_result(action, knowledge_environment=None, analysis_scope=None, missing_fields=None, summary='', suggestions=None, current_question='', page_context=None):
     missing_fields = list(missing_fields or [])
     suggestions = [str(item or '').strip() for item in (suggestions or []) if str(item or '').strip()]
     if not summary:
@@ -2143,6 +2153,14 @@ def _build_action_preflight_result(action, knowledge_environment=None, analysis_
         status='needs_info',
         status_display='待补充',
     )
+    context_form_block = build_context_form_block(
+        action,
+        missing_fields,
+        page_context=page_context,
+        suggestions=suggestions,
+    )
+    page_context_block = build_page_context_summary_block(page_context or {}, action=action)
+    response_blocks = [item for item in [page_context_block, context_form_block, block] if item]
     content = summary
     if current_question:
         content = f'{summary}\n\n{current_question}'
@@ -2158,7 +2176,8 @@ def _build_action_preflight_result(action, knowledge_environment=None, analysis_
             'analysis_scope': analysis_scope or {},
             'action_preflight': True,
             'missing_context': missing_fields,
-            'response_blocks': [block],
+            'page_context': normalize_page_context(page_context),
+            'response_blocks': response_blocks,
         },
     }
     return _attach_selected_action_metadata(result, action)
@@ -2214,6 +2233,26 @@ def _action_has_incident_context(question, knowledge_environment=None, analysis_
     ])
 
 
+def _action_context_present(context_name, question='', knowledge_environment=None, analysis_scope=None, page_context=None):
+    if context_name == 'environment':
+        return bool((knowledge_environment or {}).get('name') or page_context_value(page_context or {}, 'environment'))
+    if context_name == 'service':
+        return bool(
+            _action_detected_service(question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope)
+            or page_context_value(page_context or {}, 'service')
+        )
+    if context_name == 'cluster':
+        return bool(page_context_value(page_context or {}, 'cluster'))
+    if context_name == 'alert':
+        return bool(_action_has_alert_context(question) or page_context_value(page_context or {}, 'alert'))
+    if context_name == 'incident':
+        return bool(
+            _action_has_incident_context(question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope)
+            or page_context_value(page_context or {}, 'incident')
+        )
+    return bool(page_context_value(page_context or {}, context_name))
+
+
 def _build_action_missing_context_field(context_name, detail='', suggestion=''):
     label = ACTION_REQUIRED_CONTEXT_LABELS.get(context_name, context_name or '上下文')
     return {
@@ -2224,29 +2263,34 @@ def _build_action_missing_context_field(context_name, detail='', suggestion=''):
     }
 
 
-def _missing_action_context_fields(action, question, knowledge_environment=None, analysis_scope=None):
+def _missing_action_context_fields(action, question, knowledge_environment=None, analysis_scope=None, page_context=None):
     action_code = action.get('code') if action else ''
     missing = []
+    page_context = normalize_page_context(page_context)
 
-    if not (knowledge_environment and knowledge_environment.get('name')):
+    if not _action_context_present('environment', question, knowledge_environment, analysis_scope, page_context):
         missing.append(_build_action_missing_context_field('environment', '需要先确认唯一知识图谱环境。'))
 
-    if action_code == 'log.query_generate' and not _action_detected_service(question, knowledge_environment, analysis_scope):
+    if action_code == 'log.query_generate' and not _action_context_present('service', question, knowledge_environment, analysis_scope, page_context):
         missing.append(_build_action_missing_context_field(
             'service',
             '日志查询生成需要明确服务、应用或资源对象。',
             '例如：帮我生成电商测试环境订单服务最近 30 分钟 ERROR 日志查询。',
         ))
-    elif action_code == 'self_heal.recommend' and not _action_has_incident_context(question, knowledge_environment, analysis_scope):
+    elif action_code == 'self_heal.recommend' and not _action_context_present('incident', question, knowledge_environment, analysis_scope, page_context):
         missing.append(_build_action_missing_context_field(
             'incident',
             '自愈推荐需要先明确告警、服务、异常现象或影响范围。',
             '例如：给电商测试环境订单服务 5xx 告警推荐自愈方案。',
         ))
     elif action_code == 'k8s.diagnose':
-        has_cluster_scope = bool((analysis_scope or {}).get('k8s_cluster_ids')) or _question_contains_any(
-            question,
-            ['k8s', 'kubernetes', 'pod', 'pods', '集群', '命名空间', 'namespace', '工作负载'],
+        has_cluster_scope = (
+            _action_context_present('cluster', question, knowledge_environment, analysis_scope, page_context)
+            or bool((analysis_scope or {}).get('k8s_cluster_ids'))
+            or _question_contains_any(
+                question,
+                ['k8s', 'kubernetes', 'pod', 'pods', '集群', '命名空间', 'namespace', '工作负载'],
+            )
         )
         if not has_cluster_scope:
             missing.append(_build_action_missing_context_field(
@@ -3795,6 +3839,12 @@ def _resolve_chat_environment(session, question):
                     return {'status': 'resolved', 'environment': resolved, 'source': 'alert_fingerprint', 'candidates': []}
 
     context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
+    page_context = normalize_page_context(context.get('page_context'))
+    page_environment = page_context_value(page_context, 'environment')
+    resolved = resolve_knowledge_environment(page_environment)
+    if resolved:
+        return {'status': 'resolved', 'environment': resolved, 'source': 'page_context', 'candidates': []}
+
     current_name = (context.get('current_environment') or {}).get('name') or context.get('current_environment')
     resolved = resolve_knowledge_environment(current_name)
     if resolved:
@@ -6646,6 +6696,14 @@ def _is_direct_event_list_question(question):
     has_event_scope = any(keyword in lowered for keyword in ['事件', '变更', '发布', 'event', 'events'])
     has_lookup_intent = any(keyword in lowered for keyword in ['今天', '今日', '当前', '最近', '哪些', '列表', '有什么', '多少', 'today'])
     return has_event_scope and has_lookup_intent
+
+
+def _is_change_correlation_analysis_question(question):
+    lowered = str(question or '').lower()
+    return any(keyword in lowered for keyword in [
+        '关联', '关系', '影响', '导致', '相关', '接近', '时间线',
+        '升高', '下降', '异常', '问题', '原因', '排查',
+    ])
 
 
 def _direct_event_query_arguments(question, scoped_question):
@@ -14218,10 +14276,13 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         analysis_scope = _build_analysis_scope(knowledge_environment)
     except Exception as exc:
         analysis_scope = {'environment': knowledge_environment.get('name'), 'error': str(exc)[:200]}
+    session_context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
+    page_context = normalize_page_context(session_context.get('page_context'))
     _persist_session_context(
         session,
         current_environment={'name': knowledge_environment.get('name'), 'aliases': knowledge_environment.get('aliases') or []},
         analysis_scope=analysis_scope,
+        page_context=page_context if page_context else None,
     )
     emit(
         step={
@@ -14235,6 +14296,12 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     provider_ready = _provider_is_ready(provider)
     formatter_provider = provider if provider_ready else None
     selected_action = _select_action_for_question(question, user=user, analysis_scope=analysis_scope)
+    selected_action = select_action_by_handler(
+        question,
+        _action_registry_definition_map(user=user, include_unavailable=False),
+        page_context=page_context,
+        current_code=selected_action.get('code') if selected_action else '',
+    ) or selected_action
     if _is_direct_alert_analysis_question(question):
         direct_action = selected_action if selected_action and selected_action.get('code') == 'alert.root_cause' else _action_registry_item_by_code('alert.root_cause', user=user)
         emit(
@@ -14280,7 +14347,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             prefer_llm=provider_ready,
         )
         return _attach_selected_action_metadata(result, direct_action, extra_metadata={'action_route': 'direct_alert_root_cause_fastpath'}) if direct_action else result
-    if _is_direct_alert_list_question(question):
+    if _is_direct_alert_list_question(question) and not (selected_action and selected_action.get('code') == 'change.correlation'):
         result = _direct_alert_list_fastpath(
             session,
             user_message,
@@ -14310,7 +14377,12 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         )
         alert_action = selected_action if selected_action and selected_action.get('code') == 'alert.root_cause' else _action_registry_item_by_code('alert.root_cause', user=user)
         return _attach_selected_action_metadata(result, alert_action, extra_metadata={'action_route': 'latest_alert_root_cause'}) if alert_action else result
-    if _is_alert_environment_analysis_question(question):
+    change_correlation_selected = bool(
+        selected_action
+        and selected_action.get('code') == 'change.correlation'
+        and _is_change_correlation_analysis_question(question)
+    )
+    if _is_alert_environment_analysis_question(question) and not change_correlation_selected:
         alert_action = selected_action if selected_action and selected_action.get('code') == 'alert.root_cause' else _action_registry_item_by_code('alert.root_cause', user=user)
         return _run_alert_environment_analysis_evidence(
             session,
@@ -14355,9 +14427,9 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     if (
         selected_action
         and not _is_direct_container_question(question)
-        and not _is_direct_posture_question(question)
+        and (change_correlation_selected or not _is_direct_posture_question(question))
         and not _is_direct_promql_question(question)
-        and not _is_direct_event_list_question(question)
+        and (change_correlation_selected or not _is_direct_event_list_question(question))
     ):
         emit(
             step={
@@ -14367,7 +14439,13 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             },
             text=f"已识别动作：{selected_action.get('code')}",
         )
-        missing_fields = _missing_action_context_fields(selected_action, question, knowledge_environment=knowledge_environment, analysis_scope=analysis_scope)
+        missing_fields = _missing_action_context_fields(
+            selected_action,
+            question,
+            knowledge_environment=knowledge_environment,
+            analysis_scope=analysis_scope,
+            page_context=page_context,
+        )
         if missing_fields:
             return _build_action_preflight_result(
                 selected_action,
@@ -14377,6 +14455,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                 summary=f"已识别为 {selected_action.get('display_name') or selected_action.get('code')}，请先补齐必要上下文后再继续。",
                 suggestions=_action_preflight_suggestions(selected_action, missing_fields, knowledge_environment=knowledge_environment),
                 current_question=question,
+                page_context=page_context,
             )
         routed_result = _run_selected_action(
             session,
@@ -14657,6 +14736,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         {'role': 'system', 'content': _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_diagnostics=mcp_diagnostics)},
         *_build_history_messages(session, config),
     ]
+    page_context_hint_lines = build_prompt_hint_lines(selected_action, page_context)
     messages.append({
         'role': 'user',
         'content': (
@@ -14668,6 +14748,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             + scoped_question
             + '\n优先证据：'
             + json.dumps(collected_tool_outputs, ensure_ascii=False, default=_json_default)[:3000]
+            + ('\n页面上下文提示：\n' + '\n'.join(page_context_hint_lines) if page_context_hint_lines else '')
         ),
     })
     if any(keyword in question.lower() for keyword in ['链路追踪', '调用链', 'trace', 'tracing']):
@@ -15070,9 +15151,17 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
     assistant_message.refresh_from_db()
     final_content = result.get('content', '')
     merged_metadata = {**(assistant_message.metadata or {}), **(result.get('metadata') or {})}
+    session_context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
+    page_context = normalize_page_context(merged_metadata.get('page_context') or session_context.get('page_context'))
+    if page_context:
+        merged_metadata['page_context'] = page_context
     if analysis_only:
         merged_metadata['analysis_only'] = True
     response_blocks = list(merged_metadata.get('response_blocks') or [])
+    if page_context and not any((block or {}).get('type') == 'context_summary' for block in response_blocks):
+        page_context_block = build_page_context_summary_block(page_context, action=merged_metadata.get('selected_action') or {})
+        if page_context_block:
+            response_blocks = [page_context_block, *response_blocks]
     pending_action = None
     draft = result.get('pending_action_draft')
     action_decision = None

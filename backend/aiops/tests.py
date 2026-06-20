@@ -33,6 +33,10 @@ from .models import (
     AIOpsSkill,
     AIOpsToolInvocation,
 )
+from .action_handlers import (
+    normalize_page_context,
+    select_action_by_handler,
+)
 from .services import (
     AIOpsModelCallError,
     DEFAULT_SUGGESTED_QUESTIONS,
@@ -341,7 +345,57 @@ class AIOpsApiTests(TestCase):
         self.assertTrue(response.data['action_preflight'])
         self.assertEqual(response.data['selected_action']['code'], 'log.query_generate')
         self.assertIn('service', {item.get('name') for item in response.data['missing_context']})
-        self.assertEqual(response.data['response_blocks'][0]['type'], 'approval_form')
+        block_types = [item.get('type') for item in response.data['response_blocks']]
+        self.assertIn('context_form', block_types)
+        self.assertIn('approval_form', block_types)
+        context_form = next(item for item in response.data['response_blocks'] if item.get('type') == 'context_form')
+        self.assertIn('service', {item.get('name') for item in context_form.get('fields', [])})
+
+    def test_action_preflight_uses_page_context_to_fill_required_fields(self):
+        get_agent_config()
+        self.ensure_ecommerce_knowledge_environment()
+
+        contract = build_action_preflight_contract(
+            'log.query_generate',
+            {
+                'question': '帮我生成当前页面日志查询语句',
+                'page_context': {
+                    'page': 'logs.query',
+                    'title': '日志查询',
+                    'route': '/logs/query',
+                    'hints': {
+                        'environment': '电商测试环境',
+                        'service': 'order-service',
+                        'datasource_id': '12',
+                    },
+                },
+            },
+            user=self.user,
+        )
+
+        self.assertTrue(contract['action_preflight'])
+        self.assertEqual(contract['selected_action']['code'], 'log.query_generate')
+        self.assertNotIn('environment', {item.get('name') for item in contract['missing_context']})
+        self.assertNotIn('service', {item.get('name') for item in contract['missing_context']})
+        self.assertEqual(contract['page_context']['hints']['service'], 'order-service')
+        self.assertIn('context_summary', {item.get('type') for item in contract['response_blocks']})
+
+    def test_page_context_normalizer_and_handler_route_context_followup(self):
+        get_agent_config()
+        actions_by_code = {item['code']: item for item in list_action_registry(user=self.user)}
+        page_context = normalize_page_context({
+            'title': 'K8s 管理',
+            'route': '/containers/k8s/workloads',
+            'params': {'cluster_name': 'ecommerce-test-k3s'},
+            'query': {'ns': 'production'},
+        })
+
+        self.assertEqual(page_context['hints']['cluster'], 'ecommerce-test-k3s')
+        self.assertEqual(page_context['hints']['namespace'], 'production')
+        routed = select_action_by_handler('看看这个有没有异常', actions_by_code, page_context=page_context)
+
+        self.assertIsNotNone(routed)
+        self.assertEqual(routed['code'], 'k8s.diagnose')
 
     def test_action_registry_examples_pass_preflight_and_route_when_supported(self):
         get_agent_config()
@@ -490,6 +544,103 @@ class AIOpsApiTests(TestCase):
                         routed = _select_action_for_question(question, user=self.user)
                         self.assertIsNotNone(routed)
                         self.assertEqual(routed['code'], action_code)
+
+    def assert_action_example_answer_is_useful(self, action, assistant_message):
+        metadata = assistant_message.get('metadata') or {}
+        content = str(assistant_message.get('content') or '').strip()
+        self.assertGreater(len(content), 20)
+        self.assertNotIn('模型未调用任何工具', content)
+        self.assertNotIn('无法完成回答', content)
+        self.assertNotIn('MCP 工具链异常', content)
+
+        if metadata.get('environment_required'):
+            self.assertIn(metadata.get('error_code'), {'environment_required', 'environment_ambiguous'})
+            self.assertTrue(metadata.get('environment_candidates'))
+            self.assertTrue('必须先指定环境' in content or '必须先确认唯一环境' in content)
+            self.assertIn('可选环境', content)
+            return
+
+        self.assertNotIn('error_code', metadata)
+        selected_action = metadata.get('selected_action') or {}
+        self.assertEqual(selected_action.get('code'), action['code'])
+        self.assertTrue(
+            metadata.get('execution_mode')
+            or metadata.get('action_preflight')
+            or metadata.get('pending_action_id')
+        )
+        if metadata.get('action_preflight'):
+            block_types = {item.get('type') for item in metadata.get('response_blocks') or []}
+            self.assertTrue({'context_form', 'approval_form'} & block_types)
+            self.assertTrue(metadata.get('missing_context'))
+        else:
+            response_block_types = {item.get('type') for item in metadata.get('response_blocks') or []}
+            self.assertTrue(
+                assistant_message.get('tool_calls')
+                or response_block_types
+                or assistant_message.get('pending_action')
+            )
+            if not assistant_message.get('tool_calls') and not assistant_message.get('pending_action'):
+                self.assertTrue(response_block_types)
+
+    @mock.patch('aiops.services._request_model_completion')
+    def test_all_action_registry_examples_return_useful_chat_answers(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_ecommerce_knowledge_environment()
+
+        Alert.objects.create(
+            title='order service 5xx high',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            message='order service 5xx is high',
+            environment='电商测试',
+            service='order-service',
+            is_acknowledged=False,
+        )
+        LogEntry.objects.create(
+            service='order-service',
+            level='error',
+            message='checkout timeout trace_id=action-example-001',
+        )
+        Deployment.objects.create(
+            app_name='order-service',
+            version='v2.1.0',
+            business_line='电商交易核心',
+            environment='ecommerce-test',
+        )
+        EventRecord.objects.create(
+            module='deploy',
+            category='release',
+            action='finish',
+            title='order-service release v2.1.0',
+            source_type=EventRecord.SOURCE_SYSTEM,
+            business_line='电商交易核心',
+            environment='ecommerce-test',
+            application='order-service',
+            is_demo=False,
+        )
+
+        for action in list_action_registry(user=self.user, include_unavailable=False):
+            for index, question in enumerate(action.get('suggested_questions') or []):
+                with self.subTest(action=action['code'], question=question):
+                    session_response = self.client.post(
+                        '/api/aiops/sessions/',
+                        {'title': f'action-example-{action["code"]}-{index}'},
+                        format='json',
+                    )
+                    self.assertEqual(session_response.status_code, 201)
+                    response = self.client.post(
+                        f"/api/aiops/sessions/{session_response.data['id']}/send_message/",
+                        {'content': question},
+                        format='json',
+                    )
+
+                    self.assertEqual(response.status_code, 201)
+                    assistant_message = response.data['assistant_message']
+                    self.assert_action_example_answer_is_useful(action, assistant_message)
+
+        mocked_completion.assert_not_called()
 
     def test_legacy_generate_task_tool_call_infers_action_trace(self):
         from .serializers import AIOpsAuditTraceReader
@@ -6082,8 +6233,11 @@ class AIOpsApiTests(TestCase):
         self.assertIn('service', {item.get('name') for item in metadata['missing_context']})
         self.assertEqual(assistant_message['tool_calls'], [])
         response_blocks = metadata.get('response_blocks', [])
-        self.assertEqual(response_blocks[0]['type'], 'approval_form')
-        self.assertEqual(response_blocks[0]['status'], 'needs_info')
+        block_types = [item.get('type') for item in response_blocks]
+        self.assertIn('context_form', block_types)
+        self.assertIn('approval_form', block_types)
+        approval_block = next(item for item in response_blocks if item.get('type') == 'approval_form')
+        self.assertEqual(approval_block['status'], 'needs_info')
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
@@ -6184,6 +6338,46 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(AIOpsChatSession.objects.get(pk=session_id).messages.count(), 2)
         self.assertEqual(response.data['assistant_message']['metadata']['processing_status'], 'pending')
+        mocked_start_async.assert_called_once()
+
+    @mock.patch('aiops.views.start_async_chat_processing')
+    def test_chat_session_and_async_message_persist_page_context(self, mocked_start_async):
+        initial_context = {
+            'title': '日志查询',
+            'route': '/logs/query',
+            'query': {'env': '电商测试环境'},
+            'hints': {'service': 'order-service'},
+        }
+        session_response = self.client.post(
+            '/api/aiops/sessions/',
+            {'title': 'context-chat', 'page_context': initial_context},
+            format='json',
+        )
+        self.assertEqual(session_response.status_code, 201)
+        session_id = session_response.data['id']
+        self.assertEqual(session_response.data['context']['page_context']['hints']['environment'], '电商测试环境')
+        self.assertEqual(session_response.data['context']['page_context']['hints']['service'], 'order-service')
+
+        next_context = {
+            'title': 'K8s 管理',
+            'route': '/containers/k8s/workloads',
+            'params': {'cluster_name': 'ecommerce-test-k3s'},
+            'query': {'namespace': 'production'},
+        }
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message_async/',
+            {'content': '看看当前页面有没有异常', 'page_context': next_context},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        session = AIOpsChatSession.objects.get(pk=session_id)
+        saved_context = session.context['page_context']
+        self.assertEqual(saved_context['route'], '/containers/k8s/workloads')
+        self.assertEqual(saved_context['hints']['cluster'], 'ecommerce-test-k3s')
+        self.assertEqual(saved_context['hints']['namespace'], 'production')
+        self.assertEqual(response.data['user_message']['metadata']['page_context']['hints']['cluster'], 'ecommerce-test-k3s')
+        self.assertEqual(response.data['assistant_message']['metadata']['page_context']['hints']['namespace'], 'production')
         mocked_start_async.assert_called_once()
 
     def test_demo_account_send_message_is_temporarily_disabled(self):
