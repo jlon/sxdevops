@@ -396,6 +396,7 @@
                   <el-button text size="small" class="history-more-btn">更多</el-button>
                   <template #dropdown>
                     <el-dropdown-menu>
+                      <el-dropdown-item command="rename">{{ ui.renameTask }}</el-dropdown-item>
                       <el-dropdown-item command="copy">{{ ui.copyToDraft }}</el-dropdown-item>
                       <el-dropdown-item command="template">{{ ui.saveAsTemplate }}</el-dropdown-item>
                       <el-dropdown-item v-if="canCancelTask(row)" command="cancel">{{ ui.cancelTask }}</el-dropdown-item>
@@ -760,6 +761,7 @@ import {
   getTaskResourceOptions,
   getHostTaskTemplates,
   getHostTasks,
+  renameHostTask,
   rerunHostTask,
 } from '@/api/modules/ops'
 const route = useRoute()
@@ -888,6 +890,11 @@ const ui = {
   actions: '\u64cd\u4f5c',
   detail: '\u8be6\u60c5',
   copyToDraft: '继续编辑',
+  renameTask: '修改任务名',
+  renameTaskTitle: '重命名任务',
+  renameTaskPrompt: '请输入新的任务名称',
+  renameTaskSuccess: '任务名称已更新',
+  renameTaskFailed: '任务重命名失败',
   rerun: '\u91cd\u8dd1',
   cancelTask: '\u7ec8\u6b62',
   batchCancel: '\u6279\u91cf\u7ec8\u6b62',
@@ -2036,6 +2043,7 @@ async function saveCurrentAsTemplate() {
   } finally { savingTemplate.value = false }
 }
 function handleHistoryAction(command, row) {
+  if (command === 'rename') return renameTask(row)
   if (command === 'copy') return copyTaskToDraft(row)
   if (command === 'template') return saveTaskAsTemplate(row)
   if (command === 'cancel') return handleCancelTask(row)
@@ -2073,6 +2081,35 @@ async function removeTask(task) {
     selectedTaskRows.value = selectedTaskRows.value.filter(item => item.id !== task.id)
     await Promise.all([fetchStats(), fetchTasks()])
   } catch (error) { ElMessage.error(error?.response?.data?.detail || ui.deleteTaskFailed) }
+}
+async function renameTask(task) {
+  let nextName = task?.name || ''
+  try {
+    const { value } = await ElMessageBox.prompt(ui.renameTaskPrompt, ui.renameTaskTitle, {
+      confirmButtonText: ui.renameTask,
+      cancelButtonText: ui.cancel,
+      inputValue: nextName,
+      inputValidator: value => !!String(value || '').trim(),
+    })
+    nextName = String(value || '').trim()
+  } catch (error) {
+    return
+  }
+  if (!nextName || nextName === task.name) return
+  try {
+    const updated = await renameHostTask(task.id, { name: nextName })
+    ElMessage.success(ui.renameTaskSuccess)
+    const index = tasks.value.findIndex(item => item.id === task.id)
+    if (index >= 0) {
+      tasks.value[index] = { ...tasks.value[index], ...updated, environment_display: taskEnvironmentDisplay(updated) }
+    }
+    if (detailTask.value?.id === task.id) {
+      detailTask.value = { ...detailTask.value, ...updated, executions: detailTask.value.executions || updated.executions || [] }
+    }
+    await fetchTasks()
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.name?.[0] || error?.response?.data?.detail || ui.renameTaskFailed)
+  }
 }
 async function submitTask() {
   if (!taskForm.value.name) return ElMessage.warning(ui.taskNameRequired)

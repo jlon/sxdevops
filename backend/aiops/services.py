@@ -11836,7 +11836,8 @@ def build_task_draft(user, question='', draft_request=None):
             command = _build_install_shell_script(install_target)
         if not command and is_shell_request:
             command = _build_generic_shell_script(question, draft_request)
-        payload = _normalize_run_command_payload({'command': command or 'hostname && uptime'}, draft_request, question)
+        payload_source = command_payload if isinstance(command_payload, dict) else {}
+        payload = _normalize_run_command_payload({**payload_source, 'command': command or 'hostname && uptime'}, draft_request, question)
         if is_install_request and install_target:
             profile = _install_profile_for_target(install_target)
             payload.update({

@@ -68,6 +68,7 @@ from .serializers import (
     HostSerializer,
     HostTaskBatchCancelSerializer,
     HostTaskDetailSerializer,
+    HostTaskRenameSerializer,
     HostTaskScheduleExecutionSerializer,
     HostTaskSchedulePreviewSerializer,
     HostTaskScheduleSerializer,
@@ -530,6 +531,7 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'cancel': ['ops.task.execute'],
         'batch_cancel': ['ops.task.execute'],
         'execute': ['ops.task.execute'],
+        'rename': ['ops.task.execute'],
         'stats': ['ops.task.execute'],
         'host_options': ['ops.task.execute'],
         'resource_options': ['ops.task.execute'],
@@ -549,6 +551,23 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def retrieve(self, request, *args, **kwargs):
         mark_stale_running_host_tasks()
         return super().retrieve(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'])
+    def rename(self, request, pk=None):
+        task = self.get_object()
+        serializer = HostTaskRenameSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        old_name = task.name
+        task.name = serializer.validated_data['name']
+        task.save(update_fields=['name', 'updated_at'])
+        record_task_center_event(
+            task,
+            request=request,
+            action='rename_task',
+            title='重命名任务中心任务',
+            summary=f'任务 {old_name} 已重命名为 {task.name}',
+        )
+        return Response(HostTaskSerializer(task).data)
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)

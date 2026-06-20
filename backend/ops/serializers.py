@@ -657,6 +657,16 @@ class HostTaskBatchCancelSerializer(serializers.Serializer):
         return deduplicated
 
 
+class HostTaskRenameSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=128, trim_whitespace=True)
+
+    def validate_name(self, value):
+        text = str(value or '').strip()
+        if not text:
+            raise serializers.ValidationError('请填写任务名称')
+        return text
+
+
 class HostTaskTargetSerializer(serializers.ModelSerializer):
     environment_display = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)

@@ -7769,6 +7769,222 @@ class AIOpsApiTests(TestCase):
         self.assertIn('install check passed', payload['payload']['command'])
         mocked_completion.assert_not_called()
 
+    def _create_aiops_task_resource_fixture(self):
+        env = TaskResourceGroup.objects.create(name='aiops-regression-env', code='aiops-regression-env', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        host_resource = TaskResource.objects.create(
+            name='aiops-regression-host',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='10.99.0.10',
+            ssh_user='root',
+        )
+        cluster = K8sCluster.objects.create(
+            name='aiops-regression-k8s',
+            api_server='https://aiops-regression-k8s.example.com:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        k8s_resource = TaskResource.objects.create(
+            name='aiops-regression-k8s-resource',
+            resource_type=TaskResource.RESOURCE_K8S,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            cluster=cluster,
+        )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='aiops-regression-env',
+            aliases=['aiops-regression'],
+            task_resource_environment_ids=[env.id],
+            k8s_cluster_ids=[cluster.id],
+            k8s_namespaces={str(cluster.id): ['production', 'monitoring']},
+            is_enabled=True,
+        )
+        return env, host_resource, cluster, k8s_resource
+
+    def _build_confirmed_task_center_draft(self, question, draft_request):
+        draft = build_task_draft(self.user, question, {'request_summary': question, **draft_request})
+        self.assertNotIn('error', draft, draft.get('error'))
+        session = AIOpsChatSession.objects.create(user=self.user, title='task-draft-regression')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='draft')
+        action = create_pending_task_action_from_draft(session, assistant_message, draft)
+        task_draft = confirm_action(action, self.user)
+        self.assertEqual(task_draft['trigger_source'], HostTask.TRIGGER_SOURCE_AIOPS)
+        self.assertEqual(task_draft['source_context']['source'], 'aiops')
+        self.assertTrue(task_draft['name'])
+        self.assertTrue(task_draft['payload'])
+        return task_draft
+
+    def _submit_task_center_draft(self, task_draft):
+        payload = {
+            'name': task_draft['name'],
+            'target_type': task_draft.get('target_type') or HostTask.TARGET_HOST,
+            'task_type': task_draft['task_type'],
+            'description': task_draft.get('description') or '',
+            'payload': task_draft.get('payload') or {},
+            'resource_ids': task_draft.get('resource_ids') or [],
+            'host_ids': task_draft.get('host_ids') or [],
+            'k8s_targets': task_draft.get('k8s_targets') or [],
+            'execution_mode': task_draft.get('execution_mode') or HostTask.EXECUTION_MODE_SSH,
+            'execution_strategy': task_draft.get('execution_strategy') or HostTask.STRATEGY_CONTINUE,
+            'timeout_seconds': task_draft.get('timeout_seconds') or 30,
+            'trigger_source': task_draft.get('trigger_source') or HostTask.TRIGGER_SOURCE_AIOPS,
+            'source_context': task_draft.get('source_context') or {},
+        }
+        with mock.patch('ops.views.start_host_task') as mocked_start_host_task, \
+                mock.patch('ops.views.start_k8s_task') as mocked_start_k8s_task:
+            response = self.client.post('/api/host-tasks/', payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        created = HostTask.objects.get(pk=response.data['id'])
+        if created.target_type == HostTask.TARGET_K8S:
+            mocked_start_k8s_task.assert_called_once()
+            mocked_start_host_task.assert_not_called()
+            self.assertEqual(mocked_start_k8s_task.call_args.args[0].id, created.id)
+            self.assertGreater(len(mocked_start_k8s_task.call_args.args[1]), 0)
+        else:
+            mocked_start_host_task.assert_called_once()
+            mocked_start_k8s_task.assert_not_called()
+            self.assertEqual(mocked_start_host_task.call_args.args[0].id, created.id)
+            self.assertGreater(len(mocked_start_host_task.call_args.args[1]), 0)
+        return created
+
+    def assertTaskDraftCanCreateHostTask(self, question, draft_request, expected):
+        task_draft = self._build_confirmed_task_center_draft(question, draft_request)
+        self.assertEqual(task_draft['target_type'], expected.get('target_type', HostTask.TARGET_HOST))
+        self.assertEqual(task_draft['task_type'], expected['task_type'])
+        self.assertEqual(task_draft['execution_mode'], expected['execution_mode'])
+        for key, value in expected.get('payload_contains', {}).items():
+            self.assertEqual(task_draft['payload'].get(key), value)
+        for text in expected.get('command_includes', []):
+            self.assertIn(text, task_draft['payload'].get('command') or task_draft['payload'].get('playbook_content') or '')
+        if task_draft['target_type'] == HostTask.TARGET_K8S:
+            self.assertTrue(task_draft['k8s_targets'])
+        else:
+            self.assertTrue(task_draft['resource_ids'] or task_draft['host_ids'])
+
+        created = self._submit_task_center_draft(task_draft)
+
+        self.assertEqual(created.target_type, task_draft['target_type'])
+        self.assertEqual(created.task_type, task_draft['task_type'])
+        self.assertEqual(created.execution_mode, task_draft['execution_mode'])
+        self.assertEqual(created.trigger_source, HostTask.TRIGGER_SOURCE_AIOPS)
+        self.assertEqual(created.payload, task_draft['payload'])
+        self.assertEqual(created.source_context.get('source'), 'aiops')
+        return task_draft, created
+
+    def test_aiops_generated_task_drafts_are_real_task_center_payloads(self):
+        _env, host_resource, _cluster, _k8s_resource = self._create_aiops_task_resource_fixture()
+        scenarios = [
+            {
+                'name': 'shell-inspection',
+                'question': 'create a shell inspection task for aiops-regression-env',
+                'draft_request': {
+                    'resource_environment': 'aiops-regression-env',
+                    'target_resource_ids': [host_resource.id],
+                    'task_kind': 'run_command',
+                    'payload': {'command': 'df -h && free -m', 'script_kind': 'shell'},
+                },
+                'expected': {
+                    'task_type': HostTask.TASK_RUN_COMMAND,
+                    'execution_mode': HostTask.EXECUTION_MODE_ANSIBLE,
+                    'payload_contains': {'command': 'df -h && free -m', 'script_kind': 'shell'},
+                    'command_includes': ['df -h', 'free -m'],
+                },
+            },
+            {
+                'name': 'python-diagnostics',
+                'question': 'create a python diagnostics task for aiops-regression-env',
+                'draft_request': {
+                    'resource_environment': 'aiops-regression-env',
+                    'target_resource_ids': [host_resource.id],
+                    'task_kind': 'run_command',
+                    'payload': {'command': 'import platform\nprint(platform.node())', 'script_kind': 'python'},
+                },
+                'expected': {
+                    'task_type': HostTask.TASK_RUN_COMMAND,
+                    'execution_mode': HostTask.EXECUTION_MODE_ANSIBLE,
+                    'payload_contains': {'script_kind': 'python'},
+                    'command_includes': ['import platform', 'print(platform.node())'],
+                },
+            },
+            {
+                'name': 'ansible-playbook',
+                'question': 'create an ansible playbook task to restart nginx',
+                'draft_request': {
+                    'resource_environment': 'aiops-regression-env',
+                    'target_resource_ids': [host_resource.id],
+                    'task_kind': 'run_playbook',
+                    'playbook_name': 'restart_nginx.yml',
+                    'playbook_content': '- hosts: targets\n  gather_facts: false\n  tasks:\n    - name: restart nginx\n      ansible.builtin.service:\n        name: nginx\n        state: restarted\n',
+                },
+                'expected': {
+                    'task_type': HostTask.TASK_RUN_PLAYBOOK,
+                    'execution_mode': HostTask.EXECUTION_MODE_ANSIBLE,
+                    'payload_contains': {'playbook_name': 'restart_nginx.yml'},
+                    'command_includes': ['ansible.builtin.service', 'state: restarted'],
+                },
+            },
+            {
+                'name': 'k8s-service-patch',
+                'question': 'change service checkout-api in monitoring namespace to NodePort',
+                'draft_request': {
+                    'resource_environment': 'aiops-regression-env',
+                    'task_kind': 'k8s_command',
+                    'namespace': 'monitoring',
+                    'service_name': 'checkout-api',
+                    'service_type': 'NodePort',
+                },
+                'expected': {
+                    'target_type': HostTask.TARGET_K8S,
+                    'task_type': HostTask.TASK_K8S_POD_EXEC,
+                    'execution_mode': HostTask.EXECUTION_MODE_K8S_API,
+                    'payload_contains': {'resource_kind': 'service', 'namespace': 'monitoring', 'service_name': 'checkout-api'},
+                    'command_includes': ['kubectl patch svc checkout-api -n monitoring', 'NodePort'],
+                },
+            },
+            {
+                'name': 'k8s-scale',
+                'question': 'scale deployment checkout in production namespace to 3 replicas',
+                'draft_request': {
+                    'resource_environment': 'aiops-regression-env',
+                    'task_kind': 'k8s_scale_workload',
+                    'namespace': 'production',
+                    'workload_type': 'deployment',
+                    'workload_name': 'checkout',
+                    'replicas': 3,
+                },
+                'expected': {
+                    'target_type': HostTask.TARGET_K8S,
+                    'task_type': HostTask.TASK_K8S_SCALE_WORKLOAD,
+                    'execution_mode': HostTask.EXECUTION_MODE_K8S_API,
+                    'payload_contains': {'workload_type': 'deployment', 'workload_name': 'checkout', 'namespace': 'production', 'replicas': 3},
+                },
+            },
+            {
+                'name': 'k8s-restart-pod',
+                'question': 'restart pod checkout-api-0 in monitoring namespace',
+                'draft_request': {
+                    'resource_environment': 'aiops-regression-env',
+                    'task_kind': 'k8s_restart_pod',
+                    'namespace': 'monitoring',
+                    'pod_name': 'checkout-api-0',
+                },
+                'expected': {
+                    'target_type': HostTask.TARGET_K8S,
+                    'task_type': HostTask.TASK_K8S_RESTART_POD,
+                    'execution_mode': HostTask.EXECUTION_MODE_K8S_API,
+                    'payload_contains': {'resource_kind': 'pod', 'namespace': 'monitoring', 'pod_name': 'checkout-api-0'},
+                },
+            },
+        ]
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario['name']):
+                self.assertTaskDraftCanCreateHostTask(
+                    scenario['question'],
+                    scenario['draft_request'],
+                    scenario['expected'],
+                )
+
     def test_build_task_draft_resolves_config_item_id_before_conflicting_ip(self):
         ci_type, _ = CIType.objects.get_or_create(name='云主机(ECS)')
         target_host = Host.objects.create(

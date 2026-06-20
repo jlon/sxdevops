@@ -43,6 +43,9 @@ class HostTaskApiTests(TestCase):
         client.exec_command.side_effect = exec_command
         return client
 
+    def _finished_executions(self, payload):
+        return [item for item in payload['executions'] if item['status'] != HostTaskExecution.STATUS_RUNNING]
+
     @patch('ops.host_tasks.open_ssh_client')
     def test_run_command_task_records_successful_execution(self, mock_open_ssh_client):
         mock_open_ssh_client.return_value = self._mock_client({
@@ -96,7 +99,7 @@ class HostTaskApiTests(TestCase):
         self.assertEqual(payload['success_count'], 1)
         self.assertIn('Ansible', payload['summary'])
         self.assertIn('SSH', payload['summary'])
-        self.assertEqual(payload['executions'][0]['output'], 'fallback-ok')
+        self.assertEqual(self._finished_executions(payload)[0]['output'], 'fallback-ok')
 
     @patch('ops.host_tasks.execute_ansible_playbook')
     def test_run_playbook_task_executes_with_ansible_mode(self, mock_execute_ansible_playbook):
@@ -206,8 +209,9 @@ class HostTaskApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         payload = response.json()
         self.assertEqual(payload['status'], 'failed')
-        self.assertIn('ansible-playbook', payload['executions'][0]['error_message'])
-        self.assertIn('HOST_TASK_ANSIBLE_PLAYBOOK_BINARY', payload['executions'][0]['error_message'])
+        error_message = self._finished_executions(payload)[0]['error_message']
+        self.assertIn('ansible-playbook', error_message)
+        self.assertIn('HOST_TASK_ANSIBLE_PLAYBOOK_BINARY', error_message)
 
     @patch('ops.host_tasks.open_ssh_client')
     def test_task_resource_execution_exposes_target_name(self, mock_open_ssh_client):
