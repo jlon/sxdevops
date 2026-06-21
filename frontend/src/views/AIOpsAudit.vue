@@ -352,12 +352,12 @@
             <span v-else class="muted-text">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="78">
+        <el-table-column label="状态" width="66">
           <template #default="{ row }">
             <el-tag size="small" effect="plain">{{ row.status || '-' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最后消息" width="132">
+        <el-table-column label="最后消息" width="156">
           <template #default="{ row }">
             {{ formatDateTimeDisplay(row.last_message_at) }}
           </template>
