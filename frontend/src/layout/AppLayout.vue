@@ -184,7 +184,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
-import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
 import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
 import { getModuleSettings } from '@/api/modules/rbac'
 import { getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
@@ -200,14 +199,12 @@ const notificationCount = ref(0)
 const moduleVisibility = ref({})
 const MODULE_SETTINGS_EVENT = 'sxdevops-module-settings-updated'
 const TASK_SCHEDULES_VISIBLE = false
-const observabilityBoardPermissions = SYSTEM_POSTURE_ENABLED
-  ? ['ops.grafana.view', 'ops.observability.system_posture.view']
-  : ['ops.grafana.view']
+const observabilityBoardPermissions = ['ops.grafana.view']
 const defaultOpenMenuKeys = ['aiops', 'observability', 'events']
 let notificationTimer = null
 
 const menuItems = [
-  { moduleKey: 'dashboard', path: '/dashboard', title: '系统态势', icon: 'Odometer', permission: 'ops.dashboard.view' },
+  { moduleKey: 'dashboard', path: '/dashboard', title: '运行概览', icon: 'Odometer', permission: 'ops.dashboard.view' },
   {
     moduleKey: 'aiops',
     title: 'AIOps',
@@ -286,7 +283,6 @@ const menuItems = [
 const observabilityBoardPaths = new Set([
   '/observability/boards',
   '/observability/grafana',
-  ...(SYSTEM_POSTURE_ENABLED ? ['/observability/system-posture', '/observability/posture-history'] : []),
 ])
 const observabilityQueryPaths = new Set([
   '/observability/query',

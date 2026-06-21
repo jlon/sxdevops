@@ -205,7 +205,6 @@ class AIOpsKnowledgeEnvironment(models.Model):
     tracing_datasource_ids = models.JSONField('链路追踪数据源', default=list, blank=True)
     observability_link_ids = models.JSONField('可观测性关联配置', default=list, blank=True)
     alert_environments = models.JSONField('告警中心环境', default=list, blank=True)
-    posture_environments = models.JSONField('系统态势环境', default=list, blank=True)
     k8s_cluster_ids = models.JSONField('K8s 集群', default=list, blank=True)
     k8s_namespaces = models.JSONField('K8s 命名空间', default=dict, blank=True)
     docker_host_ids = models.JSONField('Docker 环境', default=list, blank=True)

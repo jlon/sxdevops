@@ -139,9 +139,9 @@ SYSTEM_POSTURE_ENABLED = _bool_value(
         FEATURE_CONFIG,
         ('system_posture_enabled', 'systemPostureEnabled', 'system_posture', 'systemPosture'),
         ('SXDEVOPS_SYSTEM_POSTURE_ENABLED', 'SYSTEM_POSTURE_ENABLED'),
-        True,
+        False,
     ),
-    True,
+    False,
 )
 
 
@@ -338,12 +338,19 @@ def _build_cache_config():
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-ag#xxnjm^46$=ye()w$yma8r8oy3&wfq!8_=bm!kwe0e((&y3-'
+SECRET_KEY = os.getenv(
+    'SECRET_KEY',
+    'django-insecure-ag#xxnjm^46$=ye()w$yma8r8oy3&wfq!8_=bm!kwe0e((&y3-',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = _bool_value(os.getenv('DEBUG'), True)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv('ALLOWED_HOSTS', '*').split(',')
+    if host.strip()
+]
 
 
 # Application definition
@@ -451,7 +458,7 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = _bool_value(os.getenv('CORS_ALLOW_ALL_ORIGINS'), True)
 
 # DRF
 REST_FRAMEWORK = {
@@ -471,7 +478,7 @@ REST_FRAMEWORK = {
 }
 
 # Loki
-LOKI_URL = 'http://47.95.15.209:33100'
+LOKI_URL = ''
 
 LOG_PROVIDER_CONFIGS = {
     'loki': {
@@ -553,10 +560,29 @@ OBSERVABILITY_CONFIG = {
 
 CACHES = _build_cache_config()
 
+def _build_channel_layers():
+    redis_url = os.getenv('CHANNEL_REDIS_URL') or os.getenv('REDIS_URL', '')
+    backend = os.getenv('CHANNEL_LAYER_BACKEND', 'redis' if redis_url else 'memory').strip().lower()
+
+    if backend in {'redis', 'channels-redis', 'channels_redis'}:
+        if not redis_url:
+            raise RuntimeError('Redis channel layer is enabled but CHANNEL_REDIS_URL/REDIS_URL is empty.')
+        return {
+            'default': {
+                'BACKEND': 'channels_redis.core.RedisChannelLayer',
+                'CONFIG': {
+                    'hosts': [redis_url],
+                },
+            },
+        }
+
+    return {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
+
+
 # ASGI / Channels
 ASGI_APPLICATION = 'sxdevops.asgi.application'
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels.layers.InMemoryChannelLayer',
-    },
-}
+CHANNEL_LAYERS = _build_channel_layers()

@@ -27,8 +27,6 @@ from .models import (
     DeploymentApprovalNode,
     DeploymentApprovalStep,
     DockerHost,
-    SystemPostureEnvironment,
-    SystemPostureSystem,
     GrafanaSetting,
     Host,
     HostTask,
@@ -175,6 +173,85 @@ class HostSerializer(serializers.ModelSerializer):
 
         attrs['business_line'] = business_line
         return attrs
+
+
+class LogDataSourceSerializer(serializers.ModelSerializer):
+    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+
+    class Meta:
+        model = LogDataSource
+        fields = '__all__'
+
+
+class TracingDataSourceSerializer(serializers.ModelSerializer):
+    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+
+    class Meta:
+        model = TracingDataSource
+        fields = '__all__'
+
+
+class MetricDataSourceSerializer(serializers.ModelSerializer):
+    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+
+    class Meta:
+        model = MetricDataSource
+        fields = '__all__'
+
+
+class ObservabilityDataSourceLinkSerializer(serializers.ModelSerializer):
+    log_datasource_name = serializers.CharField(source='log_datasource.name', read_only=True)
+    tracing_datasource_name = serializers.CharField(source='tracing_datasource.name', read_only=True)
+
+    class Meta:
+        model = ObservabilityDataSourceLink
+        fields = '__all__'
+
+
+class GrafanaSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GrafanaSetting
+        fields = '__all__'
+
+
+class DockerHostSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = DockerHost
+        fields = '__all__'
+        extra_kwargs = {
+            'ssh_password': {
+                'write_only': True,
+                'required': False,
+                'allow_blank': True,
+            },
+        }
+
+
+class K8sClusterSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = K8sCluster
+        fields = [
+            'id',
+            'name',
+            'api_server',
+            'kubeconfig',
+            'status',
+            'status_display',
+            'description',
+            'created_at',
+            'updated_at',
+        ]
+        extra_kwargs = {
+            'kubeconfig': {
+                'write_only': True,
+                'required': False,
+                'allow_blank': True,
+            },
+        }
 
 
 class TaskResourceGroupSerializer(serializers.ModelSerializer):
@@ -1546,488 +1623,6 @@ class LogEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = LogEntry
         fields = '__all__'
-
-
-class SystemPostureEnvironmentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SystemPostureEnvironment
-        fields = '__all__'
-        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
-        extra_kwargs = {
-            'key': {'required': False, 'allow_blank': True},
-        }
-
-    def validate_name(self, value):
-        name = str(value or '').strip()
-        if not name:
-            raise serializers.ValidationError('请填写环境名称')
-        return name
-
-    def validate_key(self, value):
-        return str(value or '').strip()[:64]
-
-    def validate(self, attrs):
-        attrs = super().validate(attrs)
-        if not attrs.get('key') and not getattr(self.instance, 'key', ''):
-            base = re.sub(r'[^a-zA-Z0-9_-]+', '-', str(attrs.get('name') or '').strip().lower()).strip('-')[:64]
-            attrs['key'] = base or f'env-{uuid.uuid4().hex[:8]}'
-        return attrs
-
-
-class SystemPostureSystemSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SystemPostureSystem
-        fields = '__all__'
-        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
-
-    def _validate_json_list(self, value, field_name):
-        if value in (None, ''):
-            return []
-        if not isinstance(value, list):
-            raise serializers.ValidationError(f'{field_name} 必须是数组')
-        return value
-
-    def _validate_json_object(self, value, field_name):
-        if value in (None, ''):
-            return {}
-        if not isinstance(value, dict):
-            raise serializers.ValidationError(f'{field_name} 必须是对象')
-        return value
-
-    def validate_name(self, value):
-        name = str(value or '').strip()
-        if not name:
-            raise serializers.ValidationError('请填写业务系统名称')
-        return name
-
-    def validate_environment(self, value):
-        return str(value or 'prod').strip() or 'prod'
-
-    def validate_domain(self, value):
-        return str(value or '').strip()
-
-    def validate_tier(self, value):
-        return str(value or '').strip()
-
-    def validate_owner(self, value):
-        return str(value or '').strip()
-
-    def validate_summary(self, value):
-        return str(value or '').strip()
-
-    def validate_keywords(self, value):
-        items = self._validate_json_list(value, 'keywords')
-        return [str(item).strip() for item in items if str(item).strip()]
-
-    def validate_core_metric(self, value):
-        item = self._validate_json_object(value, 'core_metric')
-        label = str(item.get('label') or '').strip()
-        if not label:
-            label = '可用率'
-        return {
-            'label': label,
-            'value': item.get('value', 99),
-            'target': item.get('target', 99.9),
-            'unit': str(item.get('unit') or '%').strip(),
-            'direction': str(item.get('direction') or 'higher').strip() or 'higher',
-        }
-
-    def validate_metrics(self, value):
-        return self._validate_json_list(value, 'metrics')
-
-    def validate_service_specs(self, value):
-        return self._validate_json_list(value, 'service_specs')
-
-    def validate_dependencies(self, value):
-        return self._validate_json_list(value, 'dependencies')
-
-    def validate_rule_config(self, value):
-        return self._validate_json_object(value, 'rule_config')
-
-    def validate_playbook(self, value):
-        items = self._validate_json_list(value, 'playbook')
-        return [str(item).strip() for item in items if str(item).strip()]
-
-    def validate(self, attrs):
-        attrs.setdefault('core_metric', {
-            'label': '可用率',
-            'value': 99,
-            'target': 99.9,
-            'unit': '%',
-            'direction': 'higher',
-        })
-        attrs.setdefault('rule_config', {})
-        if attrs.get('health_score') is not None:
-            attrs['health_score'] = max(0, min(100, int(attrs['health_score'])))
-        return attrs
-
-class LogDataSourceSerializer(serializers.ModelSerializer):
-    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
-
-    class Meta:
-        model = LogDataSource
-        fields = '__all__'
-
-    def validate_config(self, value):
-        if value in (None, ''):
-            return {}
-        if not isinstance(value, dict):
-            raise serializers.ValidationError('config 必须是对象')
-        return value
-
-    def validate(self, attrs):
-        provider = attrs.get('provider') or getattr(self.instance, 'provider', None)
-        config = dict(getattr(self.instance, 'config', {}) or {})
-        incoming = attrs.get('config', {})
-
-        for key, value in incoming.items():
-            if key in LOG_SENSITIVE_KEYS and value in ('', None, 'configured'):
-                if self.instance and key in config:
-                    continue
-                config.pop(key, None)
-                continue
-            config[key] = value
-
-        attrs['config'] = config
-        return attrs
-
-    def _sync_default(self, instance):
-        if instance.is_default:
-            LogDataSource.objects.filter(provider=instance.provider, is_default=True).exclude(pk=instance.pk).update(
-                is_default=False
-            )
-
-    def create(self, validated_data):
-        instance = super().create(validated_data)
-        self._sync_default(instance)
-        return instance
-
-    def update(self, instance, validated_data):
-        instance = super().update(instance, validated_data)
-        self._sync_default(instance)
-        return instance
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        masked = {}
-        is_demo = bool((instance.config or {}).get('demo_mode'))
-        for key, value in (instance.config or {}).items():
-            if key in LOG_SENSITIVE_KEYS and not is_demo:
-                masked[key] = 'configured' if value else ''
-            else:
-                masked[key] = value
-        data['config'] = masked
-        return data
-
-
-class TracingDataSourceSerializer(serializers.ModelSerializer):
-    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
-
-    class Meta:
-        model = TracingDataSource
-        fields = '__all__'
-
-    def validate_config(self, value):
-        if value in (None, ''):
-            return {}
-        if not isinstance(value, dict):
-            raise serializers.ValidationError('config 必须是对象')
-        return value
-
-    def validate(self, attrs):
-        provider = attrs.get('provider') or getattr(self.instance, 'provider', None)
-        config = dict(getattr(self.instance, 'config', {}) or {})
-        incoming = attrs.get('config', {})
-
-        for key, value in incoming.items():
-            if key in LOG_SENSITIVE_KEYS and value in ('', None, 'configured'):
-                if self.instance and key in config:
-                    continue
-                config.pop(key, None)
-                continue
-            config[key] = value
-
-        if provider == 'skywalking':
-            config.setdefault('graphql_path', '/graphql')
-        config['demo_mode'] = False
-
-        attrs['config'] = config
-        return attrs
-
-    def _sync_default(self, instance):
-        if instance.is_default:
-            TracingDataSource.objects.filter(provider=instance.provider, is_default=True).exclude(pk=instance.pk).update(
-                is_default=False
-            )
-
-    def create(self, validated_data):
-        instance = super().create(validated_data)
-        self._sync_default(instance)
-        return instance
-
-    def update(self, instance, validated_data):
-        instance = super().update(instance, validated_data)
-        self._sync_default(instance)
-        return instance
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        masked = {}
-        is_demo = bool((instance.config or {}).get('demo_mode'))
-        for key, value in (instance.config or {}).items():
-            if key in LOG_SENSITIVE_KEYS and not is_demo:
-                masked[key] = 'configured' if value else ''
-            else:
-                masked[key] = value
-        data['config'] = masked
-        return data
-
-
-class MetricDataSourceSerializer(serializers.ModelSerializer):
-    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
-
-    class Meta:
-        model = MetricDataSource
-        fields = '__all__'
-
-    def validate_config(self, value):
-        if value in (None, ''):
-            return {}
-        if not isinstance(value, dict):
-            raise serializers.ValidationError('config 必须是对象')
-        return value
-
-    def validate(self, attrs):
-        provider = attrs.get('provider') or getattr(self.instance, 'provider', MetricDataSource.PROVIDER_PROMETHEUS)
-        config = dict(getattr(self.instance, 'config', {}) or {})
-        incoming = attrs.get('config', {})
-
-        for key, value in incoming.items():
-            if key in METRIC_SENSITIVE_KEYS and value in ('', None, 'configured'):
-                if self.instance and key in config:
-                    continue
-                config.pop(key, None)
-                continue
-            if key in {'headers', 'prometheus.headers'} and isinstance(value, dict):
-                current_headers = dict(config.get(key) or {}) if isinstance(config.get(key), dict) else {}
-                for header_key, header_value in value.items():
-                    if str(header_key).lower() == 'authorization' and header_value in ('', None, 'configured'):
-                        if self.instance and header_key in current_headers:
-                            continue
-                        current_headers.pop(header_key, None)
-                        continue
-                    current_headers[header_key] = header_value
-                config[key] = current_headers
-                continue
-            if key == 'prometheus.basic' and isinstance(value, dict):
-                current_basic = dict(config.get(key) or {}) if isinstance(config.get(key), dict) else {}
-                for basic_key, basic_value in value.items():
-                    if basic_key in METRIC_SENSITIVE_KEYS and basic_value in ('', None, 'configured'):
-                        if self.instance and basic_key in current_basic:
-                            continue
-                        current_basic.pop(basic_key, None)
-                        continue
-                    current_basic[basic_key] = basic_value
-                config[key] = current_basic
-                continue
-            config[key] = value
-
-        if provider == MetricDataSource.PROVIDER_PROMETHEUS:
-            config.setdefault('query_url', '')
-            config.setdefault('headers', {})
-            config.setdefault('auth_type', 'none')
-            config.setdefault('timeout', 6)
-            config.setdefault('tls_skip_verify', False)
-        attrs['config'] = config
-        return attrs
-
-    def _sync_default(self, instance):
-        if instance.is_default:
-            queryset = MetricDataSource.objects.filter(is_default=True)
-            if instance.environment:
-                queryset = queryset.filter(environment=instance.environment)
-            else:
-                queryset = queryset.filter(environment='')
-            queryset.exclude(pk=instance.pk).update(is_default=False)
-
-    def create(self, validated_data):
-        instance = super().create(validated_data)
-        self._sync_default(instance)
-        return instance
-
-    def update(self, instance, validated_data):
-        instance = super().update(instance, validated_data)
-        self._sync_default(instance)
-        return instance
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        masked = {}
-        for key, value in (instance.config or {}).items():
-            if key in METRIC_SENSITIVE_KEYS:
-                masked[key] = 'configured' if value else ''
-            elif key == 'prometheus.basic' and isinstance(value, dict):
-                masked[key] = {
-                    basic_key: ('configured' if basic_value else '') if basic_key in METRIC_SENSITIVE_KEYS else basic_value
-                    for basic_key, basic_value in value.items()
-                }
-            elif key == 'headers' and isinstance(value, dict):
-                safe_headers = {}
-                for header_key, header_value in value.items():
-                    if str(header_key).lower() == 'authorization':
-                        safe_headers[header_key] = 'configured' if header_value else ''
-                    else:
-                        safe_headers[header_key] = header_value
-                masked[key] = safe_headers
-            else:
-                masked[key] = value
-        data['config'] = masked
-        return data
-
-
-DEFAULT_TRACE_ID_FIELDS = ['trace_id', 'traceId', 'traceID']
-DEFAULT_TRACE_ID_REGEX = r'"trace_id"\s*:\s*"([0-9a-fA-F]{16,32})"'
-DEFAULT_LOG_QUERY_TEMPLATE = '${__tags} | json | trace_id="${__trace.traceId}"'
-DEFAULT_LOG_LABEL_MAPPINGS = [
-    {'trace_tag': 'service.name', 'log_label': 'container'},
-    {'trace_tag': 'service.namespace', 'log_label': 'namespace'},
-]
-DEFAULT_GRAFANA_VARIABLE_MAPPINGS = [
-    {'trace_tag': 'service.name', 'variable': 'workload'},
-    {'trace_tag': 'service.namespace', 'variable': 'namespace'},
-]
-
-
-class ObservabilityDataSourceLinkSerializer(serializers.ModelSerializer):
-    log_datasource_name = serializers.CharField(source='log_datasource.name', read_only=True)
-    log_provider = serializers.CharField(source='log_datasource.provider', read_only=True)
-    tracing_datasource_name = serializers.CharField(source='tracing_datasource.name', read_only=True)
-    tracing_provider = serializers.CharField(source='tracing_datasource.provider', read_only=True)
-
-    class Meta:
-        model = ObservabilityDataSourceLink
-        fields = '__all__'
-
-    def validate_trace_id_fields(self, value):
-        if value in (None, ''):
-            return DEFAULT_TRACE_ID_FIELDS
-        if not isinstance(value, list):
-            raise serializers.ValidationError('trace_id_fields 必须是数组')
-        return [str(item).strip() for item in value if str(item).strip()]
-
-    def validate_log_label_mappings(self, value):
-        if value in (None, ''):
-            return DEFAULT_LOG_LABEL_MAPPINGS
-        if not isinstance(value, list):
-            raise serializers.ValidationError('log_label_mappings 必须是数组')
-        mappings = []
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            trace_tag = str(item.get('trace_tag') or '').strip()
-            log_label = str(item.get('log_label') or '').strip()
-            if trace_tag and log_label:
-                mappings.append({'trace_tag': trace_tag, 'log_label': log_label})
-        return mappings
-
-    def validate_grafana_variable_mappings(self, value):
-        if value in (None, ''):
-            return DEFAULT_GRAFANA_VARIABLE_MAPPINGS
-        if not isinstance(value, list):
-            raise serializers.ValidationError('grafana_variable_mappings 必须是数组')
-        mappings = []
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            trace_tag = str(item.get('trace_tag') or '').strip()
-            variable = str(item.get('variable') or '').strip()
-            if trace_tag and variable:
-                mappings.append({'trace_tag': trace_tag, 'variable': variable})
-        return mappings
-
-    def validate(self, attrs):
-        log_datasource = attrs.get('log_datasource') or getattr(self.instance, 'log_datasource', None)
-        tracing_datasource = attrs.get('tracing_datasource') or getattr(self.instance, 'tracing_datasource', None)
-        if log_datasource and log_datasource.provider != 'loki':
-            raise serializers.ValidationError({'log_datasource': '当前关联跳转仅支持 Loki 日志数据源'})
-        if tracing_datasource and tracing_datasource.provider != 'tempo':
-            raise serializers.ValidationError({'tracing_datasource': '当前默认关联模板面向 Tempo 链路数据源'})
-
-        attrs.setdefault('trace_id_fields', DEFAULT_TRACE_ID_FIELDS)
-        attrs.setdefault('trace_id_regex', DEFAULT_TRACE_ID_REGEX)
-        attrs.setdefault('log_query_template', DEFAULT_LOG_QUERY_TEMPLATE)
-        attrs.setdefault('log_label_mappings', DEFAULT_LOG_LABEL_MAPPINGS)
-        attrs.setdefault('grafana_variable_mappings', DEFAULT_GRAFANA_VARIABLE_MAPPINGS)
-        return attrs
-
-    def _sync_default(self, instance):
-        if instance.is_default:
-            ObservabilityDataSourceLink.objects.filter(is_default=True).exclude(pk=instance.pk).update(
-                is_default=False
-            )
-
-    def create(self, validated_data):
-        instance = super().create(validated_data)
-        self._sync_default(instance)
-        return instance
-
-    def update(self, instance, validated_data):
-        instance = super().update(instance, validated_data)
-        self._sync_default(instance)
-        return instance
-
-
-class GrafanaSettingSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = GrafanaSetting
-        fields = '__all__'
-        read_only_fields = ['name', 'updated_by', 'created_at', 'updated_at']
-
-    def validate_dashboards(self, value):
-        if value in (None, ''):
-            return []
-        if not isinstance(value, list):
-            raise serializers.ValidationError('dashboards 必须为数组')
-        normalized = []
-        for item in value:
-            if not isinstance(item, dict):
-                raise serializers.ValidationError('dashboards 中的每一项都必须为对象')
-            normalized.append(item)
-        return normalized
-
-    def validate_folders(self, value):
-        if value in (None, ''):
-            return []
-        if not isinstance(value, list):
-            raise serializers.ValidationError('folders 必须为数组')
-        normalized = []
-        for item in value:
-            if not isinstance(item, dict):
-                raise serializers.ValidationError('folders 中的每一项都必须为对象')
-            normalized.append(item)
-        return normalized
-
-
-class K8sClusterSerializer(serializers.ModelSerializer):
-    status_display = serializers.CharField(source='get_status_display', read_only=True)
-
-    class Meta:
-        model = K8sCluster
-        fields = '__all__'
-        extra_kwargs = {
-            'kubeconfig': {'write_only': True},
-        }
-
-
-class DockerHostSerializer(serializers.ModelSerializer):
-    status_display = serializers.CharField(source='get_status_display', read_only=True)
-
-    class Meta:
-        model = DockerHost
-        fields = '__all__'
-        extra_kwargs = {
-            'ssh_password': {'write_only': True},
-        }
 
 
 class NginxEnvironmentSerializer(serializers.ModelSerializer):

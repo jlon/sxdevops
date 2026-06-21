@@ -234,7 +234,7 @@ class HostTaskApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
             ssh_user='root',
             ssh_password='secret',
         )

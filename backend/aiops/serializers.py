@@ -1,7 +1,5 @@
 from rest_framework import serializers
 
-from sxdevops.features import is_system_posture_enabled
-
 from .models import (
     AIOpsAgentConfig,
     AIOpsChatMessage,
@@ -164,7 +162,7 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'aliases', 'description', 'event_environments', 'grafana_folder_keys',
             'metric_datasource_ids', 'log_datasource_ids', 'tracing_datasource_ids', 'observability_link_ids', 'alert_environments',
-            'posture_environments', 'k8s_cluster_ids', 'k8s_namespaces', 'docker_host_ids',
+            'k8s_cluster_ids', 'k8s_namespaces', 'docker_host_ids',
             'task_resource_environment_ids',
             'is_default', 'is_enabled', 'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
@@ -177,8 +175,6 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        if not is_system_posture_enabled():
-            attrs['posture_environments'] = []
         list_fields = [
             'aliases',
             'event_environments',
@@ -188,7 +184,6 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
             'tracing_datasource_ids',
             'observability_link_ids',
             'alert_environments',
-            'posture_environments',
             'k8s_cluster_ids',
             'docker_host_ids',
             'task_resource_environment_ids',
@@ -241,13 +236,11 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
 
         instance = self.instance
         association_fields = [field for field in list_fields if field != 'aliases']
-        if not is_system_posture_enabled():
-            association_fields = [field for field in association_fields if field != 'posture_environments']
         has_association = any(
             attrs.get(field, getattr(instance, field, [])) for field in association_fields
         )
         if not has_association:
-            raise serializers.ValidationError('请至少选择一个事件中心、看板目录、日志、链路、告警、系统态势、K8s 集群、Docker 环境或任务资源底座来源')
+            raise serializers.ValidationError('??????????????????????????K8s ???Docker ???????????')
         is_default = attrs.get('is_default', getattr(instance, 'is_default', False))
         is_enabled = attrs.get('is_enabled', getattr(instance, 'is_enabled', True))
         if is_default and not is_enabled:

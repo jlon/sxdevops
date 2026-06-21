@@ -141,7 +141,7 @@ DEMO_PODS = [
 ]
 
 DEMO_SERVICES = [
-    {'name': 'nginx-service', 'namespace': 'production', 'type': 'LoadBalancer', 'cluster_ip': '10.96.10.50', 'external_ip': '47.95.15.100', 'ports': '80→30080/TCP, 443→30443/TCP', 'created': '2026-03-05T09:00:00+08:00'},
+    {'name': 'nginx-service', 'namespace': 'production', 'type': 'LoadBalancer', 'cluster_ip': '10.96.10.50', 'external_ip': '203.0.113.100', 'ports': '80→30080/TCP, 443→30443/TCP', 'created': '2026-03-05T09:00:00+08:00'},
     {'name': 'api-service', 'namespace': 'production', 'type': 'ClusterIP', 'cluster_ip': '10.96.20.100', 'external_ip': '', 'ports': '8080/TCP', 'created': '2026-03-04T11:30:00+08:00'},
     {'name': 'redis-master', 'namespace': 'production', 'type': 'ClusterIP', 'cluster_ip': '10.96.30.10', 'external_ip': '', 'ports': '6379/TCP', 'created': '2026-02-20T08:00:00+08:00'},
     {'name': 'mysql-primary', 'namespace': 'production', 'type': 'ClusterIP', 'cluster_ip': '10.96.30.20', 'external_ip': '', 'ports': '3306/TCP', 'created': '2026-02-18T09:00:00+08:00'},
@@ -191,9 +191,9 @@ DEMO_CRONJOBS = [
 ]
 
 DEMO_INGRESSES = [
-    {'name': 'web-ingress', 'namespace': 'production', 'class': 'nginx', 'hosts': 'app.example.com', 'address': '47.95.15.100', 'ports': '80, 443', 'created': '2026-03-05T09:00:00+08:00'},
-    {'name': 'api-ingress', 'namespace': 'production', 'class': 'nginx', 'hosts': 'api.example.com', 'address': '47.95.15.100', 'ports': '80, 443', 'created': '2026-03-04T11:30:00+08:00'},
-    {'name': 'grafana-ingress', 'namespace': 'monitoring', 'class': 'nginx', 'hosts': 'grafana.example.com', 'address': '47.95.15.100', 'ports': '80, 443', 'created': '2026-02-01T10:35:00+08:00'},
+    {'name': 'web-ingress', 'namespace': 'production', 'class': 'nginx', 'hosts': 'app.example.com', 'address': '203.0.113.100', 'ports': '80, 443', 'created': '2026-03-05T09:00:00+08:00'},
+    {'name': 'api-ingress', 'namespace': 'production', 'class': 'nginx', 'hosts': 'api.example.com', 'address': '203.0.113.100', 'ports': '80, 443', 'created': '2026-03-04T11:30:00+08:00'},
+    {'name': 'grafana-ingress', 'namespace': 'monitoring', 'class': 'nginx', 'hosts': 'grafana.example.com', 'address': '203.0.113.100', 'ports': '80, 443', 'created': '2026-02-01T10:35:00+08:00'},
 ]
 
 DEMO_PVS = [

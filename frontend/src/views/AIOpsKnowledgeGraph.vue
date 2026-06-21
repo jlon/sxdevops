@@ -270,8 +270,8 @@
             <li><strong>链路追踪优先：</strong>如果当前图谱环境配置的 Tracing 数据源能返回服务清单，图谱以 Tracing 服务作为主服务列表。</li>
             <li><strong>容器基础设施补充：</strong>K8s / Docker 不再抢占服务来源，主要用于补充服务运行在哪个集群、命名空间、主机或容器环境，并可通过工作负载标签补充系统归属。</li>
             <li><strong>Tracing 无数据时回退：</strong>当 Tracing 没有服务清单时，才从 K8s Deployment / StatefulSet / DaemonSet 和 Docker 容器中识别服务。</li>
-            <li><strong>中间件 / DB 自动识别：</strong>图谱会从 Tracing Span 的组件与 Peer、K8s / Docker 运行对象、系统态势依赖中识别 Redis、MySQL、PostgreSQL、Kafka 等运行组件，并统一放入“中间件 / DB”泳道；“服务依赖”连线只使用 Tracing Span 和 K8s ConfigMap 中的显式线索。</li>
-            <li><strong>事件与可观测性补证据：</strong>事件中心、告警、日志、系统态势用于补充关联能力、业务系统归属和证据，不作为有 Tracing 时的主服务来源。</li>
+            <li><strong>中间件 / DB 自动识别：</strong>图谱会从 Tracing Span 的组件与 Peer、K8s / Docker 运行对象中识别 Redis、MySQL、PostgreSQL、Kafka 等运行组件，并统一放入“中间件 / DB”泳道；“服务依赖”连线只使用 Tracing Span 和 K8s ConfigMap 中的显式线索。</li>
+            <li><strong>事件与可观测性补证据：</strong>事件中心、告警和日志用于补充关联能力、业务系统归属和证据，不作为有 Tracing 时的主服务来源。</li>
           </ol>
         </section>
         <section>
@@ -280,7 +280,7 @@
         </section>
         <section>
           <h3>服务所属系统</h3>
-          <p>当前系统归属只从可观测性、事件中心和容器基础设施推断，不再依赖 CMDB。可用证据包括系统态势服务清单、事件中心系统、告警系统、Tracing service 标签、平台发布记录和 K8s / Docker 工作负载标签；如果同名服务已有明确系统归属，就不会再挂到“未归属系统”。</p>
+          <p>当前系统归属只从可观测性、事件中心和容器基础设施推断，不再依赖 CMDB。可用证据包括事件中心系统、告警系统、Tracing service 标签、平台发布记录和 K8s / Docker 工作负载标签；如果同名服务已有明确系统归属，就不会再挂到“未归属系统”。</p>
           <p>如果同一个服务确实属于多个系统，图谱会保留多个明确系统下的服务节点；只有完全没有系统证据时才归入“未归属系统”。后续建议优先补充 Tracing/告警标签、事件中心系统、发布记录系统或容器基础设施 label（如 <code>app.kubernetes.io/part-of</code>、<code>business_line</code>、<code>system</code>、<code>service.namespace</code>）。</p>
         </section>
       </div>
@@ -564,7 +564,6 @@ const categoryIndex = {
   tracing: 0,
   dashboard: 0,
   alert: 0,
-  posture: 0,
   internal_event: 0,
   system: 2,
   service: 3,
@@ -580,7 +579,6 @@ const palette = {
   tracing: '#8b5cf6',
   dashboard: '#10b981',
   alert: '#ef4444',
-  posture: '#14b8a6',
   internal_event: '#64748b',
   summary: '#94a3b8',
   environment: '#2563eb',
@@ -610,7 +608,7 @@ const laneDefinitions = [
   { kind: 'system', label: '系统' },
   { kind: 'service', label: '服务' },
   { kind: 'runtime_component', label: '中间件 / DB' },
-  { kind: 'observability', label: '可观测性', kinds: ['datasource', 'dashboard', 'logs', 'tracing', 'posture'] },
+  { kind: 'observability', label: '可观测性', kinds: ['datasource', 'dashboard', 'logs', 'tracing'] },
   { kind: 'alert', label: '告警' },
   { kind: 'event_source', label: '事件源' },
   { kind: 'internal_event', label: '内部事件' },
@@ -634,7 +632,6 @@ function capabilityLabel(value) {
     tracing: '链路',
     dashboards: '看板',
     alerts: '告警',
-    posture: '系统态势',
     internal_events: '内部事件',
     external_events: '外部事件',
   }[value] || value
@@ -647,7 +644,6 @@ function nodeKindLabel(value) {
     tracing: '链路',
     dashboard: '看板',
     alert: '告警',
-    posture: '系统态势',
     internal_event: '内部事件',
     external_event: '外部事件',
     environment: '环境',
@@ -708,9 +704,8 @@ function datasourceBadgeType(node) {
 }
 
 function nodeTypeBadge(node) {
-  if (!['datasource', 'dashboard', 'logs', 'tracing', 'posture', 'infrastructure', 'runtime_component'].includes(node.kind)) return ''
+  if (!['datasource', 'dashboard', 'logs', 'tracing', 'infrastructure', 'runtime_component'].includes(node.kind)) return ''
   const category = String(node.category || '')
-  if (node.kind === 'posture') return '系统态势'
   if (node.kind === 'infrastructure') {
     if (node.infra_type === 'k8s') return 'K8s'
     if (node.infra_type === 'k8s_host') return '主机'
@@ -740,7 +735,6 @@ function laneNodeSortWeight(node) {
     return 40
   }
   if (node.kind === 'dashboard') return 50
-  if (node.kind === 'posture') return 60
   if (node.kind === 'logs') return 70
   if (node.kind === 'tracing') return 80
   if (node.kind !== 'infrastructure') return 100

@@ -11,10 +11,9 @@ from rest_framework.response import Response
 
 from eventwall.models import EventRecord
 from eventwall.services import record_event
-from ops.models import Alert, DockerHost, GrafanaSetting, K8sCluster, LogDataSource, MetricDataSource, ObservabilityDataSourceLink, SystemPostureEnvironment, TaskResource, TaskResourceGroup, TracingDataSource
+from ops.models import Alert, DockerHost, GrafanaSetting, K8sCluster, LogDataSource, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
-from sxdevops.features import is_system_posture_enabled
 
 from .models import (
     AIOpsChatMessage,
@@ -650,13 +649,6 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             .distinct()
             .order_by('environment')[:100]
         )
-        posture_environments = [
-            {
-                'key': item.key,
-                'name': item.name,
-            }
-            for item in SystemPostureEnvironment.objects.filter(is_enabled=True).order_by('sort_order', 'id')
-        ] if is_system_posture_enabled() else []
         log_datasources = [
             {
                 'id': item.id,
@@ -783,7 +775,6 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             'tracing_datasources': tracing_datasources,
             'observability_links': observability_links,
             'alert_environments': [_clean_catalog_value(item) for item in alert_environments if _clean_catalog_value(item)],
-            'posture_environments': posture_environments,
             'k8s_clusters': k8s_clusters,
             'docker_hosts': docker_hosts,
             'task_resource_environments': task_resource_environments,

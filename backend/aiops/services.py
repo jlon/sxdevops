@@ -42,8 +42,6 @@ from ops.models import (
     LogEntry,
     MetricDataSource,
     ObservabilityDataSourceLink,
-    SystemPostureSLAHistory,
-    SystemPostureSystem,
     TaskResource,
     TaskResourceGroup,
     TracingDataSource,
@@ -61,7 +59,6 @@ from ops.log_views import _merge_config as merge_log_config
 from ops.log_views import _run_query as run_log_provider_query
 from ops.observability_views import execute_dashboard_panel_queries, execute_promql_query
 from rbac.services import is_demo_account, user_has_permissions
-from sxdevops.features import filter_feature_tools, is_system_posture_enabled, tool_feature_enabled
 
 from .knowledge_graph import build_knowledge_graph, resolve_knowledge_environment, resolve_knowledge_environments_from_text
 from .action_handlers import (
@@ -234,13 +231,6 @@ ALERT_QUERY_NOISE_PATTERNS = [
     '交易系统', '交易',
 ]
 
-POSTURE_QUERY_NOISE_PATTERNS = [
-    '系统态势', '态势', 'SLA', 'sla', 'SLO', 'slo', '健康度', '健康', '可用性', '错误率', '延迟',
-    '风险', '状态', '怎么样', '如何', '是否', '有没有', '是多少', '看下', '看一下', '查下', '查一下',
-    '查询', '查看', '分析', '当前', '最近', '问题', '故障',
-    '今天', '今日', '这个', '环境', '一下',
-]
-
 DANGEROUS_COMMAND_PATTERNS = [
     'rm -rf',
     'shutdown',
@@ -309,7 +299,7 @@ BUILTIN_MCP_SERVERS = [
         'name': '可观测性 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询告警、日志、链路与最近变更。',
-        'tool_whitelist': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_system_posture', 'query_observability', 'query_logs', 'query_traces', 'query_dashboard_metadata', 'query_grafana_promql', 'query_dashboard_panel_data', 'query_observability_links'],
+        'tool_whitelist': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_observability', 'query_logs', 'query_traces', 'query_dashboard_metadata', 'query_grafana_promql', 'query_dashboard_panel_data', 'query_observability_links'],
     },
     {
         'name': '工单系统 MCP',
@@ -450,7 +440,7 @@ BUILTIN_SKILLS = [
             '最近一小时 checkout 服务异常是不是告警引起的',
         ],
         'builtin_tools': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_knowledge_graph'],
-        'recommended_tools': ['query_system_posture', 'query_logs', 'query_traces', 'query_recent_changes'],
+        'recommended_tools': ['query_logs', 'query_traces', 'query_recent_changes'],
         'max_iterations': 4,
         'risk_level': AIOpsSkill.RISK_READ_ONLY,
         'output_contract': {
@@ -465,7 +455,7 @@ BUILTIN_SKILLS = [
 1. 先确认知识图谱环境，提取系统、服务、依赖和上下游范围。
 2. 查询当前告警和历史告警，优先关注级别、状态、开始时间、持续时长、确认状态和指纹。
 3. 如果有根因接口，优先读取根因候选和关联证据。
-4. 按影响对象追加系统态势、日志、链路和最近变更证据。
+4. 按影响对象追加日志、链路、事件和最近变更证据。
 5. 没有证据时要明确说明“暂未发现平台证据”，不能编造根因。
 
 判断要求：
@@ -491,7 +481,7 @@ BUILTIN_SKILLS = [
             'CrashLoopBackOff 需要看哪些证据',
         ],
         'builtin_tools': ['query_k8s_cluster_summary', 'query_k8s_resources', 'query_logs', 'query_knowledge_graph'],
-        'recommended_tools': ['query_alerts', 'query_system_posture', 'query_recent_changes'],
+        'recommended_tools': ['query_alerts', 'query_recent_changes'],
         'max_iterations': 5,
         'risk_level': AIOpsSkill.RISK_READ_ONLY,
         'output_contract': {
@@ -1059,7 +1049,7 @@ BUILTIN_ACTION_REGISTRY = [
         'agent_mode': 'react',
         'required_context': ['environment'],
         'allowed_tools': [
-            'query_system_posture',
+            
             'query_alerts',
             'query_alert_metrics',
             'query_grafana_promql',
@@ -1495,7 +1485,7 @@ AGENT_ORCHESTRATION_PROFILES = [
         'code': 'diagnostic_agent',
         'name': '诊断 Agent',
         'mission': '识别故障现象、影响对象和初始假设。',
-        'preferred_tools': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_system_posture', 'query_k8s_cluster_summary'],
+        'preferred_tools': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_k8s_cluster_summary'],
     },
     {
         'code': 'evidence_agent',
@@ -1963,7 +1953,7 @@ def build_runbook_draft_from_payload(payload, user=None, source_task=None, sourc
             '',
             '## 排查步骤',
             '1. 确认告警状态、影响范围和时间窗口。',
-            '2. 查询日志、链路、系统态势和最近变更。',
+            '2. 查询日志、链路和最近变更。',
             '3. 输出处置建议、风险和回滚条件。',
         ])
     evidence = payload.get('evidence') if isinstance(payload.get('evidence'), list) else []
@@ -3115,19 +3105,6 @@ def _clean_alert_query_tokens(text):
     return deduped[:8]
 
 
-def _clean_posture_query_tokens(text):
-    cleaned = text or ''
-    for pattern in POSTURE_QUERY_NOISE_PATTERNS:
-        if pattern:
-            cleaned = cleaned.replace(pattern, ' ')
-    tokens = _clean_tokens(cleaned)
-    deduped = []
-    for token in tokens:
-        if token not in deduped:
-            deduped.append(token)
-    return deduped[:8]
-
-
 def _normalize_log_level_filter(value):
     text = str(value or '').strip().lower()
     if text in {'error', 'err', 'fatal', 'critical', 'crit', '错误', '异常', '失败'}:
@@ -3414,7 +3391,6 @@ def _environment_scope_terms(knowledge_environment=None, analysis_scope=None):
             *(knowledge_environment.get('aliases') or []),
             *(knowledge_environment.get('alert_environments') or []),
             *(knowledge_environment.get('event_environments') or []),
-            *((knowledge_environment.get('posture_environments') or []) if is_system_posture_enabled() else []),
         ])
     if analysis_scope:
         terms.append(analysis_scope.get('environment'))
@@ -3460,53 +3436,6 @@ def _detect_observability_service(text, analysis_scope=None, knowledge_environme
     if service in {'订单服务', '订单'} and any(candidate in filtered for candidate in ['order-service', 'order']):
         return 'order-service'
     return service
-
-
-def _posture_system_match_score(system, candidates):
-    if not candidates:
-        return 0
-    fields = [
-        system.name,
-        system.summary,
-        system.domain,
-        system.owner,
-        system.keywords,
-    ]
-    for collection_name in ['service_specs', 'dependencies']:
-        collection = getattr(system, collection_name, None)
-        if isinstance(collection, list):
-            for item in collection:
-                if isinstance(item, dict):
-                    fields.extend([item.get('id'), item.get('name'), item.get('kind'), item.get('role')])
-                else:
-                    fields.append(item)
-    haystack = ' '.join(str(item or '') for item in fields).lower().replace('_', '-')
-    score = 0
-    for candidate in candidates:
-        normalized = _normalize_candidate_text(candidate)
-        if not normalized:
-            continue
-        if normalized in haystack:
-            score += 5 if len(normalized) >= 4 else 3
-            continue
-        if re.search(r'[\u4e00-\u9fff]', candidate):
-            compact = str(candidate).replace('服务', '').replace('系统', '').strip()
-            if compact and compact.lower() in haystack:
-                score += 3
-    return score
-
-
-def _fallback_match_posture_systems(queryset, query, limit, analysis_scope=None, knowledge_environment=None):
-    candidates = _service_candidates_from_text(query, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
-    if not candidates:
-        return []
-    scored = []
-    for system in queryset[: max(limit * 8, 32)]:
-        score = _posture_system_match_score(system, candidates)
-        if score > 0:
-            scored.append((score, system.sort_order, system.name, system))
-    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return [item[3] for item in scored[:limit]]
 
 
 def _parse_json_object_from_text(text):
@@ -3907,7 +3836,6 @@ def _resolve_chat_environment(session, question):
                     *(resolved.get('aliases') or []),
                     *(resolved.get('alert_environments') or []),
                     *(resolved.get('event_environments') or []),
-                    *((resolved.get('posture_environments') or []) if is_system_posture_enabled() else []),
                 ]
                 alert_values = [alert.environment, alert.cluster, alert.namespace]
                 if any(value and value in candidates for value in alert_values):
@@ -4023,7 +3951,6 @@ def _build_analysis_scope(knowledge_environment):
         'edge_count': len(edges),
         'event_environments': knowledge_environment.get('event_environments') or [],
         'alert_environments': knowledge_environment.get('alert_environments') or [],
-        'posture_environments': (knowledge_environment.get('posture_environments') or []) if is_system_posture_enabled() else [],
         'metric_datasource_ids': knowledge_environment.get('metric_datasource_ids') or [],
         'log_datasource_ids': knowledge_environment.get('log_datasource_ids') or [],
         'tracing_datasource_ids': knowledge_environment.get('tracing_datasource_ids') or [],
@@ -5464,7 +5391,6 @@ def _match_k8s_items(alert, items):
 def _infer_alert_root_cause(
     alert,
     k8s_result=None,
-    posture_result=None,
     event_result=None,
     log_result=None,
     trace_result=None,
@@ -5519,23 +5445,6 @@ def _infer_alert_root_cause(
             elif resource_type == 'nodes' and str(item.get('status') or '').lower() != 'ready':
                 add_evidence('K8s 资源', f"节点 {name} 状态 {item.get('status') or '-'}")
                 add_cause('K8s 资源', f'节点 {name} 非 Ready，需排查节点压力、网络、kubelet 或运行时状态')
-
-    if posture_result:
-        summary = posture_result.get('summary') or {}
-        critical = _safe_int(summary.get('critical'))
-        warning = _safe_int(summary.get('warning'))
-        systems = posture_result.get('systems') or []
-        if critical or warning:
-            add_evidence('系统态势', f'严重系统 {critical} 个，风险系统 {warning} 个')
-            add_cause('系统态势', '该环境系统态势已出现健康或 SLA 风险，告警可能已影响系统级目标')
-        for system in systems[:3]:
-            system_name = _value_from_record(system, 'name') or '-'
-            raw_core_metric = _value_from_record(system, 'core_metric', {})
-            core_metric = raw_core_metric if isinstance(raw_core_metric, dict) else {}
-            sla = core_metric.get('value')
-            target = core_metric.get('target')
-            if sla is not None or target is not None:
-                add_evidence('系统态势', f"{system_name} SLA {sla if sla is not None else '--'}，目标 {target if target is not None else '--'}")
 
     if event_result:
         events = event_result.get('events') or []
@@ -5601,7 +5510,7 @@ def _infer_alert_root_cause(
     if not evidence:
         _append_unique(
             pending,
-            '证据不足：当前只能确认告警触发对象和症状，尚未发现关联 K8s、系统态势、事件、日志、链路或指标证据，不能直接给出根因。',
+            '证据不足：当前只能确认告警触发对象和症状，尚未发现关联 K8s、事件、日志、链路或指标证据，不能直接给出根因。',
             limit=10,
         )
     if not causes:
@@ -5678,7 +5587,6 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         except Exception as exc:
             k8s_result = {'summary': {'error': str(exc)[:200]}, 'sections': [{'title': 'K8s 关联快照', 'items': [str(exc)[:200]]}]}
 
-    posture_result = query_system_posture(session, user_message, user, query=scoped_query, limit=3) if is_system_posture_enabled() else None
     event_result = query_events(session, user_message, user, query=scoped_query, date_filter='', limit=5)
     log_result = None
     trace_result = None
@@ -5720,7 +5628,6 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
     analysis = _infer_alert_root_cause(
         alert,
         k8s_result=k8s_result,
-        posture_result=posture_result,
         event_result=event_result,
         log_result=log_result,
         trace_result=trace_result,
@@ -5741,7 +5648,7 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         {'title': '可能原因（基于证据）', 'items': analysis.get('causes') or ['证据不足，不能直接给出根因。']},
         {'title': '证据不足/待确认项', 'items': analysis.get('pending') or ['当前关联证据已列出，仍需结合现场处置结果最终确认。']},
     ]
-    for payload in [k8s_result, posture_result, event_result, log_result, trace_result, metric_result]:
+    for payload in [k8s_result, event_result, log_result, trace_result, metric_result]:
         if payload and payload.get('sections'):
             sections.extend(payload.get('sections')[:2])
     sections.append({
@@ -5749,13 +5656,12 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         'items': [
             '先按关联证据处理已确认的异常，不要只根据告警标题定性根因。',
             '如果证据不足，补查同环境的 K8s 事件、应用日志、链路 Trace 和告警指标趋势。',
-            '处置前确认资源名、namespace、集群、系统态势环境映射是否与本告警一致。',
+            '处置前确认资源名、namespace、集群和关联环境是否与本告警一致。',
         ],
     })
     citations = _dedupe_citations(
         [{'title': '告警中心', 'path': '/alerts'}]
         + (k8s_result.get('citations', []) if k8s_result else [])
-        + posture_result.get('citations', [])
         + event_result.get('citations', [])
         + (log_result.get('citations', []) if log_result else [])
         + (trace_result.get('citations', []) if trace_result else [])
@@ -5778,100 +5684,12 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
         'citations': citations,
         'alert': alert_fact,
         'k8s': k8s_result,
-        'posture': posture_result,
         'events': event_result,
         'logs': log_result,
         'traces': trace_result,
         'metrics': metric_result,
         'analysis': analysis,
     }
-
-def query_system_posture(session, user_message, user, query='', limit=6, analysis_scope=None):
-    started_at = time.time()
-    if not is_system_posture_enabled():
-        return {'sections': [], 'citations': [], 'summary': {'disabled': True}, 'systems': []}
-    knowledge_environment = _resolve_knowledge_environment_for_query(query)
-    invocation = _create_tool_invocation(
-        session,
-        user_message,
-        'query_system_posture',
-        {
-            'query': query,
-            'knowledge_environment': knowledge_environment.get('name') if knowledge_environment else '',
-            'limit': limit,
-        },
-    )
-    if not user_has_permissions(user, ['ops.observability.system_posture.view']):
-        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
-        return {'sections': [], 'citations': []}
-
-    queryset = SystemPostureSystem.objects.filter(is_enabled=True).order_by('sort_order', 'name')
-    source_environments = []
-    if knowledge_environment:
-        configured_posture_environments = knowledge_environment.get('posture_environments') or []
-        source_environments = list(dict.fromkeys(
-            configured_posture_environments or [
-                knowledge_environment.get('name'),
-                *(knowledge_environment.get('alert_environments') or []),
-                *(knowledge_environment.get('event_environments') or []),
-            ]
-        ))
-        source_environments = [item for item in source_environments if item]
-        queryset = queryset.filter(environment__in=source_environments) if source_environments else SystemPostureSystem.objects.none()
-    base_queryset = queryset
-    tokens = _clean_posture_query_tokens(_strip_knowledge_environment_name(query, knowledge_environment))
-    if tokens:
-        queryset = _queryset_search(queryset, ['name', 'summary', 'domain', 'owner', 'keywords'], tokens)
-    systems = list(queryset[:limit])
-    if not systems and tokens:
-        systems = _fallback_match_posture_systems(
-            base_queryset,
-            query,
-            limit,
-            analysis_scope=analysis_scope,
-            knowledge_environment=knowledge_environment,
-        )
-    system_names = [item.name for item in systems]
-    histories = list(
-        SystemPostureSLAHistory.objects
-        .filter(system_name__in=system_names)
-        .order_by('system_name', '-day')[: max(limit * 2, 8)]
-    ) if system_names else []
-    latest_history = {}
-    for history in histories:
-        latest_history.setdefault(history.system_name, history)
-
-    items = []
-    for system in systems:
-        history = latest_history.get(system.name)
-        core_metric = system.core_metric if isinstance(system.core_metric, dict) else {}
-        sla_value = history.sla_value if history else core_metric.get('value')
-        sla_target = history.sla_target if history else core_metric.get('target')
-        health_score = history.health_score if history else system.health_score
-        metric_label = history.metric_label if history else (core_metric.get('label') or 'SLA')
-        metric_unit = history.metric_unit if history else (core_metric.get('unit') or '%')
-        items.append(
-            f"{system.name} / {system.environment} / {system.get_base_status_display()} / 健康度 {health_score if health_score is not None else '--'} / {metric_label} {sla_value if sla_value is not None else '--'}{metric_unit} / 目标 {sla_target if sla_target is not None else '--'}{metric_unit}"
-        )
-
-    sections = [{
-        'title': '系统态势与 SLA',
-        'items': items or ['当前环境未匹配到系统态势数据。'],
-    }]
-    summary = {
-        'count': len(systems),
-        'critical': sum(1 for item in systems if item.base_status in {SystemPostureSystem.STATUS_CRITICAL, SystemPostureSystem.STATUS_OFFLINE}),
-        'warning': sum(1 for item in systems if item.base_status == SystemPostureSystem.STATUS_WARNING),
-        'environments': source_environments,
-    }
-    _finish_tool_invocation(invocation, summary, started_at, success=True)
-    return {
-        'summary': summary,
-        'sections': sections,
-        'citations': [{'title': '系统态势', 'path': '/observability/system-posture'}],
-        'systems': systems,
-    }
-
 
 def query_dashboard_metadata(session, user_message, user, query='', limit=6):
     started_at = time.time()
@@ -6650,15 +6468,6 @@ def _is_analysis_or_action_question(question):
     return any(keyword in lowered for keyword in [
         '分析', '排查', '根因', '为什么', '原因', '怎么处理', '如何处理', '修复', '处置',
         '生成', '创建', '新建', '执行', '重启', '扩容', '缩容', '删除',
-    ])
-
-
-def _is_direct_posture_question(question):
-    lowered = str(question or '').lower()
-    if _is_analysis_or_action_question(question):
-        return False
-    return any(keyword in lowered for keyword in [
-        '系统态势', '态势', 'sla', 'slo', '健康度', '健康', '可用性', '错误率', '延迟',
     ])
 
 
@@ -8024,7 +7833,7 @@ def _direct_alert_list_fastpath(session, user_message, user, question, scoped_qu
 
 def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
     emit(
-        step={'title': 'K8s 异常证据收集', 'detail': '同时收集工作负载、集群摘要、告警、事件和系统态势。', 'status': PROCESSING_STATUS_COMPLETED},
+        step={'title': 'K8s 异常证据收集', 'detail': '同时收集工作负载、集群摘要、告警和事件。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在收集 K8s 异常证据',
     )
     sections, citations, tool_names, collected = [], [], [], []
@@ -8034,8 +7843,6 @@ def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_que
     environment_query = knowledge_environment.get('name') or scoped_question
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': environment_query, 'status': Alert.STATUS_ACTIVE, 'limit': 8}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': environment_query, 'date_filter': 'last_hour' if '一小时' in question else '', 'limit': 8}, emit=emit)
-    if is_system_posture_enabled():
-        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 4, 'analysis_scope': analysis_scope}, emit=emit)
     return _build_evidence_bundle_result(
         question=question,
         scoped_question=scoped_question,
@@ -8054,7 +7861,7 @@ def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_que
 
 def _run_slo_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
     emit(
-        step={'title': 'SLO 证据收集', 'detail': '读取系统态势、告警、指标面板、链路和知识图谱范围。', 'status': PROCESSING_STATUS_COMPLETED},
+        step={'title': 'SLO 证据收集', 'detail': '读取告警、指标面板、链路和知识图谱范围。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在分析 SLO 与服务健康',
     )
     sections, citations, tool_names, collected = [], [], [], []
@@ -8067,8 +7874,6 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
         service,
         scoped_question,
     ] if item).strip()
-    if is_system_posture_enabled():
-        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 8, 'analysis_scope': analysis_scope}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': health_query or scoped_question, 'status': '', 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_dashboard_panel_data', {'query': health_query or scoped_question, 'duration_minutes': duration_minutes, 'limit': 3}, emit=emit)
     if service:
@@ -8117,7 +7922,7 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
 
 def _run_service_anomaly_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
     emit(
-        step={'title': '服务异常证据收集', 'detail': '同时收集告警、系统态势、日志、链路、事件和相关 K8s 工作负载。', 'status': PROCESSING_STATUS_COMPLETED},
+        step={'title': '服务异常证据收集', 'detail': '同时收集告警、日志、链路、事件和相关 K8s 工作负载。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在收集服务异常证据',
     )
     sections, citations, tool_names, collected = [], [], [], []
@@ -8133,8 +7938,6 @@ def _run_service_anomaly_evidence(session, user_message, user, question, scoped_
         'limit': 8,
     }
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', alert_args, emit=emit)
-    if is_system_posture_enabled():
-        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
     if service:
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_logs', {'query': evidence_query, 'service': service, 'levels': log_levels, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_traces', {'query': service, 'errors_only': True, 'duration_minutes': duration_minutes, 'limit': 8}, emit=emit)
@@ -8242,8 +8045,6 @@ def _run_alert_environment_analysis_evidence(session, user_message, user, questi
             'title': '指标查询结果',
             'items': ['未查询到可用于指标分析的告警。'],
         })
-    if is_system_posture_enabled():
-        _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_system_posture', {'query': scoped_question, 'limit': 6, 'analysis_scope': analysis_scope}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': alert_query, 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
     if service:
         log_levels = _detect_log_levels_filter(question) or ['error', 'warning']
@@ -9048,13 +8849,12 @@ def query_cmdb_items(session, user_message, user, query='', environment='', limi
 
 def query_observability(session, user_message, user, query='', limit=6):
     alert_payload = query_alerts(session, user_message, user, query=query, limit=limit)
-    posture_payload = query_system_posture(session, user_message, user, query=query, limit=limit) if is_system_posture_enabled() else {'sections': [], 'citations': []}
     link_payload = query_observability_links(session, user_message, user, query=query, limit=limit)
     log_payload = query_logs(session, user_message, user, query=query, limit=limit)
     trace_payload = query_traces(session, user_message, user, query=query, errors_only='异常' in (query or '') or '错误' in (query or ''), limit=limit)
     sections = []
     citations = []
-    for payload in [alert_payload, posture_payload, link_payload, log_payload, trace_payload]:
+    for payload in [alert_payload, link_payload, log_payload, trace_payload]:
         sections.extend(payload.get('sections', []))
         citations.extend(payload.get('citations', []))
     return {'sections': sections, 'citations': _dedupe_citations(citations)}
@@ -9646,20 +9446,6 @@ PLATFORM_MCP_TOOL_DEFINITIONS = [
         },
     },
     {
-        'name': 'sxdevops.query_system_posture',
-        'title': '查询系统态势',
-        'description': '查询业务系统健康态势和 SLA 快照。',
-        'permission': 'ops.observability.system_posture.view',
-        'handler': 'query_system_posture',
-        'input_schema': {
-            'type': 'object',
-            'properties': {
-                'query': {'type': 'string'},
-                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20},
-            },
-        },
-    },
-    {
         'name': 'sxdevops.query_recent_changes',
         'title': '查询最近变更',
         'description': '查询最近发布、工单和事件候选变更。',
@@ -9808,8 +9594,6 @@ def _invoke_platform_mcp_handler(handler_name, session, user, arguments):
             cluster_name=str(arguments.get('cluster_name') or '').strip(),
             limit=limit,
         )
-    if handler_name == 'query_system_posture':
-        return query_system_posture(session, None, user, query=query, limit=limit)
     if handler_name == 'query_recent_changes':
         return query_recent_changes(session, None, user, limit=limit)
     raise ValueError('MCP 工具处理器不存在')
@@ -14670,8 +14454,6 @@ def _tool_allowed(user, tool_name):
         return user_has_permissions(user, ['ops.alert.view'])
     if tool_name == 'query_alert_metrics':
         return user_has_permissions(user, ['ops.metric.query'])
-    if tool_name == 'query_system_posture':
-        return user_has_permissions(user, ['ops.observability.system_posture.view'])
     if tool_name == 'query_dashboard_metadata':
         return user_has_permissions(user, ['ops.grafana.view'])
     if tool_name == 'query_grafana_promql':
@@ -14865,10 +14647,6 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
         },
     }
 
-    catalog['query_system_posture'] = {
-        'description': '查询系统态势、SLA、健康度、可用性、错误率、延迟和组件状态。环境配置了系统态势时，分析类问题必须优先使用。',
-        'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
-    }
     catalog['query_dashboard_metadata'] = {
         'description': '查询平台已同步的 Grafana 看板元数据、目录、标题和环境关联。需要实时指标值时使用 query_grafana_promql 或 query_dashboard_panel_data。',
         'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
@@ -15182,7 +14960,7 @@ def _scope_tool_arguments(session, tool_name, arguments):
         'query_alerts',
         'query_alert_root_cause',
         'query_alert_metrics',
-        'query_system_posture',
+        
         'query_observability',
         'query_logs',
         'query_traces',
@@ -15348,16 +15126,6 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
             step=arguments.get('step') or ALERT_METRIC_DEFAULT_STEP_SECONDS,
             budget=arguments.get('budget') or ALERT_METRIC_QUERY_BUDGET,
             metric_datasource_id=arguments.get('metric_datasource_id') or '',
-        )
-        return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
-    if tool_name == 'query_system_posture':
-        result = query_system_posture(
-            session,
-            user_message,
-            user,
-            query=arguments.get('query', ''),
-            limit=arguments.get('limit') or 6,
-            analysis_scope=arguments.get('analysis_scope') if isinstance(arguments.get('analysis_scope'), dict) else None,
         )
         return {'tool_output': result, 'sections': result.get('sections', []), 'citations': result.get('citations', []), 'message_type': AIOpsChatMessage.TYPE_ANALYSIS}
     if tool_name == 'query_dashboard_metadata':
@@ -15751,7 +15519,6 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     if (
         selected_action
         and not _is_direct_container_question(question)
-        and (change_correlation_selected or not _is_direct_posture_question(question))
         and not _is_direct_promql_question(question)
         and (change_correlation_selected or not _is_direct_event_list_question(question))
     ):
@@ -15899,27 +15666,6 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             log_arguments,
             provider=formatter_provider,
             active_skills=active_skills,
-        )
-    if is_system_posture_enabled() and _is_direct_posture_question(question):
-        posture_action = _action_registry_item_by_code('slo.analysis', user=user)
-        return _direct_tool_fastpath(
-            session,
-            user_message,
-            user,
-            tool_name='query_system_posture',
-            arguments={'query': scoped_question, 'limit': 8},
-            question=question,
-            scoped_question=scoped_question,
-            knowledge_environment=knowledge_environment,
-            analysis_scope=analysis_scope,
-            execution_mode='direct_posture_fastpath',
-            provider=formatter_provider,
-            active_skills=active_skills,
-            emit=emit,
-            step_title='系统态势直接查询',
-            step_detail='命中 SLA/系统态势类事实问题，直接查询系统态势，LLM 只用于结果总结。',
-            step_text='正在直接查询系统态势',
-            selected_action=posture_action,
         )
     if _is_direct_promql_question(question):
         promql = _extract_promql_from_question(question)
@@ -16081,7 +15827,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     if _is_direct_log_question(question):
         messages.append({
             'role': 'user',
-            'content': '路由约束：本问题明确限定在日志中查询或分析，必须调用 query_logs；不要先调用 query_alerts 或 query_system_posture。若用户同时提到警告和错误，使用 levels=["warning","error"]。',
+            'content': '路由约束：本问题明确限定在日志中查询或分析，必须调用 query_logs；不要先调用 query_alerts。若用户同时提到警告和错误，使用 levels=["warning","error"]。',
         })
     if analysis_only:
         messages.append({

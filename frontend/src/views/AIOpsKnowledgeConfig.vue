@@ -93,7 +93,7 @@
         <div class="form-group-card">
           <div class="form-group-card__head">
             <strong>可观测性关联配置</strong>
-            <span>告警、系统态势、日志、链路、看板和跳转关联统一作为分析证据。</span>
+            <span>告警、日志、链路、看板和跳转关联统一作为分析证据。</span>
           </div>
           <el-form-item label="指标数据源">
             <el-select v-model="form.metric_datasource_ids" multiple filterable clearable placeholder="选择一个或多个 Prometheus 兼容指标数据源">
@@ -123,11 +123,6 @@
           <el-form-item label="关联配置">
             <el-select v-model="form.observability_link_ids" multiple filterable clearable placeholder="选择日志 / 链路 / 看板之间的关联配置">
               <el-option v-for="item in catalog.observability_links" :key="item.id" :label="observabilityLinkLabel(item)" :value="item.id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item v-if="systemPostureEnabled" label="系统态势环境">
-            <el-select v-model="form.posture_environments" multiple filterable clearable placeholder="选择一个或多个系统态势环境">
-              <el-option v-for="item in catalog.posture_environments" :key="item.key" :label="postureEnvironmentLabel(item)" :value="item.key" />
             </el-select>
           </el-form-item>
         </div>
@@ -197,7 +192,6 @@ import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'v
 import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 import { Plus, RefreshRight, Setting } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
-import { SYSTEM_POSTURE_ENABLED } from '@/config/features'
 import {
   createAIOpsKnowledgeEnvironment,
   deleteAIOpsKnowledgeEnvironment,
@@ -227,7 +221,6 @@ defineProps({
 })
 
 const authStore = useAuthStore()
-const systemPostureEnabled = SYSTEM_POSTURE_ENABLED
 const canManage = computed(() => authStore.hasPermission('aiops.knowledge.manage'))
 const loading = ref(false)
 const saving = ref(false)
@@ -241,7 +234,6 @@ const catalog = reactive({
   tracing_datasources: [],
   observability_links: [],
   alert_environments: [],
-  posture_environments: [],
   k8s_clusters: [],
   docker_hosts: [],
   task_resource_environments: [],
@@ -258,7 +250,6 @@ const form = reactive({
   tracing_datasource_ids: [],
   observability_link_ids: [],
   alert_environments: [],
-  posture_environments: [],
   k8s_cluster_ids: [],
   k8s_namespaces: {},
   docker_host_ids: [],
@@ -288,7 +279,6 @@ function resetForm(row = null) {
   form.tracing_datasource_ids = [...(row?.tracing_datasource_ids || [])]
   form.observability_link_ids = [...(row?.observability_link_ids || [])]
   form.alert_environments = [...(row?.alert_environments || [])]
-  form.posture_environments = systemPostureEnabled ? [...(row?.posture_environments || [])] : []
   form.k8s_cluster_ids = [...(row?.k8s_cluster_ids || [])]
   form.k8s_namespaces = { ...(row?.k8s_namespaces || {}) }
   form.docker_host_ids = [...(row?.docker_host_ids || [])]
@@ -306,7 +296,6 @@ function hasAnyBinding() {
     form.tracing_datasource_ids,
     form.observability_link_ids,
     form.alert_environments,
-    ...(systemPostureEnabled ? [form.posture_environments] : []),
     form.k8s_cluster_ids,
     form.docker_host_ids,
     form.task_resource_environment_ids,
@@ -319,14 +308,6 @@ function datasourceLabel(item) {
 
 function folderLabel(item) {
   return item.dashboard_count ? `${item.label}（${item.dashboard_count} 个看板）` : item.label
-}
-
-function postureEnvironmentLabel(item) {
-  const name = item?.name || ''
-  const key = item?.key || ''
-  if (!name) return key
-  if (!key || key === name || key === 'prod') return name
-  return `${name} / ${key}`
 }
 
 function observabilityLinkLabel(item) {
@@ -365,11 +346,6 @@ function taskResourceEnvironmentLabel(item) {
   return `${item.name}${suffix}`
 }
 
-function postureEnvironmentNames(keys = []) {
-  const nameMap = new Map(catalog.posture_environments.map(item => [item.key, postureEnvironmentLabel(item)]))
-  return keys.map(key => nameMap.get(key) || key)
-}
-
 function observabilityLinkNames(ids = []) {
   const nameMap = new Map(catalog.observability_links.map(item => [Number(item.id), item.name]))
   return ids.map(id => nameMap.get(Number(id)) || `关联配置 ID ${id}`)
@@ -378,7 +354,6 @@ function observabilityLinkNames(ids = []) {
 function observabilityNames(row) {
   return [
     ...(row.alert_environments || []).map(name => `告警: ${name}`),
-    ...(systemPostureEnabled ? (row.posture_environments || []).map(name => `系统态势: ${postureEnvironmentNames([name])[0]}`) : []),
     ...(row.observability_link_ids || []).map(name => `关联: ${observabilityLinkNames([name])[0]}`),
     ...(row.grafana_folder_keys || []).map(name => `看板: ${name}`),
     ...(row.metric_datasource_ids || []).map(name => `指标: ${datasourceNames([name], 'metric')[0]}`),
@@ -418,7 +393,6 @@ async function loadData() {
       tracing_datasources: options.tracing_datasources || [],
       observability_links: options.observability_links || [],
       alert_environments: options.alert_environments || [],
-      posture_environments: systemPostureEnabled ? (options.posture_environments || []) : [],
       k8s_clusters: options.k8s_clusters || [],
       docker_hosts: options.docker_hosts || [],
       task_resource_environments: options.task_resource_environments || [],
@@ -436,7 +410,7 @@ function openDialog(row = null) {
 async function submitForm() {
   await formRef.value?.validate()
   if (!hasAnyBinding()) {
-    ElMessage.warning('请至少选择一个事件中心、看板目录、日志、链路、告警、系统态势、K8s 集群、Docker 环境或任务中心资源底座来源')
+    ElMessage.warning('请至少选择一个事件中心、看板目录、日志、链路、告警、K8s 集群、Docker 环境或任务中心资源底座来源')
     return
   }
   saving.value = true
@@ -452,7 +426,6 @@ async function submitForm() {
       tracing_datasource_ids: form.tracing_datasource_ids,
       observability_link_ids: form.observability_link_ids,
       alert_environments: form.alert_environments,
-      posture_environments: systemPostureEnabled ? form.posture_environments : [],
       k8s_cluster_ids: form.k8s_cluster_ids,
       k8s_namespaces: form.k8s_namespaces,
       docker_host_ids: form.docker_host_ids,

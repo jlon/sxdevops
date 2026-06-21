@@ -1,5 +1,5 @@
 PERMISSION_DEFINITIONS = [
-    ('aiops.knowledge.view', '查看 AIOps 知识图谱', 'aiops', '查看工单、日志、链路、看板、告警、系统态势和事件源之间的业务关联'),
+    ('aiops.knowledge.view', '查看 AIOps 知识图谱', 'aiops', '查看工单、日志、链路、看板、告警和事件源之间的业务关联'),
     ('aiops.knowledge.manage', '管理 AIOps 知识图谱配置', 'aiops', '维护知识图谱环境与事件中心、监控看板、日志、链路、告警来源的关联'),
     ('ops.dashboard.view', '查看运维仪表盘', 'ops', '访问首页运维统计与最近动态'),
     ('ops.host.view', '查看主机', 'ops', '查看主机列表与详情'),
@@ -34,8 +34,6 @@ PERMISSION_DEFINITIONS = [
     ('ops.metric.query', '查询指标', 'ops', '执行 Prometheus 兼容 PromQL 指标查询'),
     ('ops.metric.datasource.view', '查看指标数据源', 'ops', '查看 Prometheus 兼容指标数据源配置'),
     ('ops.metric.datasource.manage', '管理指标数据源', 'ops', '新增、编辑、删除、测试 Prometheus 兼容指标数据源'),
-    ('ops.observability.system_posture.view', '查看系统态势', 'ops', '查看业务系统健康、SLA 总览、层级下钻与依赖影响'),
-    ('ops.observability.system_posture.manage', '管理系统态势', 'ops', '新增、编辑、删除系统态势卡片与环境分组'),
     ('ops.observability.link.view', '查看可观测关联', 'ops', '查看日志数据源与链路数据源之间的跳转关联配置'),
     ('ops.observability.link.manage', '管理可观测关联', 'ops', '维护日志与链路追踪数据源之间的 Trace ID 和查询模板映射'),
     ('ops.grafana.view', '查看 Grafana 大屏', 'ops', '查看 Grafana 观测大屏与推荐仪表板'),
@@ -113,7 +111,6 @@ BUILTIN_ROLES = [
             'ops.log.entry.view', 'ops.log.datasource.view', 'ops.log.datasource.manage', 'ops.log.query',
             'ops.trace.view', 'ops.trace.datasource.view', 'ops.trace.datasource.manage',
             'ops.metric.query', 'ops.metric.datasource.view', 'ops.metric.datasource.manage',
-            'ops.observability.system_posture.view', 'ops.observability.system_posture.manage', 'ops.observability.link.view', 'ops.observability.link.manage', 'ops.grafana.view', 'ops.grafana.manage',
             'ops.k8s.view', 'ops.k8s.manage', 'ops.k8s.exec', 'ops.docker.view', 'ops.docker.manage',
             'eventwall.view', 'eventwall.source.view', 'eventwall.source.manage',
             'rbac.audit.view',
@@ -132,7 +129,6 @@ BUILTIN_ROLES = [
         'permissions': [
             'aiops.knowledge.view',
             'ops.dashboard.view', 'ops.host.view', 'ops.task.resource.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
-            'ops.log.query', 'ops.log.datasource.view', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.metric.query', 'ops.metric.datasource.view', 'ops.observability.system_posture.view', 'ops.observability.link.view', 'ops.grafana.view',
             'eventwall.view', 'eventwall.source.view',
             'aiops.chat.view', 'aiops.chat.analyze', 'aiops.task.generate', 'aiops.runbook.view', 'aiops.review.view',
             'cmdb.dashboard.view', 'cmdb.ci.view',
@@ -146,7 +142,6 @@ BUILTIN_ROLES = [
         'description': '查看日志、安全告警并审核 SQL 工单。',
         'permissions': [
             'aiops.knowledge.view',
-            'ops.dashboard.view', 'ops.alert.view', 'ops.alert.config.view', 'ops.log.datasource.view', 'ops.log.query', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.metric.query', 'ops.metric.datasource.view', 'ops.observability.system_posture.view', 'ops.observability.link.view', 'ops.grafana.view',
             'eventwall.view', 'eventwall.source.view', 'rbac.audit.view', 'aiops.chat.view', 'aiops.chat.analyze', 'aiops.runbook.view', 'aiops.review.view',
             'cmdb.dashboard.view', 'cmdb.topology.view', 'cmdb.cost.view', 'sqlaudit.datasource.view',
             'sqlaudit.order.view', 'sqlaudit.order.review', 'sqlaudit.query.view',
@@ -158,7 +153,6 @@ BUILTIN_ROLES = [
         'description': '只能浏览各模块的只读信息。',
         'permissions': [
             'ops.dashboard.view', 'ops.host.view', 'ops.task.resource.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
-            'ops.log.entry.view', 'ops.log.datasource.view', 'ops.log.query', 'ops.trace.view', 'ops.trace.datasource.view', 'ops.metric.query', 'ops.metric.datasource.view', 'ops.observability.system_posture.view', 'ops.observability.link.view', 'ops.grafana.view', 'ops.k8s.view', 'ops.docker.view',
             'cmdb.dashboard.view', 'cmdb.ci.view', 'cmdb.topology.view',
             'cmdb.cost.view',
             'sqlaudit.datasource.view', 'sqlaudit.order.view', 'sqlaudit.query.view',

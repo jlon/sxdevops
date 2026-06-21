@@ -17,7 +17,7 @@ from rest_framework.test import APIClient
 from cmdb.models import CIType, ConfigItem
 from eventwall.models import EventRecord, EventSource
 from marketplace.models import ServiceDeployment, ServiceTemplate
-from ops.models import Alert, Deployment, DockerHost, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, LogEntry, MetricDataSource, ObservabilityDataSourceLink, SystemPostureEnvironment, SystemPostureSystem, TaskResource, TaskResourceGroup, TracingDataSource, TransactionTicket
+from ops.models import Alert, Deployment, DockerHost, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, LogEntry, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource, TransactionTicket
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -88,70 +88,12 @@ from .services import (
     query_alert_root_cause,
     query_logs,
     query_recent_changes,
-    query_system_posture,
     query_traces,
     query_workorders,
 )
 
 
 User = get_user_model()
-
-
-@override_settings(SYSTEM_POSTURE_ENABLED=False)
-class AIOpsSystemPostureDisabledTests(TestCase):
-    def setUp(self):
-        ensure_builtin_rbac()
-        self.user = User.objects.create_user(username='aiops_open_user', password='Passw0rd!123')
-        self.user.rbac_roles.add(Role.objects.get(code='platform-admin'))
-        self.session = AIOpsChatSession.objects.create(user=self.user, title='open')
-        self.message = AIOpsChatMessage.objects.create(
-            session=self.session,
-            role=AIOpsChatMessage.ROLE_USER,
-            content='prod SLA 怎么样',
-        )
-
-    def test_system_posture_permission_and_mcp_tool_are_disabled(self):
-        from rbac.services import get_user_effective_permissions, user_has_permissions
-
-        self.assertNotIn('ops.observability.system_posture.view', get_user_effective_permissions(self.user))
-        self.assertFalse(user_has_permissions(self.user, ['ops.observability.system_posture.view']))
-        self.assertNotIn('sxdevops.query_system_posture', {tool['name'] for tool in list_platform_mcp_tools(self.user)})
-
-    def test_query_system_posture_returns_empty_when_feature_disabled(self):
-        SystemPostureSystem.objects.create(name='交易系统核心', environment='prod', base_status=SystemPostureSystem.STATUS_CRITICAL)
-
-        result = query_system_posture(self.session, self.message, self.user, query='prod SLA 怎么样')
-
-        self.assertEqual(result['systems'], [])
-        self.assertEqual(result['sections'], [])
-        self.assertTrue(result['summary']['disabled'])
-
-    def test_knowledge_graph_omits_posture_nodes_when_feature_disabled(self):
-        AIOpsKnowledgeEnvironment.objects.create(name='prod', alert_environments=['prod'], posture_environments=['prod'])
-        SystemPostureEnvironment.objects.create(key='prod', name='生产态势', is_enabled=True)
-        SystemPostureSystem.objects.create(name='交易系统核心', environment='prod', base_status=SystemPostureSystem.STATUS_CRITICAL)
-
-        graph = query_knowledge_graph(self.session, self.message, self.user, environment='prod')
-        node_kinds = {node.get('kind') for node in graph.get('graph', {}).get('nodes', [])}
-
-        self.assertNotIn('posture', node_kinds)
-
-    def test_system_posture_urls_are_not_registered_when_feature_disabled(self):
-        import ops.urls
-        import sxdevops.urls
-
-        importlib.reload(ops.urls)
-        importlib.reload(sxdevops.urls)
-        clear_url_caches()
-        try:
-            with self.assertRaises(NoReverseMatch):
-                reverse('observability-system-posture')
-            with self.assertRaises(NoReverseMatch):
-                reverse('observability-system-posture-history')
-        finally:
-            importlib.reload(ops.urls)
-            importlib.reload(sxdevops.urls)
-            clear_url_caches()
 
 
 class AIOpsApiTests(TestCase):
@@ -176,7 +118,6 @@ class AIOpsApiTests(TestCase):
             aliases=['生产', '生产环境', '线上'],
             event_environments=['prod'],
             alert_environments=['prod'],
-            posture_environments=['prod'],
         )
 
     def ensure_ecommerce_knowledge_environment(self):
@@ -201,7 +142,6 @@ class AIOpsApiTests(TestCase):
             aliases=['电商测试', 'ecommerce-test'],
             event_environments=['ecommerce-test'],
             alert_environments=['电商测试'],
-            posture_environments=['ecommerce-test-k3s'],
             k8s_cluster_ids=[cluster.id],
             k8s_namespaces={str(cluster.id): ['production']},
             task_resource_environment_ids=[resource_env.id],
@@ -214,24 +154,13 @@ class AIOpsApiTests(TestCase):
             },
             is_enabled=True,
         )
-        SystemPostureSystem.objects.create(
-            name='电商交易核心',
-            environment='ecommerce-test-k3s',
-            base_status=SystemPostureSystem.STATUS_CRITICAL,
-            health_score=28,
-            keywords=['order-service', '订单', '订单服务'],
-            service_specs=[{'id': 'order', 'name': '订单服务'}, {'id': 'order-service', 'name': 'order-service'}],
-            dependencies=[{'id': 'postgresql', 'name': '订单数据库'}, {'id': 'kafka', 'name': 'Kafka'}],
-            core_metric={'label': '下单成功率', 'value': 93.8, 'target': 90, 'unit': '%'},
-            is_enabled=True,
-        )
         TaskResource.objects.create(
             name='tf-k3s-single-node',
             resource_type=TaskResource.RESOURCE_HOST,
             environment=resource_env,
             system=resource_system,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
             owner='ops',
         )
         TaskResource.objects.create(
@@ -276,7 +205,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('query_alerts', active_tools)
         self.assertIn('query_alert_root_cause', active_tools)
         self.assertIn('query_alert_metrics', active_tools)
-        self.assertIn('query_system_posture', active_tools)
+        self.assertTrue(all('posture' not in tool for tool in active_tools))
         self.assertIn('query_grafana_promql', active_tools)
         self.assertIn('query_dashboard_panel_data', active_tools)
         self.assertIn('query_event_wall', active_tools)
@@ -394,7 +323,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(alert_action['risk_level_display'], '只读')
         slo_action = next(item for item in response.data['actions'] if item['code'] == 'slo.analysis')
         self.assertEqual(slo_action['category'], '服务健康')
-        self.assertIn('query_system_posture', slo_action['allowed_tools'])
+        self.assertTrue(all('posture' not in tool for tool in slo_action['allowed_tools']))
 
     def test_action_preflight_endpoint_returns_approval_contract(self):
         get_agent_config()
@@ -1567,7 +1496,6 @@ class AIOpsApiTests(TestCase):
             status=EventSource.STATUS_DISABLED,
             config={'resource_types': ['deployment']},
         )
-        SystemPostureEnvironment.objects.create(key='posture-prod', name='生产态势', is_enabled=True)
         task_resource_env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
         TaskResource.objects.create(
             name='trade-resource-node-01',
@@ -1584,7 +1512,6 @@ class AIOpsApiTests(TestCase):
             log_datasource_ids=[log_source.id],
             tracing_datasource_ids=[trace_source.id],
             alert_environments=['alert-prod'],
-            posture_environments=['posture-prod'],
             k8s_cluster_ids=[cluster.id],
             docker_host_ids=[docker_host.id],
             task_resource_environment_ids=[task_resource_env.id],
@@ -1613,14 +1540,6 @@ class AIOpsApiTests(TestCase):
             service='other',
             business_line='其他系统',
             environment='alert-other',
-        )
-        SystemPostureSystem.objects.create(
-            name='电商',
-            environment='posture-prod',
-            health_score=91,
-            service_specs=[{'id': 'checkout', 'name': 'checkout'}],
-            core_metric={'label': 'SLA', 'value': 99.92, 'target': 99.9, 'unit': '%'},
-            is_enabled=True,
         )
         LogEntry.objects.create(service='checkout', level='error', message='checkout failed')
         EventRecord.objects.create(
@@ -1696,7 +1615,6 @@ class AIOpsApiTests(TestCase):
         self.assertIn('external_events', {item['name'] for item in checkout_node['capabilities']})
         self.assertIn('internal_events', {item['name'] for item in checkout_node['capabilities']})
         self.assertTrue(any(node['kind'] == 'infrastructure' for node in response.data['nodes']))
-        self.assertTrue(any(node['kind'] == 'posture' for node in response.data['nodes']))
         runtime_nodes = [node for node in response.data['nodes'] if node['kind'] == 'runtime_component']
         self.assertTrue(runtime_nodes)
         self.assertIn('DB', {node.get('runtime_type') for node in runtime_nodes})
@@ -1713,7 +1631,6 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(catalog_response.status_code, 200)
         self.assertIn('event-prod', catalog_response.data['event_environments'])
         self.assertIn('alert-prod', catalog_response.data['alert_environments'])
-        self.assertIn('posture-prod', {item['key'] for item in catalog_response.data['posture_environments']})
         self.assertIn('trade-observable-link', {item['name'] for item in catalog_response.data['observability_links']})
         catalog_folder_keys = {item['key'] for item in catalog_response.data['grafana_folders']}
         self.assertIn('交易系统', catalog_folder_keys)
@@ -1745,7 +1662,7 @@ class AIOpsApiTests(TestCase):
             'status': 'Ready',
             'roles': 'control-plane',
             'version': 'v1.30.0',
-            'internal_ip': '120.26.213.176',
+            'internal_ip': '203.0.113.176',
         }]
         cache.clear()
 
@@ -2330,78 +2247,8 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(any(edge['relation'] == 'service_runtime' for edge in response.data['edges']))
 
-    def test_knowledge_graph_discovers_runtime_components_from_posture_dependencies(self):
-        AIOpsKnowledgeEnvironment.objects.create(
-            name='posture-runtime-env',
-            alert_environments=['posture-prod'],
-            posture_environments=['posture-prod'],
-            is_enabled=True,
-            created_by='aiops_user',
-            updated_by='aiops_user',
-        )
-        SystemPostureSystem.objects.create(
-            name='电商',
-            environment='posture-prod',
-            service_specs=[{'id': 'checkout', 'name': 'checkout'}],
-            dependencies=[{'id': 'order-db', 'name': '订单数据库', 'kind': '数据库', 'role': 'downstream'}],
-            is_enabled=True,
-        )
 
-        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'posture-runtime-env'})
 
-        self.assertEqual(response.status_code, 200)
-        runtime_nodes = [node for node in response.data['nodes'] if node['kind'] == 'runtime_component']
-        self.assertTrue(any(node['label'] == '订单数据库' for node in runtime_nodes))
-        self.assertIn('system_runtime', {edge['relation'] for edge in response.data['edges']})
-
-    def test_query_system_posture_uses_configured_posture_environment(self):
-        AIOpsKnowledgeEnvironment.objects.create(
-            name='retail-prod',
-            alert_environments=['alert-prod'],
-            posture_environments=['posture-prod'],
-            is_enabled=True,
-        )
-        SystemPostureSystem.objects.create(
-            name='交易系统',
-            environment='posture-prod',
-            health_score=88,
-            core_metric={'label': 'SLA', 'value': 99.7, 'target': 99.9, 'unit': '%'},
-            is_enabled=True,
-        )
-        SystemPostureSystem.objects.create(
-            name='告警同名环境系统',
-            environment='alert-prod',
-            health_score=50,
-            is_enabled=True,
-        )
-        session = AIOpsChatSession.objects.create(user=self.user, title='posture')
-        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='retail-prod SLA 怎么样')
-
-        result = query_system_posture(session, user_message, self.user, query='retail-prod SLA 怎么样')
-
-        self.assertEqual(result['summary']['environments'], ['posture-prod'])
-        self.assertIn('交易系统', '\n'.join(result['sections'][0]['items']))
-        self.assertNotIn('告警同名环境系统', '\n'.join(result['sections'][0]['items']))
-
-    def test_query_system_posture_matches_service_specs_when_tokens_are_too_narrow(self):
-        self.ensure_ecommerce_knowledge_environment()
-        session = AIOpsChatSession.objects.create(user=self.user, title='posture-order')
-        user_message = AIOpsChatMessage.objects.create(
-            session=session,
-            role='user',
-            content='电商测试环境订单服务最近一小时有什么异常',
-        )
-
-        result = query_system_posture(
-            session,
-            user_message,
-            self.user,
-            query='电商测试环境订单服务最近一小时有什么异常',
-            analysis_scope={'services': ['order-service', '订单服务'], 'systems': ['电商交易核心']},
-        )
-
-        self.assertEqual(result['summary']['count'], 1)
-        self.assertIn('电商交易核心', '\n'.join(result['sections'][0]['items']))
 
     @mock.patch('aiops.services.execute_promql_query')
     def test_query_grafana_promql_uses_platform_backend_api(self, mocked_promql):
@@ -2792,9 +2639,8 @@ class AIOpsApiTests(TestCase):
 
     @mock.patch('aiops.services.query_logs')
     @mock.patch('aiops.services.query_events')
-    @mock.patch('aiops.services.query_system_posture')
     @mock.patch('aiops.services.query_alert_metrics')
-    def test_query_alert_root_cause_survives_missing_metric_permission(self, mocked_metrics, mocked_posture, mocked_events, mocked_logs):
+    def test_query_alert_root_cause_survives_missing_metric_permission(self, mocked_metrics, mocked_events, mocked_logs):
         self.ensure_prod_knowledge_environment()
         alert = Alert.objects.create(
             title='prod checkout no metric permission',
@@ -2814,7 +2660,6 @@ class AIOpsApiTests(TestCase):
         alert_only_role.permissions.add(alert_perm)
         limited_user.rbac_roles.add(alert_only_role)
         mocked_metrics.return_value = {'summary': {'error': '当前账号无权查询指标。'}, 'sections': [], 'citations': []}
-        mocked_posture.return_value = {'summary': {'count': 0, 'critical': 0, 'warning': 0}, 'sections': [], 'citations': [], 'systems': []}
         mocked_events.return_value = {'summary': {'count': 0}, 'sections': [], 'citations': [], 'events': []}
         mocked_logs.return_value = {'summary': {'count': 0}, 'sections': [], 'citations': [], 'logs': []}
         session = AIOpsChatSession.objects.create(user=limited_user, title='alert-rca-no-metric-permission')
@@ -3971,14 +3816,14 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
         )
         TaskResource.objects.create(
             name='supply-node',
             resource_type=TaskResource.RESOURCE_HOST,
             environment=other_env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.177',
+            ip_address='203.0.113.177',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='task-resource-base')
         user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='电商测试环境下的全部主机')
@@ -4003,7 +3848,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='query-hosts-compat')
         user_message = AIOpsChatMessage.objects.create(session=session, role='user', content='电商测试环境有哪些主机')
@@ -4023,14 +3868,14 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=ecommerce_env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
         )
         TaskResource.objects.create(
             name='supply-node',
             resource_type=TaskResource.RESOURCE_HOST,
             environment=supply_env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.177',
+            ip_address='203.0.113.177',
         )
         AIOpsKnowledgeEnvironment.objects.create(
             name='电商测试环境',
@@ -4057,7 +3902,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=ecommerce_env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
         )
         AIOpsKnowledgeEnvironment.objects.create(
             name='电商测试环境',
@@ -4801,17 +4646,12 @@ class AIOpsApiTests(TestCase):
 
         analysis = _infer_alert_root_cause(
             alert,
-            posture_result={
-                'summary': {'critical': 1, 'warning': 0},
-                'systems': [{'name': '电商交易系统', 'core_metric': {'value': 97.2, 'target': 99.9}}],
-            },
             event_result={'events': [{'title': 'api-gateway rollout', 'result': 'failed'}]},
             log_result={'logs': [{'level': 'error', 'message': 'api-gateway upstream timeout'}]},
             trace_result={'summary': {'match_count': 1, 'error_match_count': 1}, 'traces': [{'trace_id': 'trace-632'}]},
         )
 
         joined = '\n'.join((analysis.get('evidence') or []) + (analysis.get('causes') or []))
-        self.assertIn('系统态势', joined)
         self.assertIn('事件中心', joined)
         self.assertIn('日志中心', joined)
         self.assertIn('链路追踪', joined)
@@ -4901,7 +4741,7 @@ class AIOpsApiTests(TestCase):
             ('帮我分析下电商测试环境最新一条告警的原因', 'direct_alert_root_cause_fastpath', {'query_alert_root_cause'}),
             ('帮我分析下电商测试环境告警', 'deterministic_alert_environment_analysis', {'query_alerts', 'query_alert_metrics'}),
             ('分析生产电商测试环境 api-gateway 最近异常的根因', 'deterministic_service_rca', {'query_alerts', 'query_logs', 'query_traces'}),
-            ('分析下最近电商测试环境的SLO情况', 'deterministic_slo_analysis', {'query_system_posture', 'query_alerts'}),
+            ('分析下最近电商测试环境的SLO情况', 'deterministic_slo_analysis', {'query_alerts'}),
             ('分析下电商测试环境 k8s 集群的异常工作负载', 'deterministic_k8s_rca', {'query_k8s_resources', 'query_k8s_cluster_summary', 'query_alerts'}),
             ('帮我分析电商测试环境 api-gateway 最近错误日志的原因', 'direct_logs_fastpath', {'query_logs'}),
             ('分析下 api-gateway 最近发布是否导致电商测试环境异常', 'deterministic_change_correlation', {'query_knowledge_graph', 'query_alerts'}),
@@ -5094,41 +4934,6 @@ class AIOpsApiTests(TestCase):
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
-    def test_send_message_direct_posture_fastpath_does_not_require_llm(self, mocked_completion):
-        get_agent_config()
-        AIOpsModelProvider.objects.all().update(is_enabled=False)
-        AIOpsKnowledgeEnvironment.objects.create(
-            name='prod',
-            aliases=['生产'],
-            posture_environments=['prod-posture'],
-            is_enabled=True,
-        )
-        SystemPostureSystem.objects.create(
-            name='checkout',
-            environment='prod-posture',
-            health_score=92,
-            core_metric={'label': 'SLA', 'value': 99.95, 'target': 99.9, 'unit': '%'},
-            is_enabled=True,
-        )
-        session_response = self.client.post('/api/aiops/sessions/', {'title': 'direct-posture'}, format='json')
-        session_id = session_response.data['id']
-        AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': 'prod'}})
-
-        response = self.client.post(
-            f'/api/aiops/sessions/{session_id}/send_message/',
-            {'content': '这个环境 SLA 怎么样'},
-            format='json',
-        )
-
-        assistant_message = response.data['assistant_message']
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_posture_fastpath')
-        self.assertEqual(assistant_message['metadata']['selected_action']['code'], 'slo.analysis')
-        self.assertTrue(assistant_message['metadata']['action_trace']['hit'])
-        self.assertIn('query_system_posture', assistant_message['tool_calls'])
-        self.assertIn('checkout', assistant_message['content'])
-        self.assertIn('99.95', assistant_message['content'])
-        mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
@@ -5921,7 +5726,6 @@ class AIOpsApiTests(TestCase):
 
         response = self.client.post(
             f'/api/aiops/sessions/{session_id}/send_message/',
-            {'content': '查看电商测试环境 ???? monitoring ?????? svc grafana'},
             format='json',
         )
 
@@ -6171,7 +5975,6 @@ class AIOpsApiTests(TestCase):
         self.assertIn('query_k8s_cluster_summary', assistant_message['tool_calls'])
         self.assertIn('query_alerts', assistant_message['tool_calls'])
         self.assertIn('query_events', assistant_message['tool_calls'])
-        self.assertIn('query_system_posture', assistant_message['tool_calls'])
         self.assertIn('nginx-deployment', assistant_message['content'])
         self.assertIn('order deployment failed', assistant_message['content'])
         mocked_completion.assert_not_called()
@@ -6206,7 +6009,6 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(metadata['execution_mode'], 'deterministic_slo_analysis')
         self.assertEqual(metadata['selected_action']['code'], 'slo.analysis')
         self.assertTrue(metadata['action_trace']['hit'])
-        self.assertIn('query_system_posture', assistant_message['tool_calls'])
         self.assertIn('query_alerts', assistant_message['tool_calls'])
         self.assertIn('query_dashboard_panel_data', assistant_message['tool_calls'])
         self.assertIn('query_traces', assistant_message['tool_calls'])
@@ -6264,7 +6066,6 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(assistant_message['metadata']['execution_mode'], 'deterministic_service_rca')
         self.assertIn('query_alerts', assistant_message['tool_calls'])
-        self.assertIn('query_system_posture', assistant_message['tool_calls'])
         self.assertIn('query_logs', assistant_message['tool_calls'])
         self.assertIn('query_traces', assistant_message['tool_calls'])
         self.assertIn('query_events', assistant_message['tool_calls'])
@@ -6810,9 +6611,7 @@ class AIOpsApiTests(TestCase):
         mocked_completion.assert_not_called()
 
     def test_recover_masked_suggested_question(self):
-        self.assertIn(recover_masked_suggested_question('????????????????????'), DEFAULT_SUGGESTED_QUESTIONS)
         self.assertEqual(
-            recover_masked_suggested_question('????????????????????? ERROR/WARN ?????????'),
             '电商测试环境订单服务最近一小时 ERROR/WARN 日志有什么共同模式',
         )
 
@@ -7621,7 +7420,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -7875,7 +7674,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.188',
+            ip_address='203.0.113.188',
             ssh_user='root',
         )
         shell_script = 'df -h\nfree -m'
@@ -7904,7 +7703,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.190',
+            ip_address='203.0.113.190',
             ssh_user='root',
         )
         question = '帮我在电商测试环境安装 Redis'
@@ -7940,7 +7739,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.193',
+            ip_address='203.0.113.193',
             ssh_user='root',
         )
         question = '帮我在个人测试环境的机器上安装helm命令行工具'
@@ -7976,7 +7775,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.194',
+            ip_address='203.0.113.194',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='helm-cli-install')
@@ -8014,7 +7813,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.192',
+            ip_address='203.0.113.192',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='install-tool')
@@ -8196,7 +7995,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.191',
+            ip_address='203.0.113.191',
             ssh_user='root',
         )
         question = '帮我生成 Ansible Playbook 在电商测试环境安装 nginx'
@@ -8230,7 +8029,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.193',
+            ip_address='203.0.113.193',
             ssh_user='root',
         )
         question = '帮我在电商测试环境安装 nginx'
@@ -8262,7 +8061,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.194',
+            ip_address='203.0.113.194',
             ssh_user='root',
         )
         question = '帮我给电商测试环境写个 Shell 脚本重启 nginx'
@@ -8291,7 +8090,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.195',
+            ip_address='203.0.113.195',
             ssh_user='root',
         )
         question = '帮我给电商测试环境生成 Ansible Playbook 重启 nginx'
@@ -8319,7 +8118,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.189',
+            ip_address='203.0.113.189',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='legacy-shell-script')
@@ -8358,7 +8157,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.190',
+            ip_address='203.0.113.190',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -8394,7 +8193,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.196',
+            ip_address='203.0.113.196',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -8777,7 +8576,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='resource-task')
@@ -8811,7 +8610,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
             ssh_user='root',
         )
         session = AIOpsChatSession.objects.create(user=self.user, title='resource-task-dedupe')
@@ -8845,7 +8644,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
             ssh_user='root',
         )
         TaskResource.objects.create(
@@ -8853,7 +8652,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=TaskResourceGroup.objects.create(name='供应链测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT),
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.177',
+            ip_address='203.0.113.177',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -8880,7 +8679,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
@@ -8905,7 +8704,7 @@ class AIOpsApiTests(TestCase):
             resource_type=TaskResource.RESOURCE_HOST,
             environment=env,
             status=TaskResource.STATUS_ACTIVE,
-            ip_address='120.26.213.176',
+            ip_address='203.0.113.176',
             ssh_user='root',
         )
         AIOpsKnowledgeEnvironment.objects.create(
