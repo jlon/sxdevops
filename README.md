@@ -74,28 +74,52 @@ SxDevOps AI Agent = **可观测性 + 事件中心 + 任务中心 + AIOps**
 
 ## Agent 工作机制
 
+SxDevOps 的 Agent 运行逻辑不是“用户提问 -> 大模型自由回答”，而是一套受控编排链路：**Action Router 先判断任务类型，Agent Mode 决定推理方式，Preflight 守住执行边界，Skill/SOP 约束专业过程，MCP 连接外部与平台工具，最终由审计和反馈闭环沉淀结果**。
+
 ```mermaid
-flowchart LR
-    question["用户提问"] --> plan["LLM 理解与规划"]
-    plan --> tools["MCP / 平台工具"]
-    tools --> facts["告警 / 日志 / Trace / 事件 / 任务 / 工单 / K8s"]
-    facts --> summary["事实汇总与兜底草稿"]
-    summary --> skill["Skill 结构化整形"]
-    skill --> answer["结论 / 依据 / 建议操作"]
-    answer --> action{"是否动作类能力"}
-    action -->|否| done["直接返回"]
-    action -->|是| confirm["待确认动作"]
-    confirm --> execute["权限校验后执行"]
-    execute --> audit["任务中心 / 事件中心 / 审计"]
+flowchart TB
+    input["用户问题 / 页面上下文 / 外部协同任务"] --> router["Action Router<br/>识别任务入口与风险边界"]
+    router --> mode{"Agent Mode"}
+    mode --> direct["Direct<br/>直接执行单个动作"]
+    mode --> react["ReAct<br/>推理 -> 行动 -> 观察"]
+    mode --> plan["Plan + ReAct<br/>规划 -> 多步执行 -> 验证"]
+
+    direct --> preflight["Preflight<br/>权限校验 / 风险评估 / 缺参补齐 / 依赖检查"]
+    react --> preflight
+    plan --> preflight
+
+    preflight -->|未通过| form["预检表单 / 待确认信息"]
+    preflight -->|通过| skill["Skill + SOP<br/>证据清单 / 查询规范 / 输出合同 / 安全边界"]
+    skill --> mcp["MCP / Tool Registry<br/>可观测性 / 事件 / 任务 / 工单 / K8s / 自定义工具"]
+    mcp --> facts["结构化事实<br/>日志 / 指标 / Trace / 告警 / 事件 / 执行结果"]
+    facts --> answer["二阶段整形<br/>结论 / 依据 / 风险 / 建议动作"]
+    answer --> action{"是否写入或执行类动作"}
+    action -->|否| done["返回答案与证据"]
+    action -->|是| confirm["Pending Action<br/>用户确认"]
+    confirm --> execute["平台 API 执行<br/>RBAC / 参数清洗 / 超时控制"]
+    execute --> feedback["结果反馈<br/>任务中心 / 事件中心 / 审计 / 后续学习"]
 ```
+
+这条链路里几个核心概念的职责是：
+
+| 层次 | 职责 |
+| --- | --- |
+| Action Router | 识别本次问题属于告警根因、日志查询、K8s 诊断、变更关联、任务生成等哪类 Action，并声明风险等级、所需上下文、输出结构和确认策略。 |
+| Agent Mode | 按任务复杂度选择执行方式：`Direct` 适合单步只读或明确动作，`ReAct` 适合边查边判断，`Plan + ReAct` 适合多步骤深度排障和协同任务。 |
+| Preflight | 在进入写入、生成或执行前做权限校验、风险评估、依赖检查、缺参补齐和回滚就绪检查；不满足条件时返回预检表单或待确认信息。 |
+| Skill / SOP | 沉淀领域能力包，约束证据清单、查询规范、判断规则、输出格式和安全边界，避免模型自由发挥。 |
+| MCP / Tool Registry | 把平台能力和外部系统封装成可治理工具，最终可用工具由 `Skill 工具依赖 ∩ MCP 可用性 ∩ 用户 RBAC ∩ Action 安全策略` 决定。 |
+| Pending Action | 所有写入和执行类动作先变成待确认动作，用户确认后才由平台 API 执行。 |
+| 审计与反馈 | 会话、工具调用、预检、待确认动作、执行结果和关键事件都会留痕，执行结果继续回写任务中心和事件中心。 |
 
 当前实现遵循几个原则：
 
-- 平台 API 是唯一执行边界，模型不能绕过后端直接操作资源。
-- 只读查询可以直接返回事实，创建、修改、执行类动作必须先预检再确认。
-- Skill 负责沉淀 SOP、证据清单、输出结构和安全边界。
+- 平台 API 是唯一执行边界，模型只负责理解、规划和生成候选参数，不能绕过后端直接操作资源。
+- Action 负责“任务入口和流程策略”，Skill 负责“能力包和专业约束”，两者不混在一起。
+- 只读诊断可以直接返回事实；生成、写入、执行类动作必须先预检、再确认、再执行。
+- Preflight 不是装饰步骤，而是权限、风险、依赖、缺参和回滚检查的统一入口。
 - 前端展示权限只是体验优化，后端 RBAC 才是安全边界。
-- 会话、工具调用、待确认动作、执行结果和关键事件都要留痕。
+- 会话、工具调用、Action 预检、待确认动作、执行结果和关键事件都要留痕。
 
 ## 产品截图
 
