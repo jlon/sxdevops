@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent (Split-Path -Parent $scriptDir)
 $logDir = Join-Path $root '.runlogs'
 $backendDir = Join-Path $root 'backend'
 $frontendDir = Join-Path $root 'frontend'
@@ -120,7 +121,7 @@ function Start-ServiceProcess {
     )
 
     if (Test-PortListening -Port $Port) {
-        throw "$Name port $Port is already in use. Please free it first or run .\\stop-dev.ps1."
+        throw "$Name port $Port is already in use. Please free it first or run .\\tools\\dev\\stop-dev.ps1."
     }
 
     if (Test-Path $StdOut) { Remove-Item $StdOut -Force -ErrorAction SilentlyContinue }

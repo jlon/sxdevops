@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent (Split-Path -Parent $scriptDir)
 $logDir = Join-Path $root '.runlogs'
 $backendPidFile = Join-Path $logDir 'backend.pid'
 $frontendPidFile = Join-Path $logDir 'frontend.pid'
