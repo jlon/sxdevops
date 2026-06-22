@@ -77,8 +77,8 @@ SxDevOps AI Agent = **可观测性 + 事件中心 + 任务中心 + AIOps**
 SxDevOps 的 Agent 运行逻辑不是“用户提问 -> 大模型自由回答”，而是一套受控编排链路：**Action Router 先判断任务类型，Agent Mode 决定推理方式，Preflight 守住执行边界，Skill/SOP 约束专业过程，MCP 连接外部与平台工具，最终由审计和反馈闭环沉淀结果**。
 
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26, "curve": "basis"}, "themeVariables": {"fontSize": "13px"}}}%%
-flowchart LR
+%%{init: {"flowchart": {"nodeSpacing": 28, "rankSpacing": 38, "curve": "basis"}, "themeVariables": {"fontSize": "15px"}}}%%
+flowchart TB
     input["用户问题 / 页面上下文 / 外部协同任务"] --> router["Action Router<br/>识别任务入口与风险边界"]
     router --> mode{"Agent Mode"}
     mode --> direct["Direct<br/>直接执行单个动作"]
