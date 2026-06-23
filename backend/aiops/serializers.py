@@ -454,6 +454,8 @@ class AIOpsChatSessionSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'status', 'context', 'agent', 'last_message_at', 'created_at', 'updated_at', 'latest_message']
 
     def get_latest_message(self, obj):
+        if self.context.get('skip_latest_message'):
+            return None
         message = obj.messages.order_by('-created_at', '-id').first()
         if not message:
             return None

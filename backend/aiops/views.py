@@ -62,6 +62,7 @@ from .services import (
     build_action_preflight_contract,
     build_platform_mcp_manifest,
     build_action_registry_summary,
+    agent_runtime_payload_for_user,
     bootstrap_payload_for_user,
     build_audit_overview,
     build_model_cost_overview,
@@ -225,11 +226,20 @@ class AIOpsAgentProfileViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'partial_update': ['aiops.agent.manage'],
         'destroy': ['aiops.agent.manage'],
         'set_default': ['aiops.agent.manage'],
+        'runtime': ['aiops.chat.view'],
     }
 
     def get_queryset(self):
         ensure_default_agent_profile(get_agent_config())
         return AIOpsAgentProfile.objects.select_related('default_provider').order_by('-is_default', 'name', 'id')
+
+    @action(detail=True, methods=['get'])
+    def runtime(self, request, pk=None):
+        agent = self.get_object()
+        try:
+            return Response(agent_runtime_payload_for_user(request.user, agent.slug))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
 
     def perform_create(self, serializer):
         is_default = bool(serializer.validated_data.get('is_default'))
@@ -1010,7 +1020,13 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         if getattr(self.request.user, 'username', '') == 'demo':
             sync_admin_sessions_to_demo()
-        return AIOpsChatSession.objects.filter(user=self.request.user).prefetch_related('messages').order_by('-last_message_at', '-id')
+        return AIOpsChatSession.objects.filter(user=self.request.user).order_by('-last_message_at', '-id')
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if getattr(self, 'action', '') == 'list':
+            context['skip_latest_message'] = True
+        return context
 
     def _agent_context(self, agent, runtime_config=None):
         context = {

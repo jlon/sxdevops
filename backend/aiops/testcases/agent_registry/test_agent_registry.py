@@ -7,6 +7,7 @@ from aiops.models import AIOpsAgentConfig, AIOpsAgentProfile, AIOpsMCPServer, AI
 from aiops.services import ensure_default_agent_profile, resolve_agent_profile_for_user, runtime_config_for_agent
 from rbac.models import PermissionDefinition
 from rbac.models import Role
+from rbac.models import UserGroup
 from rbac.services import ensure_builtin_rbac
 
 
@@ -134,6 +135,52 @@ class AgentRegistryApiTests(TestCase):
         self.assertEqual(bootstrap_response.status_code, 200)
         self.assertTrue(any(agent['slug'] == 'hbase-readonly' for agent in bootstrap_response.data['available_agents']))
 
+    def test_bootstrap_includes_runtime_summary_for_each_available_agent(self):
+        config = AIOpsAgentConfig.objects.create(name='bootstrap-runtime-test')
+        default_agent = ensure_default_agent_profile(config)
+        default_mcp = AIOpsMCPServer.objects.create(name='Default Bootstrap MCP')
+        custom_mcp = AIOpsMCPServer.objects.create(name='Custom Bootstrap MCP')
+        custom_skill = AIOpsSkill.objects.create(name='Custom Bootstrap Skill', slug='custom-bootstrap-skill')
+        default_agent.enabled_mcp_server_ids = [default_mcp.id]
+        default_agent.save(update_fields=['enabled_mcp_server_ids'])
+        custom_agent = AIOpsAgentProfile.objects.create(
+            name='Runtime Preview Agent',
+            slug='runtime-preview-agent',
+            enabled_mcp_server_ids=[custom_mcp.id],
+            enabled_skill_ids=[custom_skill.id],
+            execution_policy=AIOpsAgentProfile.EXECUTION_READ_ONLY,
+            is_enabled=True,
+        )
+
+        response = self.client.get('/api/aiops/bootstrap/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        agent_payload = next(item for item in response.data['available_agents'] if item['slug'] == custom_agent.slug)
+        self.assertEqual(agent_payload['runtime']['active_mcp_server_ids'], [custom_mcp.id])
+        self.assertEqual(agent_payload['runtime']['active_skill_ids'], [custom_skill.id])
+        self.assertFalse(agent_payload['runtime']['allow_action_execution'])
+
+    def test_agent_runtime_endpoint_uses_same_permission_and_runtime_rules(self):
+        ensure_default_agent_profile(AIOpsAgentConfig.objects.create(name='runtime-endpoint-test'))
+        mcp = AIOpsMCPServer.objects.create(name='Endpoint Runtime MCP')
+        skill = AIOpsSkill.objects.create(name='Endpoint Runtime Skill', slug='endpoint-runtime-skill')
+        agent = AIOpsAgentProfile.objects.create(
+            name='Endpoint Runtime Agent',
+            slug='endpoint-runtime-agent',
+            enabled_mcp_server_ids=[mcp.id],
+            enabled_skill_ids=[skill.id],
+            is_enabled=True,
+        )
+
+        response = self.client.get(f'/api/aiops/admin/agents/{agent.id}/runtime/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['agent']['slug'], 'endpoint-runtime-agent')
+        self.assertEqual(response.data['runtime']['active_mcp_server_ids'], [mcp.id])
+        self.assertEqual(response.data['runtime']['active_skill_ids'], [skill.id])
+        self.assertEqual(response.data['active_mcp_servers'][0]['name'], 'Endpoint Runtime MCP')
+        self.assertEqual(response.data['active_skills'][0]['slug'], 'endpoint-runtime-skill')
+
     def test_runtime_config_for_agent_overrides_global_config(self):
         config = AIOpsAgentConfig.objects.create(
             name='runtime-test',
@@ -207,6 +254,38 @@ class AgentRegistryApiTests(TestCase):
         self.assertEqual(runtime.suggested_questions, ['default question'])
         self.assertEqual(runtime.enabled_mcp_server_ids, [mcp.id])
         self.assertEqual(runtime.enabled_skill_ids, [skill.id])
+
+    def test_runtime_skill_filter_includes_group_roles(self):
+        chat_perm = PermissionDefinition.objects.get(code='aiops.chat.view')
+        agent_run_perm = PermissionDefinition.objects.get(code='aiops.agent.run')
+        role = Role.objects.create(code='hbase-runtime-role', name='HBase Runtime Role')
+        role.permissions.set([chat_perm, agent_run_perm])
+        group = UserGroup.objects.create(code='hbase-runtime-group', name='HBase Runtime Group')
+        group.roles.add(role)
+        user = User.objects.create_user(username='group_runtime_user', password='Passw0rd!123')
+        user.rbac_groups.add(group)
+        token = Token.objects.create(user=user)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        mcp = AIOpsMCPServer.objects.create(name='Group Runtime MCP')
+        skill = AIOpsSkill.objects.create(
+            name='Group Runtime Skill',
+            slug='group-runtime-skill',
+            allowed_role_codes=['hbase-runtime-role'],
+        )
+        agent = AIOpsAgentProfile.objects.create(
+            name='Group Runtime Agent',
+            slug='group-runtime-agent',
+            enabled_mcp_server_ids=[mcp.id],
+            enabled_skill_ids=[skill.id],
+            is_enabled=True,
+        )
+
+        response = client.get(f'/api/aiops/admin/agents/{agent.id}/runtime/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['runtime']['active_skill_ids'], [skill.id])
+        self.assertEqual(response.data['active_skills'][0]['slug'], 'group-runtime-skill')
 
     def test_resource_registration_can_bind_provider_mcp_and_skill_to_agents(self):
         ensure_default_agent_profile(AIOpsAgentConfig.objects.create(name='resource-bind-test'))

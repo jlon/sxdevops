@@ -10,13 +10,13 @@
               <div class="aiops-title-row">
                 <img :src="botAvatar" alt="AIOps bot" class="aiops-header-avatar" />
                 <div class="aiops-title">AIOps 智能助手</div>
-                <span class="header-badge">{{ bootstrap.provider?.model || bootstrap.provider?.name || '未配置模型' }}</span>
+                <span class="header-badge">{{ currentProvider?.model || currentProvider?.name || '未配置模型' }}</span>
                 <span v-if="currentAgentName" class="header-badge agent">{{ currentAgentName }}</span>
                 <span v-if="currentRuntime?.allow_action_execution === false" class="header-badge runtime safe">
                   {{ runtimeLabel }}
                 </span>
                 <span class="aiops-subtitle">
-                  {{ effectiveAnalysisOnly ? '当前仅分析，不会生成待执行动作。' : (bootstrap.welcome_message || '你好，我可以帮你结合平台上下文查询资源、根因分析、生成待执行任务等。') }}
+                  {{ effectiveAnalysisOnly ? '当前仅分析，不会生成待执行动作。' : currentWelcomeMessage }}
                 </span>
               </div>
             </div>
@@ -121,9 +121,9 @@
               </div>
 
               <div class="quick-palette">
-                <div v-if="!messages.length && bootstrap.suggested_questions?.length" class="aiops-quick-questions">
+                <div v-if="!messages.length && currentSuggestedQuestions.length" class="aiops-quick-questions">
                   <button
-                    v-for="item in bootstrap.suggested_questions"
+                    v-for="item in currentSuggestedQuestions"
                     :key="item"
                     type="button"
                     class="quick-chip"
@@ -658,7 +658,14 @@ const currentAgentSlug = computed(() => currentSessionId.value ? sessionAgentSlu
 const currentAgent = computed(() => availableAgents.value.find(item => item.slug === currentAgentSlug.value) || bootstrap.value.default_agent || null)
 const currentAgentName = computed(() => currentAgent.value?.name || '')
 const agentSelectorValue = computed(() => currentSessionId.value ? currentAgentSlug.value : newSessionAgentSlug.value || fallbackAgentSlug.value)
-const currentRuntime = computed(() => currentSession.value?.context?.runtime || bootstrap.value.runtime || {})
+const currentAgentRuntime = computed(() => currentAgent.value?.runtime || {})
+const currentRuntime = computed(() => currentSession.value?.context?.runtime || currentAgentRuntime.value || bootstrap.value.runtime || {})
+const currentProvider = computed(() => currentAgentRuntime.value?.provider || bootstrap.value.provider || {})
+const currentWelcomeMessage = computed(() => currentAgentRuntime.value?.welcome_message || bootstrap.value.welcome_message || '你好，我可以帮你结合平台上下文查询资源、根因分析、生成待执行任务等。')
+const currentSuggestedQuestions = computed(() => {
+  const questions = currentAgentRuntime.value?.suggested_questions
+  return Array.isArray(questions) && questions.length ? questions : (bootstrap.value.suggested_questions || [])
+})
 const actionExecutionAllowed = computed(() => currentRuntime.value?.allow_action_execution !== false)
 const forcedAnalysisOnly = computed(() => !actionExecutionAllowed.value)
 const effectiveAnalysisOnly = computed(() => forcedAnalysisOnly.value || analysisOnly.value)

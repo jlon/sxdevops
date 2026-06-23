@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from collections import Counter
 from datetime import datetime, time as datetime_time, timedelta
 from decimal import Decimal
@@ -2811,10 +2812,27 @@ def get_agent_config():
     return config
 
 
-def _agent_profile_summary(agent):
+@dataclass
+class AgentRuntimeContext:
+    config: AIOpsAgentConfig
+    agent: AIOpsAgentProfile
+    runtime_config: AIOpsAgentConfig
+    provider: AIOpsModelProvider | None
+    active_mcp_servers: list
+    active_skills: list
+
+
+def _user_role_codes(user):
+    role_codes = set(user.rbac_roles.values_list('code', flat=True))
+    role_codes.update(user.rbac_groups.values_list('roles__code', flat=True))
+    role_codes.discard(None)
+    return role_codes
+
+
+def _agent_profile_summary(agent, runtime_summary=None):
     if not agent:
         return None
-    return {
+    payload = {
         'id': agent.id,
         'name': agent.name,
         'slug': agent.slug,
@@ -2833,6 +2851,9 @@ def _agent_profile_summary(agent):
         'is_builtin': agent.is_builtin,
         'is_enabled': agent.is_enabled,
     }
+    if runtime_summary is not None:
+        payload['runtime'] = runtime_summary
+    return payload
 
 
 def ensure_default_agent_profile(config=None):
@@ -2916,10 +2937,7 @@ def user_can_use_agent_profile(user, agent):
         return True
     if getattr(user, 'is_superuser', False) or is_demo_account(user):
         return True
-    role_codes = set(user.rbac_roles.values_list('code', flat=True))
-    role_codes.update(user.rbac_groups.values_list('roles__code', flat=True))
-    role_codes.discard(None)
-    return bool(allowed_role_codes & role_codes)
+    return bool(allowed_role_codes & _user_role_codes(user))
 
 
 def list_available_agent_profiles(user):
@@ -2983,6 +3001,83 @@ def runtime_config_for_agent(config, agent):
     if agent.execution_policy == AIOpsAgentProfile.EXECUTION_READ_ONLY:
         runtime.allow_action_execution = False
     return runtime
+
+
+def _agent_runtime_summary(runtime_context):
+    provider = runtime_context.provider
+    runtime_config = runtime_context.runtime_config
+    return {
+        'allow_action_execution': runtime_config.allow_action_execution,
+        'require_confirmation': True,
+        'show_evidence': runtime_config.show_evidence,
+        'allow_analysis': runtime_config.allow_analysis,
+        'agent_execution_policy': runtime_context.agent.execution_policy,
+        'provider': {
+            'id': provider.id if provider else None,
+            'name': provider.name if provider else '未配置模型',
+            'model': provider.default_model if provider else '',
+            'runtime_ready': bool(provider and _provider_is_ready(provider)),
+        },
+        'active_mcp_server_ids': [item.id for item in runtime_context.active_mcp_servers],
+        'active_skill_ids': [item.id for item in runtime_context.active_skills],
+        'active_mcp_count': len(runtime_context.active_mcp_servers),
+        'active_skill_count': len(runtime_context.active_skills),
+        'welcome_message': runtime_config.welcome_message,
+        'suggested_questions': runtime_config.suggested_questions or DEFAULT_SUGGESTED_QUESTIONS,
+    }
+
+
+def build_agent_runtime_context(user, agent_slug='', *, session=None, config=None):
+    config = config or get_agent_config()
+    agent = resolve_agent_profile_for_user(user, agent_slug, session=session, config=config)
+    runtime_config = runtime_config_for_agent(config, agent)
+    provider = get_active_provider(runtime_config)
+    return AgentRuntimeContext(
+        config=config,
+        agent=agent,
+        runtime_config=runtime_config,
+        provider=provider,
+        active_mcp_servers=_get_selected_mcp_servers(runtime_config),
+        active_skills=_get_selected_skills(runtime_config, user=user),
+    )
+
+
+def agent_runtime_payload_for_user(user, agent_slug='', *, session=None, config=None):
+    runtime_context = build_agent_runtime_context(user, agent_slug, session=session, config=config)
+    runtime_summary = _agent_runtime_summary(runtime_context)
+    return {
+        'agent': _agent_profile_summary(runtime_context.agent, runtime_summary),
+        'runtime': runtime_summary,
+        'provider': runtime_summary['provider'],
+        'active_mcp_servers': [
+            {
+                'id': item.id,
+                'name': item.name,
+                'description': item.description,
+                'tool_whitelist': item.tool_whitelist,
+                'is_builtin': item.is_builtin,
+            }
+            for item in runtime_context.active_mcp_servers
+        ],
+        'active_skills': [
+            {
+                'id': item.id,
+                'name': item.name,
+                'slug': item.slug,
+                'description': item.description,
+                'category': item.category,
+                'applicable_actions': item.applicable_actions,
+                'examples': item.examples,
+                'builtin_tools': item.builtin_tools,
+                'recommended_tools': item.recommended_tools,
+                'max_iterations': item.max_iterations,
+                'risk_level': item.risk_level,
+                'output_contract': item.output_contract,
+                'is_builtin': item.is_builtin,
+            }
+            for item in runtime_context.active_skills
+        ],
+    }
 
 
 def bind_runtime_resource_to_agents(resource_kind, resource_id, agent_ids, *, replace_existing=False):
@@ -3067,7 +3162,7 @@ def _get_selected_skills(config, user=None):
     skills = list(queryset.order_by('is_builtin', 'name', 'id'))
     if not user:
         return skills
-    role_codes = set(user.rbac_roles.values_list('code', flat=True))
+    role_codes = _user_role_codes(user)
     filtered = []
     for skill in skills:
         allowed_codes = set(skill.allowed_role_codes or [])
@@ -3222,18 +3317,31 @@ def bootstrap_payload_for_user(user):
     if is_demo_account(user):
         sync_admin_sessions_to_demo()
     config = get_agent_config()
-    default_agent = get_default_agent_profile(config)
-    runtime_config = runtime_config_for_agent(config, default_agent)
+    default_runtime_context = build_agent_runtime_context(user, config=config)
+    default_agent = default_runtime_context.agent
+    runtime_config = default_runtime_context.runtime_config
     available_agents = list_available_agent_profiles(user)
-    provider = get_active_provider(runtime_config)
-    selected_mcp_servers = _get_selected_mcp_servers(runtime_config)
-    selected_skills = _get_selected_skills(runtime_config, user=user)
+    provider = default_runtime_context.provider
+    selected_mcp_servers = default_runtime_context.active_mcp_servers
+    selected_skills = default_runtime_context.active_skills
+    agent_runtime_by_id = {default_agent.id: _agent_runtime_summary(default_runtime_context)} if default_agent else {}
+    for agent in available_agents:
+        if agent.id in agent_runtime_by_id:
+            continue
+        try:
+            runtime_context = build_agent_runtime_context(user, agent.slug, config=config)
+        except ValueError:
+            continue
+        agent_runtime_by_id[agent.id] = _agent_runtime_summary(runtime_context)
     action_registry = list_action_registry(user=user, include_unavailable=False)
     all_action_registry = list_action_registry(user=user, include_unavailable=True)
     return {
         'enabled': config.is_enabled and user_has_permissions(user, ['aiops.chat.view']),
-        'default_agent': _agent_profile_summary(default_agent),
-        'available_agents': [_agent_profile_summary(agent) for agent in available_agents],
+        'default_agent': _agent_profile_summary(default_agent, agent_runtime_by_id.get(default_agent.id) if default_agent else None),
+        'available_agents': [
+            _agent_profile_summary(agent, agent_runtime_by_id.get(agent.id))
+            for agent in available_agents
+        ],
         'welcome_message': runtime_config.welcome_message,
         'suggested_questions': runtime_config.suggested_questions or DEFAULT_SUGGESTED_QUESTIONS,
         'action_registry': action_registry,
@@ -16180,14 +16288,14 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     emit = progress_callback or (lambda **kwargs: None)
     config = get_agent_config()
     try:
-        agent = resolve_agent_profile_for_user(user, session=session, config=config)
+        runtime_context = build_agent_runtime_context(user, session=session, config=config)
     except ValueError as exc:
         return _build_dispatch_error_result(str(exc), code='agent_forbidden', message='当前 Agent 不可用。')
-    runtime_config = runtime_config_for_agent(config, agent)
-    provider = get_active_provider(runtime_config)
-
-    active_mcp_servers = _get_selected_mcp_servers(runtime_config)
-    active_skills = _get_selected_skills(runtime_config, user=user)
+    agent = runtime_context.agent
+    runtime_config = runtime_context.runtime_config
+    provider = runtime_context.provider
+    active_mcp_servers = runtime_context.active_mcp_servers
+    active_skills = runtime_context.active_skills
     environment_resolution = _resolve_chat_environment(session, question)
     if environment_resolution.get('status') != 'resolved':
         emit(
@@ -17110,10 +17218,13 @@ def _stream_dispatch_result(message_id, payload, progress_callback=None):
 def _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=False, progress_callback=None, question='', analysis_only=False):
     config = get_agent_config()
     try:
-        agent = resolve_agent_profile_for_user(user, session=session, config=config)
+        runtime_context = build_agent_runtime_context(user, session=session, config=config)
     except ValueError:
         agent = get_default_agent_profile(config)
-    runtime_config = runtime_config_for_agent(config, agent)
+        runtime_config = runtime_config_for_agent(config, agent)
+    else:
+        agent = runtime_context.agent
+        runtime_config = runtime_context.runtime_config
     assistant_message.refresh_from_db()
     final_content = result.get('content', '')
     merged_metadata = {**(assistant_message.metadata or {}), **(result.get('metadata') or {})}
