@@ -2931,6 +2931,44 @@ def list_available_agent_profiles(user):
     ]
 
 
+def resolve_agent_profile_for_user(user, agent_slug='', *, session=None, config=None):
+    config = config or get_agent_config()
+    context = session.context if session and isinstance(getattr(session, 'context', None), dict) else {}
+    explicit_slug = str(agent_slug or '').strip()
+    slug = explicit_slug or str(context.get('agent_slug') or '').strip()
+    queryset = AIOpsAgentProfile.objects.filter(is_enabled=True).select_related('default_provider')
+    agent = queryset.filter(slug=slug).first() if slug else None
+    if explicit_slug and not agent:
+        raise ValueError('指定的 Agent 不存在或已停用。')
+    if not agent:
+        agent = get_default_agent_profile(config)
+    if not user_can_use_agent_profile(user, agent):
+        raise ValueError('当前账号无权使用该 Agent。')
+    return agent
+
+
+def runtime_config_for_agent(config, agent):
+    runtime = copy.copy(config)
+    if not agent:
+        return runtime
+    if agent.default_provider_id:
+        runtime.default_provider = agent.default_provider
+        runtime.default_provider_id = agent.default_provider_id
+    if agent.system_prompt:
+        runtime.system_prompt = agent.system_prompt
+    if agent.welcome_message:
+        runtime.welcome_message = agent.welcome_message
+    if agent.suggested_questions:
+        runtime.suggested_questions = agent.suggested_questions
+    if agent.enabled_mcp_server_ids:
+        runtime.enabled_mcp_server_ids = agent.enabled_mcp_server_ids
+    if agent.enabled_skill_ids:
+        runtime.enabled_skill_ids = agent.enabled_skill_ids
+    if agent.execution_policy == AIOpsAgentProfile.EXECUTION_READ_ONLY:
+        runtime.allow_action_execution = False
+    return runtime
+
+
 def get_active_provider(config=None):
     config = config or get_agent_config()
     provider = config.default_provider
@@ -3114,18 +3152,19 @@ def bootstrap_payload_for_user(user):
         sync_admin_sessions_to_demo()
     config = get_agent_config()
     default_agent = get_default_agent_profile(config)
+    runtime_config = runtime_config_for_agent(config, default_agent)
     available_agents = list_available_agent_profiles(user)
-    provider = get_active_provider(config)
-    selected_mcp_servers = _get_selected_mcp_servers(config)
-    selected_skills = _get_selected_skills(config, user=user)
+    provider = get_active_provider(runtime_config)
+    selected_mcp_servers = _get_selected_mcp_servers(runtime_config)
+    selected_skills = _get_selected_skills(runtime_config, user=user)
     action_registry = list_action_registry(user=user, include_unavailable=False)
     all_action_registry = list_action_registry(user=user, include_unavailable=True)
     return {
         'enabled': config.is_enabled and user_has_permissions(user, ['aiops.chat.view']),
         'default_agent': _agent_profile_summary(default_agent),
         'available_agents': [_agent_profile_summary(agent) for agent in available_agents],
-        'welcome_message': config.welcome_message,
-        'suggested_questions': config.suggested_questions or DEFAULT_SUGGESTED_QUESTIONS,
+        'welcome_message': runtime_config.welcome_message,
+        'suggested_questions': runtime_config.suggested_questions or DEFAULT_SUGGESTED_QUESTIONS,
         'action_registry': action_registry,
         'action_registry_summary': build_action_registry_summary(all_action_registry),
         'permissions': {
@@ -3145,10 +3184,11 @@ def bootstrap_payload_for_user(user):
             'model': provider.default_model if provider else '',
         },
         'runtime': {
-            'allow_action_execution': config.allow_action_execution,
+            'allow_action_execution': runtime_config.allow_action_execution,
             'require_confirmation': True,
-            'show_evidence': config.show_evidence,
-            'allow_analysis': config.allow_analysis,
+            'show_evidence': runtime_config.show_evidence,
+            'allow_analysis': runtime_config.allow_analysis,
+            'agent_execution_policy': default_agent.execution_policy if default_agent else '',
         },
         'active_mcp_servers': [
             {
@@ -14840,7 +14880,7 @@ def list_mcp_server_tools(server):
             pass
 
 
-def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_diagnostics=None):
+def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_diagnostics=None, agent=None):
     mcp_lines = [
         f"- {server.name}：{server.description}；工具：{'、'.join(server.tool_whitelist or [])}"
         for server in active_mcp_servers
@@ -14877,12 +14917,17 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         f"- 可执行任务：{'是' if user_has_permissions(user, ['aiops.task.execute', 'ops.host.execute']) else '否'}",
     ]
     runtime_lines = [
+        f"- agent={agent.slug if agent else 'general'}",
+        f"- agent_name={agent.name if agent else '通用运维 Agent'}",
+        f"- agent_execution_policy={agent.execution_policy if agent else AIOpsAgentProfile.EXECUTION_MANUAL_CONFIRM}",
         f"- allow_action_execution={config.allow_action_execution}",
         f"- require_confirmation={config.require_confirmation}",
         f"- show_evidence={config.show_evidence}",
     ]
     parts = [
         config.system_prompt or DEFAULT_SYSTEM_PROMPT,
+        f"当前 Agent：{agent.name if agent else '通用运维 Agent'}（{agent.slug if agent else 'general'}）。",
+        f"当前 Agent 执行策略：{agent.get_execution_policy_display() if agent else '逐操作确认'}。",
         '你当前接入的是平台内置 MCP 与 Skills 运行时。',
         '可用 MCP：',
         '\n'.join(mcp_lines) if mcp_lines else '- 当前无可用 MCP',
@@ -15839,10 +15884,15 @@ def _run_selected_action(session, user_message, user, question, scoped_question,
 def _dispatch_with_tool_runtime(session, user_message, user, question, progress_callback=None, analysis_only=False):
     emit = progress_callback or (lambda **kwargs: None)
     config = get_agent_config()
-    provider = get_active_provider(config)
+    try:
+        agent = resolve_agent_profile_for_user(user, session=session, config=config)
+    except ValueError as exc:
+        return _build_dispatch_error_result(str(exc), code='agent_forbidden', message='当前 Agent 不可用。')
+    runtime_config = runtime_config_for_agent(config, agent)
+    provider = get_active_provider(runtime_config)
 
-    active_mcp_servers = _get_selected_mcp_servers(config)
-    active_skills = _get_selected_skills(config, user=user)
+    active_mcp_servers = _get_selected_mcp_servers(runtime_config)
+    active_skills = _get_selected_skills(runtime_config, user=user)
     environment_resolution = _resolve_chat_environment(session, question)
     if environment_resolution.get('status') != 'resolved':
         emit(
@@ -15863,6 +15913,17 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     page_context = normalize_page_context(session_context.get('page_context'))
     _persist_session_context(
         session,
+        agent_slug=agent.slug,
+        agent={
+            'id': agent.id,
+            'name': agent.name,
+            'slug': agent.slug,
+            'execution_policy': agent.execution_policy,
+        },
+        runtime={
+            'allow_action_execution': runtime_config.allow_action_execution,
+            'require_confirmation': runtime_config.require_confirmation,
+        },
         current_environment={'name': knowledge_environment.get('name'), 'aliases': knowledge_environment.get('aliases') or []},
         analysis_scope=analysis_scope,
         page_context=page_context if page_context else None,
@@ -16351,8 +16412,8 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     collected_tool_outputs = []
 
     messages = [
-        {'role': 'system', 'content': _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_diagnostics=mcp_diagnostics)},
-        *_build_history_messages(session, config, before_message=user_message),
+        {'role': 'system', 'content': _build_runtime_prompt(runtime_config, active_mcp_servers, active_skills, user, mcp_diagnostics=mcp_diagnostics, agent=agent)},
+        *_build_history_messages(session, runtime_config, before_message=user_message),
     ]
     session_memory = _build_session_memory_snapshot(session)
     messages.append({
@@ -16646,6 +16707,9 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         'pending_action_draft': pending_action_draft,
         'metadata': {
             'execution_mode': 'mcp_skills',
+            'agent_slug': agent.slug,
+            'agent_name': agent.name,
+            'agent_execution_policy': agent.execution_policy,
             'current_environment': knowledge_environment.get('name'),
             'analysis_scope': analysis_scope,
             'formatter_mode': (
@@ -16750,6 +16814,11 @@ def _stream_dispatch_result(message_id, payload, progress_callback=None):
 
 def _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=False, progress_callback=None, question='', analysis_only=False):
     config = get_agent_config()
+    try:
+        agent = resolve_agent_profile_for_user(user, session=session, config=config)
+    except ValueError:
+        agent = get_default_agent_profile(config)
+    runtime_config = runtime_config_for_agent(config, agent)
     assistant_message.refresh_from_db()
     final_content = result.get('content', '')
     merged_metadata = {**(assistant_message.metadata or {}), **(result.get('metadata') or {})}
@@ -16759,6 +16828,11 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
         merged_metadata['page_context'] = page_context
     if analysis_only:
         merged_metadata['analysis_only'] = True
+    merged_metadata.update({
+        'agent_slug': agent.slug,
+        'agent_name': agent.name,
+        'agent_execution_policy': agent.execution_policy,
+    })
     response_blocks = list(merged_metadata.get('response_blocks') or [])
     pending_action = None
     draft = result.get('pending_action_draft')
@@ -16766,7 +16840,7 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
 
     if draft and not draft.get('error'):
         draft = _ensure_task_draft_title(draft)
-        action_block_reason = 'policy' if not config.allow_action_execution else ('analysis_only' if analysis_only else '')
+        action_block_reason = 'policy' if not runtime_config.allow_action_execution else ('analysis_only' if analysis_only else '')
         if action_block_reason:
             if action_block_reason == 'policy':
                 merged_metadata['action_execution_disabled'] = True

@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework import pagination, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -74,6 +75,8 @@ from .services import (
     dispatch_chat,
     ensure_default_agent_profile,
     get_agent_config,
+    resolve_agent_profile_for_user,
+    runtime_config_for_agent,
     interrupt_external_task,
     invoke_platform_mcp_tool,
     list_model_provider_models,
@@ -912,14 +915,48 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             sync_admin_sessions_to_demo()
         return AIOpsChatSession.objects.filter(user=self.request.user).prefetch_related('messages').order_by('-last_message_at', '-id')
 
+    def _agent_context(self, agent, runtime_config=None):
+        context = {
+            'agent_slug': agent.slug,
+            'agent': {
+                'id': agent.id,
+                'name': agent.name,
+                'slug': agent.slug,
+                'execution_policy': agent.execution_policy,
+            },
+        }
+        if runtime_config:
+            context['runtime'] = {
+                'allow_action_execution': runtime_config.allow_action_execution,
+                'require_confirmation': runtime_config.require_confirmation,
+            }
+        return context
+
+    def _resolve_agent(self, request, serializer, session=None, config=None):
+        try:
+            return resolve_agent_profile_for_user(
+                request.user,
+                serializer.validated_data.get('agent_slug'),
+                session=session,
+                config=config,
+            )
+        except ValueError as exc:
+            raise ValidationError({'agent_slug': str(exc)})
+
     def create(self, request, *args, **kwargs):
         serializer = AIOpsCreateSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         page_context = normalize_page_context(serializer.validated_data.get('page_context'))
+        config = get_agent_config()
+        agent = self._resolve_agent(request, serializer, config=config)
+        runtime_config = runtime_config_for_agent(config, agent)
+        context = self._agent_context(agent, runtime_config)
+        if page_context:
+            context['page_context'] = page_context
         session = AIOpsChatSession.objects.create(
             user=request.user,
             title=serializer.validated_data.get('title') or '新会话',
-            context={'page_context': page_context} if page_context else {},
+            context=context,
         )
         sync_session_to_demo_if_needed(session)
         return Response(AIOpsChatSessionSerializer(session).data, status=status.HTTP_201_CREATED)
@@ -967,10 +1004,19 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         analysis_only = bool(serializer.validated_data.get('analysis_only'))
         page_context = normalize_page_context(serializer.validated_data.get('page_context'))
+        agent = self._resolve_agent(request, serializer, session=session)
+        session_context = session.context if isinstance(session.context, dict) else {}
+        context_patch = {**session_context, **self._agent_context(agent)}
         if page_context:
-            session.context = {**(session.context if isinstance(session.context, dict) else {}), 'page_context': page_context}
+            context_patch['page_context'] = page_context
+        if context_patch != session_context:
+            session.context = context_patch
             session.save(update_fields=['context', 'updated_at'])
-        user_metadata = {}
+        user_metadata = {
+            'agent_slug': agent.slug,
+            'agent_name': agent.name,
+            'agent_execution_policy': agent.execution_policy,
+        }
         if analysis_only:
             user_metadata['analysis_only'] = True
         if page_context:
@@ -1000,10 +1046,19 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         content = recover_masked_suggested_question(serializer.validated_data['content'].strip())
         analysis_only = bool(serializer.validated_data.get('analysis_only'))
         page_context = normalize_page_context(serializer.validated_data.get('page_context'))
+        agent = self._resolve_agent(request, serializer, session=session)
+        session_context = session.context if isinstance(session.context, dict) else {}
+        context_patch = {**session_context, **self._agent_context(agent)}
         if page_context:
-            session.context = {**(session.context if isinstance(session.context, dict) else {}), 'page_context': page_context}
+            context_patch['page_context'] = page_context
+        if context_patch != session_context:
+            session.context = context_patch
             session.save(update_fields=['context', 'updated_at'])
-        user_metadata = {}
+        user_metadata = {
+            'agent_slug': agent.slug,
+            'agent_name': agent.name,
+            'agent_execution_policy': agent.execution_policy,
+        }
         if analysis_only:
             user_metadata['analysis_only'] = True
         if page_context:
@@ -1024,6 +1079,9 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 'processing_text': '请求已提交，正在排队处理',
                 'analysis_only': analysis_only,
                 'page_context': page_context,
+                'agent_slug': agent.slug,
+                'agent_name': agent.name,
+                'agent_execution_policy': agent.execution_policy,
                 'processing_steps': [{
                     'title': '排队中',
                     'detail': '已收到问题，正在准备上下文',

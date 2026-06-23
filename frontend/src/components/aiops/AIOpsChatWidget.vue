@@ -11,7 +11,8 @@
                 <img :src="botAvatar" alt="AIOps bot" class="aiops-header-avatar" />
                 <div class="aiops-title">AIOps 智能助手</div>
                 <span class="header-badge">{{ bootstrap.provider?.model || bootstrap.provider?.name || '未配置模型' }}</span>
-                <span v-if="!bootstrap.runtime?.allow_action_execution" class="header-badge runtime safe">
+                <span v-if="currentAgentName" class="header-badge agent">{{ currentAgentName }}</span>
+                <span v-if="currentRuntime?.allow_action_execution === false" class="header-badge runtime safe">
                   {{ runtimeLabel }}
                 </span>
                 <span class="aiops-subtitle">
@@ -89,6 +90,22 @@
                   <span class="environment-chip" :class="{ empty: !currentEnvironmentName }">
                     {{ currentEnvironmentName ? `环境：${currentEnvironmentName}` : '未指定环境' }}
                   </span>
+                  <el-select
+                    v-if="availableAgents.length > 1"
+                    v-model="selectedAgentSlug"
+                    size="small"
+                    class="agent-select"
+                    title="新建会话使用的 Agent"
+                    :disabled="loading.send || loading.poll"
+                    @change="handleAgentChange"
+                  >
+                    <el-option
+                      v-for="agent in availableAgents"
+                      :key="agent.slug"
+                      :label="agent.name"
+                      :value="agent.slug"
+                    />
+                  </el-select>
                   <label class="analysis-toggle">
                     <span>只分析</span>
                     <el-switch v-model="analysisSwitchValue" size="small" :disabled="forcedAnalysisOnly" />
@@ -587,6 +604,7 @@ const props = defineProps({
 const STORAGE_SESSION_KEY = 'sxdevops_aiops_current_session'
 const STORAGE_VISIBLE_KEY = 'sxdevops_aiops_visible'
 const STORAGE_ANALYSIS_KEY = 'sxdevops_aiops_analysis_only'
+const STORAGE_AGENT_KEY = 'sxdevops_aiops_agent'
 const STORAGE_DRAFT_PREFIX = 'sxdevops_aiops_draft_'
 
 const router = useRouter()
@@ -601,6 +619,7 @@ const sessions = ref([])
 const messages = ref([])
 const composer = ref('')
 const currentSessionId = ref(Number(localStorage.getItem(STORAGE_SESSION_KEY) || '') || null)
+const selectedAgentSlug = ref(localStorage.getItem(STORAGE_AGENT_KEY) || '')
 const loading = ref({ bootstrap: false, sessions: false, messages: false, send: false, poll: false, deleteSession: null })
 const pendingAssistantMessage = ref(null)
 const messageListRef = ref(null)
@@ -631,7 +650,13 @@ const FINAL_POLL_STABLE_ROUNDS = 2
 const available = computed(() => bootstrap.value.enabled && authStore.hasPermission('aiops.chat.view'))
 const renderMessages = computed(() => pendingAssistantMessage.value ? [...messages.value, pendingAssistantMessage.value] : messages.value)
 const currentSession = computed(() => sessions.value.find(item => item.id === currentSessionId.value) || null)
-const actionExecutionAllowed = computed(() => bootstrap.value.runtime?.allow_action_execution !== false)
+const availableAgents = computed(() => bootstrap.value.available_agents || [])
+const sessionAgentSlug = computed(() => currentSession.value?.agent?.slug || currentSession.value?.context?.agent_slug || '')
+const currentAgentSlug = computed(() => sessionAgentSlug.value || selectedAgentSlug.value || bootstrap.value.default_agent?.slug || '')
+const currentAgent = computed(() => availableAgents.value.find(item => item.slug === currentAgentSlug.value) || bootstrap.value.default_agent || null)
+const currentAgentName = computed(() => currentAgent.value?.name || '')
+const currentRuntime = computed(() => currentSession.value?.context?.runtime || bootstrap.value.runtime || {})
+const actionExecutionAllowed = computed(() => currentRuntime.value?.allow_action_execution !== false)
 const forcedAnalysisOnly = computed(() => !actionExecutionAllowed.value)
 const effectiveAnalysisOnly = computed(() => forcedAnalysisOnly.value || analysisOnly.value)
 const analysisSwitchValue = computed({
@@ -661,7 +686,7 @@ const fabStyle = computed(() => {
   }
 })
 const runtimeLabel = computed(() => {
-  if (!bootstrap.value.runtime?.allow_action_execution) return '仅分析/草稿'
+  if (currentRuntime.value?.allow_action_execution === false) return '仅分析/草稿'
   return '可生成待执行任务'
 })
 const canViewConfig = computed(() => authStore.hasPermission('aiops.config.view'))
@@ -1729,6 +1754,9 @@ async function fetchBootstrap() {
   loading.value.bootstrap = true
   try {
     bootstrap.value = await getAIOpsBootstrap()
+    if (!selectedAgentSlug.value) {
+      selectedAgentSlug.value = bootstrap.value.default_agent?.slug || availableAgents.value[0]?.slug || ''
+    }
   } finally {
     loading.value.bootstrap = false
   }
@@ -1760,6 +1788,11 @@ async function selectSession(sessionId) {
   loading.value.messages = true
   try {
     messages.value = await getAIOpsMessages(sessionId)
+    const sessionAgent = currentSession.value?.agent?.slug || currentSession.value?.context?.agent_slug || ''
+    if (sessionAgent) {
+      selectedAgentSlug.value = sessionAgent
+      localStorage.setItem(STORAGE_AGENT_KEY, sessionAgent)
+    }
     resumeMessagePolling(sessionId, messages.value)
     loadDraft(sessionId)
     await nextTick()
@@ -1772,7 +1805,7 @@ async function selectSession(sessionId) {
 
 async function handleCreateSession() {
   try {
-    const session = await createAIOpsSession({ title: '' })
+    const session = await createAIOpsSession({ title: '', agent_slug: selectedAgentSlug.value || bootstrap.value.default_agent?.slug || '' })
     sessions.value.unshift(session)
     messages.value = []
     await selectSession(session.id)
@@ -1783,7 +1816,7 @@ async function handleCreateSession() {
 
 async function ensureSession() {
   if (currentSessionId.value) return currentSessionId.value
-  const session = await createAIOpsSession({ title: '' })
+  const session = await createAIOpsSession({ title: '', agent_slug: selectedAgentSlug.value || bootstrap.value.default_agent?.slug || '' })
   sessions.value.unshift(session)
   currentSessionId.value = session.id
   localStorage.setItem(STORAGE_SESSION_KEY, String(session.id))
@@ -1820,6 +1853,7 @@ async function handleSend() {
     const response = await sendAIOpsMessageAsync(sessionId, {
       content,
       analysis_only: effectiveAnalysisOnly.value,
+      agent_slug: sessionAgentSlug.value || selectedAgentSlug.value || bootstrap.value.default_agent?.slug || '',
     })
     messages.value.push(response.user_message)
     messages.value.push(response.assistant_message)
@@ -1837,6 +1871,16 @@ async function handleSend() {
     loading.value.send = false
     pendingAssistantMessage.value = null
   }
+}
+
+function handleAgentChange(value) {
+  if (value) {
+    localStorage.setItem(STORAGE_AGENT_KEY, value)
+  } else {
+    localStorage.removeItem(STORAGE_AGENT_KEY)
+  }
+  if (!currentSessionId.value) return
+  ElMessage.info('Agent 选择会在新会话中生效')
 }
 
 async function handleConfirmAction(action) {
@@ -2435,10 +2479,5 @@ onBeforeUnmount(() => {
   .aiops-panel{right:8px;width:calc(100vw - var(--sidebar-collapsed-width,68px) - 16px);max-width:calc(100vw - var(--sidebar-collapsed-width,68px) - 16px)}
 }
 </style>
-
-
-
-
-
 
 

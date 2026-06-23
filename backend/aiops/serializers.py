@@ -367,10 +367,11 @@ class AIOpsChatMessageSerializer(serializers.ModelSerializer):
 
 class AIOpsChatSessionSerializer(serializers.ModelSerializer):
     latest_message = serializers.SerializerMethodField()
+    agent = serializers.SerializerMethodField()
 
     class Meta:
         model = AIOpsChatSession
-        fields = ['id', 'title', 'status', 'context', 'last_message_at', 'created_at', 'updated_at', 'latest_message']
+        fields = ['id', 'title', 'status', 'context', 'agent', 'last_message_at', 'created_at', 'updated_at', 'latest_message']
 
     def get_latest_message(self, obj):
         message = obj.messages.order_by('-created_at', '-id').first()
@@ -380,6 +381,15 @@ class AIOpsChatSessionSerializer(serializers.ModelSerializer):
             'role': message.role,
             'content': message.content[:120],
             'created_at': message.created_at,
+        }
+
+    def get_agent(self, obj):
+        context = obj.context if isinstance(obj.context, dict) else {}
+        agent = context.get('agent') if isinstance(context.get('agent'), dict) else {}
+        return {
+            'slug': context.get('agent_slug') or agent.get('slug') or '',
+            'name': agent.get('name') or '',
+            'execution_policy': agent.get('execution_policy') or '',
         }
 
 
@@ -618,11 +628,13 @@ class AIOpsChatInputSerializer(serializers.Serializer):
     content = serializers.CharField(max_length=4000)
     analysis_only = serializers.BooleanField(required=False, default=False)
     page_context = serializers.JSONField(required=False, default=dict)
+    agent_slug = serializers.SlugField(max_length=128, required=False, allow_blank=True, default='')
 
 
 class AIOpsCreateSessionSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=128, required=False, allow_blank=True, default='')
     page_context = serializers.JSONField(required=False, default=dict)
+    agent_slug = serializers.SlugField(max_length=128, required=False, allow_blank=True, default='')
 
 
 class AIOpsToolInvocationSerializer(_AIOpsAuditTraceMixin, serializers.ModelSerializer):
