@@ -4573,15 +4573,48 @@ def _knowledge_environment_for_session(session):
     return resolve_knowledge_environment(environment_name)
 
 
+def _has_explicit_k8s_cluster_scope(text):
+    lowered = str(text or '').lower()
+    return any(keyword in lowered for keyword in [
+        'k8s', 'kubernetes', 'pod', 'pods', 'namespace', '命名空间',
+        'deployment', 'deployments', 'statefulset', 'statefulsets',
+        'daemonset', 'daemonsets', 'workload', 'workloads', 'svc',
+        'kubectl', 'helm',
+    ])
+
+
+def _normalize_task_resource_type(resource_type, query='', environment='', system_name='', knowledge_environment=None):
+    normalized = (resource_type or '').strip().lower()
+    if not normalized:
+        return ''
+    if normalized in {'hosts', 'server', 'servers', 'machine', 'machines'}:
+        return TaskResource.RESOURCE_HOST
+    if normalized in {'k8s', 'kubernetes'}:
+        return TaskResource.RESOURCE_K8S
+    if normalized in {'cluster', 'clusters'}:
+        scope_text = ' '.join(filter(None, [
+            str(query or ''),
+            str(environment or ''),
+            str(system_name or ''),
+            str((knowledge_environment or {}).get('name') or ''),
+        ]))
+        if _has_explicit_k8s_cluster_scope(scope_text):
+            return TaskResource.RESOURCE_K8S
+        return TaskResource.RESOURCE_HOST
+    return normalized
+
+
 def query_task_resources(session, user_message, user, query='', environment='', system_name='', resource_type='host', status='active', limit=20, knowledge_environment=None):
     started_at = time.time()
     knowledge_environment = knowledge_environment or _resolve_knowledge_environment_for_query(query, environment) or _knowledge_environment_for_session(session)
     environment = environment or _resolve_task_resource_environment_from_text(query) or _extract_environment(query)
-    resource_type = (resource_type or 'host').strip().lower()
-    if resource_type in {'hosts', 'server', 'servers', 'machine', 'machines'}:
-        resource_type = TaskResource.RESOURCE_HOST
-    if resource_type in {'k8s', 'kubernetes', 'cluster', 'clusters'}:
-        resource_type = TaskResource.RESOURCE_K8S
+    resource_type = _normalize_task_resource_type(
+        resource_type or 'host',
+        query=query,
+        environment=environment,
+        system_name=system_name,
+        knowledge_environment=knowledge_environment,
+    )
     status_value = (status or '').strip().lower()
     try:
         limit = max(1, min(int(limit or 20), 100))
@@ -12958,9 +12991,13 @@ def _host_source_refs_for_targets(targets):
 
 
 def _resolve_task_resource_targets_for_task(question='', environment='', system_name='', resource_type='host', status='active', explicit_resource_ids=None, max_hosts=20, knowledge_environment=None):
-    resource_type = (resource_type or TaskResource.RESOURCE_HOST).strip().lower()
-    if resource_type in {'hosts', 'server', 'servers', 'machine', 'machines'}:
-        resource_type = TaskResource.RESOURCE_HOST
+    resource_type = _normalize_task_resource_type(
+        resource_type or TaskResource.RESOURCE_HOST,
+        query=question,
+        environment=environment,
+        system_name=system_name,
+        knowledge_environment=knowledge_environment,
+    )
     queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').all()
     if resource_type:
         queryset = queryset.filter(resource_type=resource_type)

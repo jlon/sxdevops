@@ -7175,6 +7175,59 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(set(inventory['node_names']), {'hbase-master', 'hbase-regionserver-1', 'hbase-regionserver-2'})
         self.assertEqual(result['summary']['node_count'], 3)
 
+    def test_hbase_task_resource_query_treats_generic_cluster_type_as_host_scope(self):
+        self.ensure_hbase_task_resource_environment()
+        session = AIOpsChatSession.objects.create(user=self.user, title='hbase-generic-cluster-type')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='本地 HBase 集群节点数',
+        )
+
+        result = query_task_resources(
+            session,
+            user_message,
+            self.user,
+            query='本地 HBase 集群',
+            environment='本地 HBase 集群',
+            resource_type='cluster',
+            status='active',
+            limit=50,
+        )
+
+        self.assertEqual(result['summary']['resource_type'], TaskResource.RESOURCE_HOST)
+        self.assertEqual(result['summary']['node_count'], 3)
+        self.assertEqual(result['cluster_inventory']['cluster_name'], '本地 HBase 集群')
+
+    def test_k8s_task_resource_query_treats_explicit_k8s_cluster_type_as_k8s_scope(self):
+        cluster, env, _ = self.ensure_ecommerce_knowledge_environment()
+        session = AIOpsChatSession.objects.create(user=self.user, title='k8s-generic-cluster-type')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='电商测试环境 K8s 集群资源',
+        )
+
+        result = query_task_resources(
+            session,
+            user_message,
+            self.user,
+            query='电商测试环境 K8s 集群',
+            environment=env.name,
+            resource_type='cluster',
+            status='active',
+            limit=50,
+            knowledge_environment={
+                'name': '电商测试环境',
+                'task_resource_environment_ids': [env.id],
+                'k8s_cluster_ids': [cluster.id],
+            },
+        )
+
+        self.assertEqual(result['summary']['resource_type'], TaskResource.RESOURCE_K8S)
+        self.assertEqual(result['summary']['count'], 1)
+        self.assertEqual(result['resources'][0]['name'], '电商测试环境-k3s')
+
     def test_resource_inventory_fastpath_only_when_provider_unavailable(self):
         env, _ = self.ensure_hbase_task_resource_environment()
         knowledge_environment = {'name': '本地 HBase 集群', 'task_resource_environment_ids': [env.id]}
