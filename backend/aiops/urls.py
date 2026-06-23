@@ -7,6 +7,7 @@ from . import views
 router = DefaultRouter()
 router.register('sessions', views.AIOpsChatSessionViewSet, basename='aiops-session')
 router.register('admin/providers', views.AIOpsModelProviderViewSet, basename='aiops-provider')
+router.register('admin/agents', views.AIOpsAgentProfileViewSet, basename='aiops-agent')
 router.register('admin/mcp-servers', views.AIOpsMCPServerViewSet, basename='aiops-mcp-server')
 router.register('admin/skills', views.AIOpsSkillViewSet, basename='aiops-skill')
 router.register('knowledge-environments', views.AIOpsKnowledgeEnvironmentViewSet, basename='aiops-knowledge-environment')

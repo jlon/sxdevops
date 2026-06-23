@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, time as datetime_time
 
 from django.core.cache import cache
+from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
@@ -16,6 +17,7 @@ from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
 
 from .models import (
+    AIOpsAgentProfile,
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
@@ -33,6 +35,7 @@ from .models import (
 from .action_handlers import normalize_page_context
 from .serializers import (
     AIOpsAgentConfigSerializer,
+    AIOpsAgentProfileSerializer,
     AIOpsAuditSessionSerializer,
     AIOpsAuditTraceReader,
     AIOpsChatInputSerializer,
@@ -69,6 +72,7 @@ from .services import (
     confirm_action,
     create_external_task,
     dispatch_chat,
+    ensure_default_agent_profile,
     get_agent_config,
     interrupt_external_task,
     invoke_platform_mcp_tool,
@@ -153,6 +157,59 @@ class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 @permission_classes([IsAuthenticated, build_rbac_permission('aiops.config.view')])
 def model_provider_presets(request):
     return Response({'presets': list_model_provider_presets()})
+
+
+class AIOpsAgentProfileViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+    serializer_class = AIOpsAgentProfileSerializer
+    pagination_class = None
+    search_fields = ['name', 'slug', 'description']
+    rbac_permissions = {
+        'list': ['aiops.agent.view'],
+        'retrieve': ['aiops.agent.view'],
+        'create': ['aiops.agent.manage'],
+        'update': ['aiops.agent.manage'],
+        'partial_update': ['aiops.agent.manage'],
+        'destroy': ['aiops.agent.manage'],
+        'set_default': ['aiops.agent.manage'],
+    }
+
+    def get_queryset(self):
+        ensure_default_agent_profile(get_agent_config())
+        return AIOpsAgentProfile.objects.select_related('default_provider').order_by('-is_default', 'name', 'id')
+
+    def perform_create(self, serializer):
+        is_default = bool(serializer.validated_data.get('is_default'))
+        with transaction.atomic():
+            if is_default:
+                AIOpsAgentProfile.objects.update(is_default=False)
+            serializer.save(created_by=self.request.user.username, updated_by=self.request.user.username)
+
+    def perform_update(self, serializer):
+        is_default = bool(serializer.validated_data.get('is_default'))
+        with transaction.atomic():
+            if is_default:
+                AIOpsAgentProfile.objects.exclude(pk=serializer.instance.pk).update(is_default=False)
+            serializer.save(updated_by=self.request.user.username)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_builtin:
+            return Response({'detail': '内置 Agent 不允许删除'}, status=status.HTTP_400_BAD_REQUEST)
+        if instance.is_default:
+            return Response({'detail': '默认 Agent 不允许删除'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'], url_path='set-default')
+    def set_default(self, request, pk=None):
+        instance = self.get_object()
+        if not instance.is_enabled:
+            return Response({'detail': '停用 Agent 不能设为默认'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            AIOpsAgentProfile.objects.exclude(pk=instance.pk).update(is_default=False)
+            instance.is_default = True
+            instance.updated_by = request.user.username
+            instance.save(update_fields=['is_default', 'updated_by', 'updated_at'])
+        return Response(self.get_serializer(instance).data)
 
 
 class AIOpsMCPServerViewSet(RBACPermissionMixin, viewsets.ModelViewSet):

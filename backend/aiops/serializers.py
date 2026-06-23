@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from .models import (
     AIOpsAgentConfig,
+    AIOpsAgentProfile,
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
@@ -93,6 +94,81 @@ class AIOpsAgentConfigSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
+
+
+class AIOpsAgentProfileSerializer(serializers.ModelSerializer):
+    default_provider_id = serializers.PrimaryKeyRelatedField(
+        queryset=AIOpsModelProvider.objects.all(),
+        source='default_provider',
+        write_only=True,
+        allow_null=True,
+        required=False,
+    )
+    default_provider = AIOpsModelProviderLiteSerializer(read_only=True)
+    execution_policy_display = serializers.CharField(source='get_execution_policy_display', read_only=True)
+
+    class Meta:
+        model = AIOpsAgentProfile
+        fields = [
+            'id', 'name', 'slug', 'description', 'default_provider', 'default_provider_id',
+            'system_prompt', 'welcome_message', 'suggested_questions',
+            'enabled_mcp_server_ids', 'enabled_skill_ids', 'tool_policy', 'execution_policy',
+            'execution_policy_display', 'allowed_role_codes', 'is_default', 'is_builtin', 'is_enabled',
+            'created_by', 'updated_by', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['is_builtin', 'created_by', 'updated_by', 'created_at', 'updated_at']
+
+    def validate_slug(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError('请填写 Agent 标识')
+        return value
+
+    def validate(self, attrs):
+        list_fields = [
+            'suggested_questions',
+            'enabled_mcp_server_ids',
+            'enabled_skill_ids',
+            'allowed_role_codes',
+        ]
+        for field in list_fields:
+            if field not in attrs:
+                continue
+            value = attrs.get(field)
+            if value in (None, ''):
+                attrs[field] = []
+                continue
+            if not isinstance(value, list):
+                raise serializers.ValidationError({field: '必须为数组'})
+            normalized = []
+            for item in value:
+                if field.endswith('_ids'):
+                    try:
+                        normalized_item = int(item)
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    normalized_item = str(item or '').strip()
+                if normalized_item and normalized_item not in normalized:
+                    normalized.append(normalized_item)
+            attrs[field] = normalized
+
+        if 'tool_policy' in attrs:
+            value = attrs.get('tool_policy')
+            if value in (None, ''):
+                attrs['tool_policy'] = {}
+            elif not isinstance(value, dict):
+                raise serializers.ValidationError({'tool_policy': '必须为对象'})
+
+        instance = self.instance
+        if instance and instance.is_builtin:
+            attrs.pop('slug', None)
+            attrs.pop('is_default', None)
+        if instance and instance.is_default and attrs.get('is_enabled') is False:
+            raise serializers.ValidationError({'is_enabled': '默认 Agent 不能停用'})
+        if attrs.get('is_default') and attrs.get('is_enabled') is False:
+            raise serializers.ValidationError({'is_default': '停用 Agent 不能设为默认'})
+        return attrs
 
 
 class AIOpsMCPServerSerializer(serializers.ModelSerializer):

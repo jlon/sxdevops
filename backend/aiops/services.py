@@ -92,6 +92,7 @@ from .tool_registry import (
 )
 from .models import (
     AIOpsAgentConfig,
+    AIOpsAgentProfile,
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
@@ -2806,7 +2807,128 @@ def get_agent_config():
         config.save(update_fields=update_fields)
     _ensure_builtin_runtime_assets(config)
     _ensure_builtin_model_provider(config)
+    ensure_default_agent_profile(config)
     return config
+
+
+def _agent_profile_summary(agent):
+    if not agent:
+        return None
+    return {
+        'id': agent.id,
+        'name': agent.name,
+        'slug': agent.slug,
+        'description': agent.description,
+        'default_provider_id': agent.default_provider_id,
+        'system_prompt': agent.system_prompt,
+        'welcome_message': agent.welcome_message,
+        'suggested_questions': agent.suggested_questions or [],
+        'enabled_mcp_server_ids': agent.enabled_mcp_server_ids or [],
+        'enabled_skill_ids': agent.enabled_skill_ids or [],
+        'tool_policy': agent.tool_policy or {},
+        'execution_policy': agent.execution_policy,
+        'execution_policy_display': agent.get_execution_policy_display(),
+        'allowed_role_codes': agent.allowed_role_codes or [],
+        'is_default': agent.is_default,
+        'is_builtin': agent.is_builtin,
+        'is_enabled': agent.is_enabled,
+    }
+
+
+def ensure_default_agent_profile(config=None):
+    config = config or AIOpsAgentConfig.objects.filter(name='default').first()
+    defaults = {
+        'name': '通用运维 Agent',
+        'description': '面向平台通用问答、只读取证、任务草稿和受控执行的默认 Agent。',
+        'system_prompt': (config.system_prompt if config else '') or DEFAULT_SYSTEM_PROMPT,
+        'welcome_message': (config.welcome_message if config else '') or DEFAULT_WELCOME_MESSAGE,
+        'suggested_questions': (config.suggested_questions if config else None) or DEFAULT_SUGGESTED_QUESTIONS,
+        'enabled_mcp_server_ids': (config.enabled_mcp_server_ids if config else None) or [],
+        'enabled_skill_ids': (config.enabled_skill_ids if config else None) or [],
+        'tool_policy': {
+            'allow_read_only': True,
+            'allow_generate_task': True,
+            'allow_execute': True,
+            'max_risk_level': AIOpsPendingAction.RISK_HIGH,
+        },
+        'execution_policy': AIOpsAgentProfile.EXECUTION_MANUAL_CONFIRM,
+        'allowed_role_codes': [],
+        'is_builtin': True,
+        'is_enabled': True,
+        'is_default': True,
+        'created_by': 'system',
+        'updated_by': 'system',
+    }
+    agent, created = AIOpsAgentProfile.objects.get_or_create(slug='general', defaults=defaults)
+    update_fields = []
+    if not agent.is_builtin:
+        agent.is_builtin = True
+        update_fields.append('is_builtin')
+    if not agent.is_enabled:
+        agent.is_enabled = True
+        update_fields.append('is_enabled')
+    if not AIOpsAgentProfile.objects.filter(is_default=True).exists() or created:
+        AIOpsAgentProfile.objects.exclude(pk=agent.pk).update(is_default=False)
+        agent.is_default = True
+        update_fields.append('is_default')
+    if not agent.name:
+        agent.name = defaults['name']
+        update_fields.append('name')
+    if not agent.description:
+        agent.description = defaults['description']
+        update_fields.append('description')
+    if not agent.welcome_message:
+        agent.welcome_message = defaults['welcome_message']
+        update_fields.append('welcome_message')
+    if not agent.suggested_questions:
+        agent.suggested_questions = defaults['suggested_questions']
+        update_fields.append('suggested_questions')
+    if not agent.system_prompt:
+        agent.system_prompt = defaults['system_prompt']
+        update_fields.append('system_prompt')
+    if not agent.tool_policy:
+        agent.tool_policy = defaults['tool_policy']
+        update_fields.append('tool_policy')
+    if update_fields:
+        agent.updated_by = 'system'
+        update_fields.append('updated_by')
+        agent.save(update_fields=list(dict.fromkeys(update_fields)))
+    return agent
+
+
+def get_default_agent_profile(config=None):
+    ensure_default_agent_profile(config)
+    agent = AIOpsAgentProfile.objects.filter(is_default=True, is_enabled=True).order_by('id').first()
+    if agent:
+        return agent
+    return ensure_default_agent_profile(config)
+
+
+def user_can_use_agent_profile(user, agent):
+    if not agent or not agent.is_enabled:
+        return False
+    if agent.is_default:
+        return user_has_permissions(user, ['aiops.chat.view'])
+    if not user_has_permissions(user, ['aiops.chat.view', 'aiops.agent.run']):
+        return False
+    allowed_role_codes = set(agent.allowed_role_codes or [])
+    if not allowed_role_codes:
+        return True
+    if getattr(user, 'is_superuser', False) or is_demo_account(user):
+        return True
+    role_codes = set(user.rbac_roles.values_list('code', flat=True))
+    role_codes.update(user.rbac_groups.values_list('roles__code', flat=True))
+    role_codes.discard(None)
+    return bool(allowed_role_codes & role_codes)
+
+
+def list_available_agent_profiles(user):
+    ensure_default_agent_profile()
+    return [
+        agent
+        for agent in AIOpsAgentProfile.objects.filter(is_enabled=True).select_related('default_provider').order_by('-is_default', 'name', 'id')
+        if user_can_use_agent_profile(user, agent)
+    ]
 
 
 def get_active_provider(config=None):
@@ -2991,6 +3113,8 @@ def bootstrap_payload_for_user(user):
     if is_demo_account(user):
         sync_admin_sessions_to_demo()
     config = get_agent_config()
+    default_agent = get_default_agent_profile(config)
+    available_agents = list_available_agent_profiles(user)
     provider = get_active_provider(config)
     selected_mcp_servers = _get_selected_mcp_servers(config)
     selected_skills = _get_selected_skills(config, user=user)
@@ -2998,6 +3122,8 @@ def bootstrap_payload_for_user(user):
     all_action_registry = list_action_registry(user=user, include_unavailable=True)
     return {
         'enabled': config.is_enabled and user_has_permissions(user, ['aiops.chat.view']),
+        'default_agent': _agent_profile_summary(default_agent),
+        'available_agents': [_agent_profile_summary(agent) for agent in available_agents],
         'welcome_message': config.welcome_message,
         'suggested_questions': config.suggested_questions or DEFAULT_SUGGESTED_QUESTIONS,
         'action_registry': action_registry,
@@ -3009,6 +3135,10 @@ def bootstrap_payload_for_user(user):
             'execute_task': user_has_permissions(user, ['aiops.task.execute', 'ops.host.execute']),
             'config_view': user_has_permissions(user, ['aiops.config.view']),
             'config_manage': user_has_permissions(user, ['aiops.config.manage']),
+            'agent_view': user_has_permissions(user, ['aiops.agent.view']),
+            'agent_manage': user_has_permissions(user, ['aiops.agent.manage']),
+            'agent_run': user_has_permissions(user, ['aiops.agent.run']),
+            'agent_full_execute': user_has_permissions(user, ['aiops.agent.full_execute']),
         },
         'provider': {
             'name': provider.name if provider else '未配置模型',

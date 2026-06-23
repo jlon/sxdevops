@@ -118,6 +118,59 @@ class AIOpsAgentConfig(models.Model):
         return self.name
 
 
+class AIOpsAgentProfile(models.Model):
+    EXECUTION_READ_ONLY = 'read_only'
+    EXECUTION_MANUAL_CONFIRM = 'manual_confirm'
+    EXECUTION_FULL_AUTO = 'full_auto'
+    EXECUTION_POLICY_CHOICES = [
+        (EXECUTION_READ_ONLY, '只读'),
+        (EXECUTION_MANUAL_CONFIRM, '逐操作确认'),
+        (EXECUTION_FULL_AUTO, 'Full Auto'),
+    ]
+
+    name = models.CharField('Agent 名称', max_length=128)
+    slug = models.SlugField('Agent 标识', max_length=128, unique=True)
+    description = models.CharField('描述', max_length=255, blank=True, default='')
+    default_provider = models.ForeignKey(
+        AIOpsModelProvider,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='agent_profiles',
+        verbose_name='默认模型提供商',
+    )
+    system_prompt = models.TextField('系统提示词', blank=True, default='')
+    welcome_message = models.CharField('欢迎语', max_length=255, blank=True, default='')
+    suggested_questions = models.JSONField('建议问题', default=list, blank=True)
+    enabled_mcp_server_ids = models.JSONField('启用的 MCP', default=list, blank=True)
+    enabled_skill_ids = models.JSONField('启用的 Skill', default=list, blank=True)
+    tool_policy = models.JSONField('工具策略', default=dict, blank=True)
+    execution_policy = models.CharField('执行策略', max_length=32, choices=EXECUTION_POLICY_CHOICES, default=EXECUTION_MANUAL_CONFIRM)
+    allowed_role_codes = models.JSONField('允许角色', default=list, blank=True)
+    is_default = models.BooleanField('默认 Agent', default=False)
+    is_builtin = models.BooleanField('内置', default=False)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-is_default', 'name', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['is_default'],
+                condition=models.Q(is_default=True),
+                name='aiops_agent_profile_single_default',
+            ),
+        ]
+        verbose_name = 'AIOps Agent'
+        verbose_name_plural = 'AIOps Agent'
+
+    def __str__(self):
+        return self.name
+
+
 class AIOpsMCPServer(models.Model):
     SERVER_HTTP = 'http'
     SERVER_STDIO = 'stdio'
