@@ -37,6 +37,7 @@ from ops.models import (
     GrafanaSetting,
     Host,
     HostTask,
+    HostTaskExecution,
     K8sCluster,
     LogDataSource,
     LogEntry,
@@ -59,8 +60,15 @@ from ops.log_views import _merge_config as merge_log_config
 from ops.log_views import _run_query as run_log_provider_query
 from ops.observability_views import execute_dashboard_panel_queries, execute_promql_query
 from rbac.services import is_demo_account, user_has_permissions
+from sxdevops.features import filter_feature_tools, tool_feature_enabled
 
 from .knowledge_graph import build_knowledge_graph, resolve_knowledge_environment, resolve_knowledge_environments_from_text
+from .conversation_context import (
+    build_agent_context_prompt,
+    build_history_messages as build_context_history_messages,
+    build_session_memory_snapshot as build_context_session_memory_snapshot,
+    summarize_action_payload_for_memory,
+)
 from .action_handlers import (
     build_context_form_block,
     build_page_context_summary_block,
@@ -68,6 +76,17 @@ from .action_handlers import (
     normalize_page_context,
     page_context_value,
     select_action_by_handler,
+)
+from .routing_policy import (
+    build_routing_constraints,
+    is_non_k8s_inventory_question,
+    selected_action_should_preempt_llm,
+    should_use_task_resource_fallback,
+)
+from .tool_registry import (
+    platform_tool_allowed,
+    validate_platform_tool_registry,
+    whitelisted_platform_tool_names,
 )
 from .models import (
     AIOpsAgentConfig,
@@ -311,7 +330,7 @@ BUILTIN_MCP_SERVERS = [
         'name': '任务中心 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询任务记录并生成任务中心草稿。',
-        'tool_whitelist': ['query_task_resources', 'generate_host_task'],
+        'tool_whitelist': ['query_task_resources', 'query_host_tasks', 'query_task_center', 'generate_host_task'],
     },
     {
         'name': '时间中心 MCP',
@@ -2061,7 +2080,7 @@ def _action_question_matches(action_code, question, analysis_scope=None):
         )
     if action_code == 'k8s.diagnose':
         return (
-            _question_contains_any(lowered, ['k8s', 'kubernetes', 'pod', 'pods', 'namespace', '命名空间', '集群', 'deployment', 'statefulset', 'daemonset', 'workload', 'workloads', '容器'])
+            _question_contains_any(lowered, ['k8s', 'kubernetes', 'pod', 'pods', 'namespace', '命名空间', 'deployment', 'statefulset', 'daemonset', 'workload', 'workloads', '容器', 'kubectl', 'helm'])
             and _question_contains_any(lowered, ['诊断', '排查', '分析', '根因', '原因', '为什么', '异常', '失败', 'pending', 'crashloopbackoff', 'crash', 'notready', '不可用', '资源不足', '影响', '哪些', '怎么看'])
         )
     if action_code == 'slo.analysis':
@@ -3331,6 +3350,11 @@ SERVICE_BUSINESS_ALIASES = {
 }
 
 
+OBSERVABILITY_SERVICE_STOPWORDS = {
+    'slo', 'sla', 'qps', 'p95', 'p99', 'cpu', 'mem', 'memory', 'promql', 'apm',
+}
+
+
 def _append_business_service_aliases(candidates, text):
     raw_text = str(text or '')
     for keyword, aliases in SERVICE_BUSINESS_ALIASES.items():
@@ -3416,6 +3440,8 @@ def _filter_service_candidates_for_observability(candidates, knowledge_environme
         if not text:
             continue
         normalized = _normalize_candidate_text(text)
+        if normalized in OBSERVABILITY_SERVICE_STOPWORDS:
+            continue
         if text in environment_terms or normalized in environment_terms:
             continue
         matched = _match_service_from_options(text, service_options)
@@ -3436,6 +3462,20 @@ def _detect_observability_service(text, analysis_scope=None, knowledge_environme
     if service in {'订单服务', '订单'} and any(candidate in filtered for candidate in ['order-service', 'order']):
         return 'order-service'
     return service
+
+
+def _default_observability_service(analysis_scope=None, knowledge_environment=None):
+    service_options = _analysis_scope_service_options(analysis_scope, knowledge_environment)
+    for service in service_options:
+        text = str(service or '').strip()
+        if not text:
+            continue
+        if text in _environment_scope_terms(knowledge_environment, analysis_scope):
+            continue
+        if _normalize_candidate_text(text) in OBSERVABILITY_SERVICE_STOPWORDS:
+            continue
+        return text
+    return ''
 
 
 def _parse_json_object_from_text(text):
@@ -3938,16 +3978,30 @@ def _build_analysis_scope(knowledge_environment):
                 break
         return values
 
+    def merged_labels(kind, limit=12):
+        values = labels_for(kind, limit=limit)
+        snapshot = knowledge_environment.get('association_snapshot') or {}
+        if isinstance(snapshot, dict):
+            for node in snapshot.get('nodes') or []:
+                if not isinstance(node, dict) or node.get('kind') != kind:
+                    continue
+                label = node.get('label') or node.get('name') or node.get(kind)
+                if label and label not in values:
+                    values.insert(0, label)
+                if len(values) >= limit:
+                    break
+        return values[:limit]
+
     return {
         'environment': name,
         'summary': graph.get('summary') or {},
-        'systems': labels_for('system'),
-        'services': labels_for('service'),
-        'datasources': labels_for('datasource'),
-        'dashboards': labels_for('dashboard'),
-        'infrastructure': labels_for('infrastructure'),
-        'runtime_components': labels_for('runtime_component'),
-        'event_sources': labels_for('event_source'),
+        'systems': merged_labels('system'),
+        'services': merged_labels('service'),
+        'datasources': merged_labels('datasource'),
+        'dashboards': merged_labels('dashboard'),
+        'infrastructure': merged_labels('infrastructure'),
+        'runtime_components': merged_labels('runtime_component'),
+        'event_sources': merged_labels('event_source'),
         'edge_count': len(edges),
         'event_environments': knowledge_environment.get('event_environments') or [],
         'alert_environments': knowledge_environment.get('alert_environments') or [],
@@ -4576,13 +4630,54 @@ def query_task_resources(session, user_message, user, query='', environment='', 
     )
     resources = list(queryset.order_by('environment__sort_order', 'system__sort_order', 'resource_type', 'name', 'id')[:limit])
     formatted_resources = [_format_task_resource(item) for item in resources]
+    cluster_inventory = None
+    if resources and resource_type == TaskResource.RESOURCE_HOST and is_non_k8s_inventory_question(query):
+        roles = Counter(
+            str((item.metadata or {}).get('role') or item.resource_type or 'node')
+            for item in resources
+        )
+        environment_names = [
+            item.environment.name
+            for item in resources
+            if item.environment_id and item.environment.name
+        ]
+        cluster_name = (knowledge_environment or {}).get('name') or (environment_names[0] if environment_names else environment or '')
+        cluster_inventory = {
+            'cluster_count': 1 if cluster_name else 0,
+            'cluster_name': cluster_name,
+            'node_count': len(resources),
+            'node_names': [item.name for item in resources if item.name],
+            'roles': dict(roles),
+            'source': 'task_resource_base',
+            'resource_type': resource_type,
+            'is_k8s': False,
+        }
     sections = []
     if resources:
+        sections.append({
+            'title': '资源底座概览',
+            'items': [
+                f"命中资源数：{len(resources)}",
+                f"环境：{resources[0].environment.name if resources[0].environment_id else (environment or '-')}",
+                f"资源类型：{dict(TaskResource.RESOURCE_TYPE_CHOICES).get(resource_type, resource_type) if resource_type else '全部'}",
+            ],
+        })
         sections.append({
             'title': '任务中心资源底座',
             'items': [
                 f"{item.name} ({item.ip_address or (item.cluster.name if item.cluster_id else '-')}) / {item.environment.name if item.environment_id else '-'} / {item.system.name if item.system_id else '-'} / {item.status} / resource_id={item.id}"
                 for item in resources[:20]
+            ],
+        })
+    if cluster_inventory:
+        sections.insert(0, {
+            'title': '非 K8s 集群资源事实',
+            'items': [
+                f"集群名称：{cluster_inventory['cluster_name'] or '-'}",
+                f"集群数量：{cluster_inventory['cluster_count']}",
+                f"节点/机器：{cluster_inventory['node_count']} 个",
+                f"角色统计：{', '.join(f'{key}={value}' for key, value in cluster_inventory['roles'].items()) or '-'}",
+                f"节点清单：{'、'.join(cluster_inventory['node_names'][:20]) or '-'}",
             ],
         })
     summary = {
@@ -4594,6 +4689,10 @@ def query_task_resources(session, user_message, user, query='', environment='', 
         'knowledge_environment': (knowledge_environment or {}).get('name'),
         'resource_ids': [item.id for item in resources],
     }
+    if cluster_inventory:
+        summary['cluster_inventory'] = cluster_inventory
+        summary['cluster_count'] = cluster_inventory['cluster_count']
+        summary['node_count'] = cluster_inventory['node_count']
     _finish_tool_invocation(invocation, summary, started_at, success=True)
     return {
         'summary': summary,
@@ -4601,6 +4700,7 @@ def query_task_resources(session, user_message, user, query='', environment='', 
         'citations': [{'title': '任务中心资源底座', 'path': '/tasks/resources'}],
         'resources': formatted_resources,
         'resource_ids': summary['resource_ids'],
+        'cluster_inventory': cluster_inventory,
     }
 
 
@@ -4998,6 +5098,14 @@ def _build_alert_metric_query_plan(alert, budget=ALERT_METRIC_QUERY_BUDGET):
         request_total_expr = f'sum(rate(http_requests_total{service_selector}[5m]))'
         status_5xx_selector = _promql_with_extra_matchers(service_selector, ['status=~"5.."'])
         code_5xx_selector = _promql_with_extra_matchers(service_selector, ['code=~"5.."'])
+        if any(keyword in alert_text for keyword in ['success rate', '成功率', '可用性', 'availability', 'slo', 'sla']):
+            plan.append(_metric_plan_item(
+                '下单成功率',
+                f'(1 - ((sum(rate(http_requests_total{status_5xx_selector}[5m])) + sum(rate(http_requests_total{code_5xx_selector}[5m]))) / clamp_min({request_total_expr}, 0.001)))',
+                'service_red',
+                '确认业务成功率是否低于 SLO 目标',
+                'strong',
+            ))
         plan.extend([
             _metric_plan_item(
                 '服务 5xx 错误率',
@@ -6673,9 +6781,9 @@ def _is_direct_container_question(question):
         return False
     if (
         any(keyword in lowered for keyword in [
-            'k8s', 'kubernetes', 'pod', 'pods', '容器', '集群', 'namespace', '命名空间',
-            '工作负载', '节点', 'node', 'nodes', 'deployment', 'deployments', 'daemonset',
-            'statefulset', 'svc', 'service', 'services', 'docker',
+            'k8s', 'kubernetes', 'pod', 'pods', '容器', 'namespace', '命名空间',
+            '工作负载', 'deployment', 'deployments', 'daemonset',
+            'statefulset', 'svc', 'docker',
         ])
         and any(keyword in lowered for keyword in [
             '有没有', '是否', '哪些', '列表', '状态', '运行状态', '运行情况', '情况', '异常',
@@ -6684,12 +6792,111 @@ def _is_direct_container_question(question):
     ):
         return True
     has_container_scope = any(keyword in lowered for keyword in [
-        'k8s', 'kubernetes', 'pod', 'pods', '容器', '集群', 'namespace', '工作负载', 'svc', 'docker',
+        'k8s', 'kubernetes', 'pod', 'pods', '容器', 'namespace', '工作负载', 'svc', 'docker',
     ])
     has_lookup_intent = any(keyword in lowered for keyword in [
         '有没有', '是否', '哪些', '列表', '状态', '异常', '当前', '今天', '多少', '情况',
     ])
     return has_container_scope and has_lookup_intent
+
+
+def _has_explicit_k8s_scope(question):
+    lowered = str(question or '').lower()
+    return any(keyword in lowered for keyword in [
+        'k8s', 'kubernetes', 'pod', 'pods', 'namespace', '命名空间',
+        'deployment', 'deployments', 'statefulset', 'statefulsets', 'daemonset', 'daemonsets',
+        'workload', 'workloads', 'svc', 'service', 'services', 'kubectl', 'helm',
+    ])
+
+
+def _has_resource_base_inventory_intent(question):
+    lowered = str(question or '').lower()
+    has_inventory_scope = any(keyword in lowered for keyword in [
+        '资源底座', '任务中心资源', '机器', '主机', '服务器', '宿主机', '节点',
+        'node', 'nodes', '集群', 'cluster', 'clusters',
+    ])
+    has_lookup_intent = any(keyword in lowered for keyword in [
+        '几个', '几台', '多少', '数量', '有哪些', '哪些', '列表', '清单',
+        '查看', '查看下', '看下', '看一下', '查询', '列出', '当前', '全部', '所有',
+    ])
+    return has_inventory_scope and has_lookup_intent
+
+
+def _should_query_task_resources_directly(question, knowledge_environment=None, analysis_scope=None):
+    knowledge_environment = knowledge_environment or {}
+    analysis_scope = analysis_scope or {}
+    scoped_resource_envs = knowledge_environment.get('task_resource_environment_ids') or analysis_scope.get('task_resource_environment_ids') or []
+    if not scoped_resource_envs:
+        return False
+    if _has_explicit_k8s_scope(question):
+        return False
+    return _has_resource_base_inventory_intent(question)
+
+
+def _run_task_resource_lookup_fastpath(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
+    emit = emit or (lambda **kwargs: None)
+    emit(
+        step={
+            'title': '资源底座直接查询',
+            'detail': '命中资源底座资产数量/清单问题，按当前知识环境查询任务中心资源底座。',
+            'status': PROCESSING_STATUS_COMPLETED,
+        },
+        text='正在查询资源底座',
+    )
+    sections, citations, tool_names, collected = [], [], [], []
+    tool_result = _run_scoped_tool(
+        session,
+        user_message,
+        user,
+        collected,
+        sections,
+        citations,
+        tool_names,
+        'query_task_resources',
+        {
+            'query': scoped_question,
+            'environment': knowledge_environment.get('name') if knowledge_environment else '',
+            'resource_type': 'host',
+            'status': 'active',
+            'limit': 50,
+        },
+        emit=emit,
+    )
+    tool_output = tool_result.get('tool_output') or {}
+    summary = tool_output.get('summary') or {}
+    resources = tool_output.get('resources') or []
+    resource_count = summary.get('count') if summary.get('count') is not None else len(resources)
+    cluster_name = knowledge_environment.get('name') if knowledge_environment else ''
+    if cluster_name:
+        node_names = [item.get('name') for item in resources if item.get('name')]
+        sections.insert(0, {
+            'title': '集群与节点数量',
+            'items': [
+                f'当前集群：{cluster_name}',
+                '集群数量：1',
+                f'节点/机器：{resource_count} 个',
+                f"节点清单：{'、'.join(node_names[:12])}" if node_names else '节点清单：当前资源底座没有返回节点',
+            ],
+        })
+    return _build_evidence_bundle_result(
+        question=question,
+        scoped_question=scoped_question,
+        knowledge_environment=knowledge_environment,
+        analysis_scope=analysis_scope,
+        provider=provider,
+        active_skills=active_skills,
+        sections=sections,
+        citations=citations,
+        tool_names=tool_names,
+        collected_tool_outputs=collected,
+        execution_mode='direct_task_resource_lookup',
+        message_type=AIOpsChatMessage.TYPE_TEXT,
+        extra_metadata={'resource_base_summary': {
+            'cluster_count': 1 if cluster_name else 0,
+            **summary,
+            'task_resource_environment_ids': list((knowledge_environment or {}).get('task_resource_environment_ids') or []),
+        }},
+    )
 
 
 def _is_direct_k8s_resource_lookup_question(question):
@@ -6715,7 +6922,7 @@ def _is_direct_k8s_resource_lookup_question(question):
         '状态', '详情', '信息', '有哪些', '哪些', 'show', 'get', 'list',
     ])
     has_k8s_scope = any(keyword in lowered for keyword in [
-        'k8s', 'kubernetes', 'namespace', '命名空间', '集群',
+        'k8s', 'kubernetes', 'namespace', '命名空间',
     ]) or has_explicit_namespace or has_likely_mojibake_namespace
     return (has_lookup_intent and has_k8s_scope) or has_explicit_namespace or has_likely_mojibake_namespace
 
@@ -6853,7 +7060,7 @@ def _dedupe_tool_names(tool_names):
 
 def _is_k8s_analysis_question(question):
     text = str(question or '').lower()
-    has_scope = any(keyword in text for keyword in ['k8s', 'kubernetes', 'pod', 'pods', '集群', '工作负载', 'workload', 'workloads'])
+    has_scope = _has_explicit_k8s_scope(text)
     has_analysis = any(keyword in text for keyword in ['分析', '排查', '根因', '原因', '有没有问题', '健康'])
     return has_scope and has_analysis
 
@@ -6874,6 +7081,8 @@ def _is_task_generation_question(question):
     text = str(question or '').lower()
     if _is_direct_log_question(question) or _is_direct_promql_question(question):
         return False
+    if _is_contextual_failure_followup(question):
+        return False
     if _looks_like_k8s_task_request(question, {}):
         return True
     if _looks_like_install_task_request(question, {}):
@@ -6883,6 +7092,24 @@ def _is_task_generation_question(question):
     if _looks_like_playbook_generation_request(question, {}):
         return True
     return any(keyword in text for keyword in ['生成', '创建', '新建', '安排', '巡检任务', '任务', 'task'])
+
+
+def _is_contextual_failure_followup(question):
+    text = str(question or '')
+    lowered = text.lower()
+    has_context_ref = any(keyword in lowered for keyword in [
+        '前面', '上次', '刚才', '之前', '上一轮', '刚刚', 'last time', 'previous',
+    ])
+    has_failure_ref = any(keyword in lowered for keyword in [
+        '执行失败', '失败了', '没成功', '未成功', '报错', 'failed', 'error',
+    ])
+    has_followup_intent = any(keyword in lowered for keyword in [
+        '解决', '修复', '排查', '处理', '看看', '看下', '分析', '定位',
+    ])
+    has_explicit_new_task = any(keyword in lowered for keyword in [
+        '生成', '创建', '新建', '安排', '任务草稿', '执行命令', '运行命令', '命令：', 'command:',
+    ])
+    return has_context_ref and has_failure_ref and has_followup_intent and not has_explicit_new_task
 
 
 def _looks_like_shell_task_request(question, draft_request=None):
@@ -7866,7 +8093,10 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
     )
     sections, citations, tool_names, collected = [], [], [], []
     duration_minutes = _detect_log_duration_minutes(question)
-    service = _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+    service = (
+        _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+        or _default_observability_service(analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+    )
     system_name = _extract_system_name(scoped_question) or ((analysis_scope or {}).get('systems') or [''])[0]
     health_query = ' '.join(item for item in [
         knowledge_environment.get('name'),
@@ -7875,6 +8105,7 @@ def _run_slo_analysis_evidence(session, user_message, user, question, scoped_que
         scoped_question,
     ] if item).strip()
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': health_query or scoped_question, 'status': '', 'date_filter': 'last_hour' if duration_minutes <= 60 else '', 'limit': 8}, emit=emit)
+    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alert_metrics', {'query': health_query or scoped_question, 'latest': True, 'duration_minutes': duration_minutes, 'limit': 6}, emit=emit)
     _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_dashboard_panel_data', {'query': health_query or scoped_question, 'duration_minutes': duration_minutes, 'limit': 3}, emit=emit)
     if service:
         _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_traces', {'query': service, 'errors_only': True, 'duration_minutes': duration_minutes, 'limit': 6}, emit=emit)
@@ -7927,9 +8158,22 @@ def _run_service_anomaly_evidence(session, user_message, user, question, scoped_
     )
     sections, citations, tool_names, collected = [], [], [], []
     duration_minutes = _detect_log_duration_minutes(question)
-    service = _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+    service = (
+        _detect_observability_service(scoped_question, analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+        or _default_observability_service(analysis_scope=analysis_scope, knowledge_environment=knowledge_environment)
+    )
     log_levels = _detect_log_levels_filter(question) or ['error', 'warning']
     evidence_query = ' '.join(item for item in [knowledge_environment.get('name'), service] if item).strip() or scoped_question
+    systems = (analysis_scope or {}).get('systems') or []
+    services = (analysis_scope or {}).get('services') or []
+    if systems or services:
+        sections.append({
+            'title': '环境图谱范围',
+            'items': [
+                f"系统：{'、'.join(systems[:6]) or '-'}",
+                f"服务：{'、'.join(services[:8]) or service or '-'}",
+            ],
+        })
     alert_args = {
         'query': evidence_query,
         'status': '',
@@ -8690,13 +8934,45 @@ def query_host_tasks(session, user_message, user, query='', status='', limit=6):
         queryset = queryset.filter(status=status)
     queryset = _queryset_search(queryset, ['name', 'description', 'created_by', 'summary'], tokens)
     tasks = list(queryset.order_by('-created_at')[:limit])
+    task_items = []
+    for task in tasks:
+        command_preview = str((task.payload or {}).get('command') or '')[:180]
+        failures = list(task.executions.filter(status=HostTaskExecution.STATUS_FAILED).order_by('id')[:3])
+        failure_text = '；'.join(
+            f"{item.target_name or item.host_name or item.host_ip or item.target_id}: {(item.error_message or item.output or '-')[:120]}"
+            for item in failures
+        )
+        task_items.append({
+            'id': task.id,
+            'name': task.name,
+            'status': task.status,
+            'status_display': task.get_status_display(),
+            'lifecycle_status': task.lifecycle_status,
+            'task_type': task.task_type,
+            'execution_mode': task.execution_mode,
+            'target_count': task.target_count,
+            'success_count': task.success_count,
+            'failed_count': task.failed_count,
+            'summary': task.summary,
+            'command_preview': command_preview,
+            'failure_summary': failure_text,
+            'created_by': task.created_by,
+            'created_at': task.created_at.isoformat() if task.created_at else '',
+        })
     sections = [{
         'title': '任务中心',
-        'items': [f'{task.name} / {task.get_status_display()} / {task.created_by}' for task in tasks],
+        'items': [
+            (
+                f"#{item['id']} {item['name']} / {item['status_display']} / "
+                f"成功 {item['success_count']} / 失败 {item['failed_count']} / {item['created_by']}"
+                + (f" / 错误：{item['failure_summary']}" if item['failure_summary'] else '')
+            )
+            for item in task_items
+        ],
     }] if tasks else []
     summary = {'count': len(tasks)}
     _finish_tool_invocation(invocation, summary, started_at, success=True)
-    return {'summary': summary, 'sections': sections, 'citations': [{'title': '任务中心', 'path': '/tasks'}], 'tasks': tasks}
+    return {'summary': summary, 'sections': sections, 'citations': [{'title': '任务中心', 'path': '/tasks'}], 'tasks': task_items}
 
 
 def query_knowledge_graph(session, user_message, user, query='', environment='', system_name='', service='', limit=8):
@@ -9136,6 +9412,24 @@ def query_k8s_resources(session, user_message, user, query='', resource_type='',
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'sections': [], 'citations': []}
 
+    if knowledge_environment and not knowledge_environment.get('k8s_cluster_ids') and not cluster_name:
+        summary = {
+            'count': 0,
+            'resource_type': resource_type,
+            'knowledge_environment': knowledge_environment.get('name'),
+            'detail': 'knowledge_environment_without_k8s_cluster',
+        }
+        _finish_tool_invocation(invocation, summary, started_at, success=True)
+        return {
+            'summary': summary,
+            'sections': [{
+                'title': 'K8s 集群',
+                'items': [f"{knowledge_environment.get('name')} 未绑定 K8s 集群，已停止跨环境查询。"],
+            }],
+            'citations': [{'title': 'K8s 集群', 'path': '/containers/k8s'}],
+            'items': [],
+        }
+
     if resource_type == 'pods':
         result = query_k8s_cluster_summary(session, user_message, user, query=query, cluster_name=cluster_name, limit=limit)
         _finish_tool_invocation(invocation, {'delegated': 'query_k8s_cluster_summary'}, started_at, success=True)
@@ -9255,6 +9549,22 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
     if not user_has_permissions(user, ['ops.k8s.view']):
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'sections': [], 'citations': []}
+
+    if knowledge_environment and not knowledge_environment.get('k8s_cluster_ids') and not cluster_name:
+        summary = {
+            'count': 0,
+            'knowledge_environment': knowledge_environment.get('name'),
+            'detail': 'knowledge_environment_without_k8s_cluster',
+        }
+        _finish_tool_invocation(invocation, summary, started_at, success=True)
+        return {
+            'summary': summary,
+            'sections': [{
+                'title': '集群概览',
+                'items': [f"{knowledge_environment.get('name')} 未绑定 K8s 集群，已停止跨环境查询。"],
+            }],
+            'citations': [{'title': 'K8s 集群', 'path': '/containers/k8s'}],
+        }
 
     queryset = K8sCluster.objects.all()
     if knowledge_environment and knowledge_environment.get('k8s_cluster_ids'):
@@ -11204,6 +11514,25 @@ def _extract_shell_command_from_mapping(mapping):
     return ''
 
 
+def _looks_like_shell_command_text(value):
+    text = str(value or '').strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    command_starters = (
+        './', '/', 'sudo ', 'systemctl ', 'service ', 'docker ', 'kubectl ', 'helm ',
+        'bash ', 'sh ', 'python ', 'python3 ', 'ansible', 'curl ', 'wget ', 'cat ',
+        'grep ', 'awk ', 'sed ', 'ps ', 'ss ', 'netstat ', 'jps ', 'hostname',
+        'uptime', 'df ', 'free ', 'ls ', 'cd ', 'mkdir ', 'rm ', 'cp ', 'mv ',
+        'yum ', 'apt ', 'dnf ', 'pip ', 'npm ', 'node ', 'java ', 'hbase ',
+    )
+    if lowered.startswith(command_starters):
+        return True
+    if '\n' in text and any(token in lowered for token in ['#!/', 'set -e', 'systemctl', 'docker', 'kubectl', 'ansible']):
+        return True
+    return bool(re.search(r'[;&|]|[$][({A-Za-z_]|--[a-z0-9-]+|/[A-Za-z0-9_.-]+', text))
+
+
 def _extract_shell_command_from_question(question):
     raw = str(question or '')
     if not raw.strip():
@@ -11222,7 +11551,7 @@ def _extract_shell_command_from_question(question):
         match = re.search(pattern, raw, flags=re.IGNORECASE)
         if match:
             candidate = match.group(1).strip(' "\'“”‘’，,。；;')
-            if candidate:
+            if candidate and _looks_like_shell_command_text(candidate):
                 return candidate
     return ''
 
@@ -12799,6 +13128,19 @@ def _create_host_task_record_from_draft(draft, user, session=None, request=None)
             'session_id': session.id if session else None,
             'request_summary': payload.get('request_summary', ''),
             'reason': payload.get('reason', ''),
+            'resource_environment': (
+                payload.get('resource_environment')
+                or payload.get('environment_name')
+                or payload.get('knowledge_environment')
+                or ''
+            ),
+            'environment_name': (
+                payload.get('resource_environment')
+                or payload.get('environment_name')
+                or payload.get('knowledge_environment')
+                or ''
+            ),
+            'knowledge_environment': payload.get('knowledge_environment') or '',
         },
         created_by=user.username,
         summary='任务已由 AIOps 智能助手创建，等待在任务中心执行',
@@ -14378,6 +14720,7 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '运行约束：',
         '\n'.join(runtime_lines),
         '要求：优先调用工具获取事实；未确认前不能声称任务已执行；如果数据不足，请明确说明。',
+        '环境里已经绑定任务中心资源底座时，用户询问中间件/主机/机器/节点/非 K8s 集群的数量、清单或资源归属，应让模型优先选择 query_task_resources；“集群”只是业务对象泛称，不等同于 Kubernetes，除非用户明确提到 K8s/Kubernetes/Pod/命名空间/Deployment/Service/kubectl/Helm。',
         '如果用户明确要求生成、创建、新建、安排任务、巡检任务或 K8s 修改任务，不要只做查询，必须调用 generate_host_task。',
         '任务生成类请求必须以 query_task_resources 返回的任务中心资源底座为目标来源；知识图谱只用于环境识别和辅助元信息，不能把知识图谱命名空间或实时资源列表当作生成任务草稿的硬前置。',
         '知识图谱里的“图谱展示命名空间”只控制拓扑图展示，不限制 query_k8s_resources 或 query_k8s_cluster_summary；只读 K8s 查询默认允许查询全部命名空间，用户显式指定命名空间时才按命名空间收窄。',
@@ -14395,6 +14738,7 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '- “链路追踪里的服务 xxx 最近有没有异常 / trace 中服务 xxx 是否有错误” => 必须优先调用 query_traces，query 只传服务名，errors_only=true。',
         '- “最近交易系统生产有哪些工单” => 调用 query_workorders，并把系统、环境信息体现在参数中。',
         '- “生产环境有哪些离线主机/某环境全部主机” => 优先调用 query_task_resources；query_hosts 仅作为旧工具名兼容。',
+        '- “本地 HBase 集群有几个集群/几台机器/有哪些节点” => 调用 query_task_resources；不要因为出现“集群”就调用 K8s 工具。',
         '- “某环境的系统、服务、依赖、上下游或资源关联是什么” => 调用 query_knowledge_graph，并设置 environment、system_name 或 service。',
         '- “app-prod-k8s集群有没有异常的pod” => 调用 query_k8s_cluster_summary，并传 cluster_name=app-prod-k8s。',
         '- “生成一份 Redis 巡检任务” => 调用 generate_host_task，而不是只做查询。',
@@ -14409,80 +14753,29 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
     return '\n'.join(parts)
 
 
-def _build_history_messages(session, config):
-    history = list(session.messages.order_by('-created_at', '-id')[: max(config.max_history_messages, 4)])
-    history.reverse()
-    return [
-        {'role': item.role, 'content': item.content}
-        for item in history
-        if item.role in {AIOpsChatMessage.ROLE_USER, AIOpsChatMessage.ROLE_ASSISTANT}
-    ]
+def _build_history_messages(session, config, before_message=None):
+    return build_context_history_messages(session, config, before_message=before_message)
+
+
+def _summarize_action_payload_for_memory(payload):
+    return summarize_action_payload_for_memory(payload)
+
+
+def _build_session_memory_snapshot(session, *, limit=5):
+    return build_context_session_memory_snapshot(session, limit=limit)
 
 
 def _tool_allowed(user, tool_name):
-    if not tool_feature_enabled(tool_name):
-        return False
-    if tool_name == 'query_knowledge_graph':
-        return user_has_permissions(user, ['aiops.knowledge.view'])
-    if tool_name == 'query_hosts':
-        return user_has_permissions(user, ['ops.host.view'])
-    if tool_name == 'query_observability':
-        return any([
-            user_has_permissions(user, ['ops.alert.view']),
-            user_has_permissions(user, ['ops.log.entry.view']),
-            user_has_permissions(user, ['ops.log.query']),
-            user_has_permissions(user, ['ops.trace.view']),
-            user_has_permissions(user, ['ops.deployment.view']),
-        ])
-    if tool_name == 'query_workorders':
-        return user_has_permissions(user, ['ops.ticket.view']) or user_has_permissions(user, ['ops.deployment.view'])
-    if tool_name == 'query_task_center':
-        return user_has_permissions(user, ['ops.host.execute'])
-    if tool_name == 'query_task_resources':
-        return user_has_permissions(user, ['ops.task.resource.view'])
-    if tool_name == 'query_event_wall':
-        return user_has_permissions(user, ['eventwall.view'])
-    if tool_name == 'query_container_assets':
-        return user_has_permissions(user, ['ops.k8s.view']) or user_has_permissions(user, ['ops.docker.view'])
-    if tool_name == 'query_k8s_cluster_summary':
-        return user_has_permissions(user, ['ops.k8s.view'])
-    if tool_name == 'query_k8s_resources':
-        return user_has_permissions(user, ['ops.k8s.view'])
-    if tool_name == 'query_alerts':
-        return user_has_permissions(user, ['ops.alert.view'])
-    if tool_name == 'query_alert_root_cause':
-        return user_has_permissions(user, ['ops.alert.view'])
-    if tool_name == 'query_alert_metrics':
-        return user_has_permissions(user, ['ops.metric.query'])
-    if tool_name == 'query_dashboard_metadata':
-        return user_has_permissions(user, ['ops.grafana.view'])
-    if tool_name == 'query_grafana_promql':
-        return user_has_permissions(user, ['ops.metric.query']) or user_has_permissions(user, ['ops.grafana.view'])
-    if tool_name == 'query_dashboard_panel_data':
-        return user_has_permissions(user, ['ops.grafana.view'])
-    if tool_name == 'query_observability_links':
-        return user_has_permissions(user, ['ops.observability.link.view'])
-    if tool_name == 'query_events':
-        return user_has_permissions(user, ['eventwall.view'])
-    if tool_name == 'query_logs':
-        return user_has_permissions(user, ['ops.log.entry.view']) or user_has_permissions(user, ['ops.log.query'])
-    if tool_name == 'query_traces':
-        return user_has_permissions(user, ['ops.trace.view'])
-    if tool_name == 'query_recent_changes':
-        return user_has_permissions(user, ['ops.deployment.view'])
-    if tool_name == 'query_host_tasks':
-        return user_has_permissions(user, ['ops.host.execute'])
-    if tool_name == 'generate_host_task':
-        return user_has_permissions(user, ['aiops.task.generate'])
-    return False
+    return platform_tool_allowed(user, tool_name, user_has_permissions)
 
 
 def _tool_specs_for_runtime(active_mcp_servers, user):
-    tool_names = []
-    for server in active_mcp_servers:
-        for tool_name in filter_feature_tools(server.tool_whitelist or []):
-            if tool_name not in tool_names and _tool_allowed(user, tool_name):
-                tool_names.append(tool_name)
+    tool_names = whitelisted_platform_tool_names(
+        active_mcp_servers,
+        AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
+        user,
+        user_has_permissions,
+    )
 
     catalog = {
         'query_knowledge_graph': {
@@ -14515,7 +14808,7 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}, 'status': {'type': 'string', 'enum': ['pending', 'running', 'success', 'partial', 'failed', 'canceled']}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}},
         },
         'query_task_resources': {
-            'description': '查询任务中心资源底座中的执行资源。任务生成类请求的目标来源以本工具为准；用户提到资源底座、任务中心资源、某环境全部主机/服务器，或要生成 K8s 修改、Pod 重启、工作负载伸缩任务时优先使用；新建或修改类任务前用它拿 resource_ids。',
+            'description': '查询任务中心资源底座中的执行资源。任务生成类请求的目标来源以本工具为准；用户提到资源底座、任务中心资源、某环境全部主机/服务器，或询问中间件/主机/机器/节点/非 K8s 集群的数量、清单、归属时优先使用。泛称“集群”不等同于 Kubernetes；只有用户明确提到 K8s/Kubernetes/Pod/命名空间/Deployment/Service/kubectl/Helm 时才转向 K8s 工具。新建或修改类任务前用它拿 resource_ids。',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -14787,6 +15080,13 @@ def _build_runtime_tool_registry(active_mcp_servers, user):
     tool_specs.extend(builtin_specs)
     for spec in builtin_specs:
         registry[spec['function']['name']] = {'kind': 'platform_mcp', 'tool_name': spec['function']['name']}
+    platform_validation = validate_platform_tool_registry(
+        [item for item in active_mcp_servers if item.server_type == AIOpsMCPServer.SERVER_PLATFORM_BUILTIN],
+        AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
+        user,
+        user_has_permissions,
+        [(spec.get('function') or {}).get('name') for spec in builtin_specs],
+    )
     if builtin_specs:
         diagnostics.append({
             'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
@@ -14794,6 +15094,16 @@ def _build_runtime_tool_registry(active_mcp_servers, user):
             'name': '平台内置 MCP',
             'tool_count': len(builtin_specs),
             'message': '',
+            'registry_validation': platform_validation,
+        })
+    elif platform_validation.get('whitelisted_count'):
+        diagnostics.append({
+            'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
+            'status': 'failed',
+            'name': '平台内置 MCP',
+            'tool_count': 0,
+            'message': '平台内置 MCP 未暴露任何可用工具，请检查 RBAC、功能开关或工具注册。',
+            'registry_validation': platform_validation,
         })
 
     for server in active_mcp_servers:
@@ -15387,13 +15697,33 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     scoped_question = f"{knowledge_environment.get('name')} {question}".strip()
     provider_ready = _provider_is_ready(provider)
     formatter_provider = provider if provider_ready else None
-    selected_action = _select_action_for_question(question, user=user, analysis_scope=analysis_scope)
-    selected_action = select_action_by_handler(
+    contextual_failure_followup = _is_contextual_failure_followup(question)
+    selected_action = None if contextual_failure_followup else _select_action_for_question(question, user=user, analysis_scope=analysis_scope)
+    if not contextual_failure_followup:
+        selected_action = select_action_by_handler(
+            question,
+            _action_registry_definition_map(user=user, include_unavailable=False),
+            page_context=page_context,
+            current_code=selected_action.get('code') if selected_action else '',
+        ) or selected_action
+    if should_use_task_resource_fallback(
         question,
-        _action_registry_definition_map(user=user, include_unavailable=False),
-        page_context=page_context,
-        current_code=selected_action.get('code') if selected_action else '',
-    ) or selected_action
+        provider_ready=provider_ready,
+        knowledge_environment=knowledge_environment,
+        analysis_scope=analysis_scope,
+    ):
+        return _run_task_resource_lookup_fastpath(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            formatter_provider,
+            active_skills,
+            emit,
+        )
     if _is_direct_alert_analysis_question(question):
         direct_action = selected_action if selected_action and selected_action.get('code') == 'alert.root_cause' else _action_registry_item_by_code('alert.root_cause', user=user)
         emit(
@@ -15516,8 +15846,13 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             step_text='正在直接查询 K8s 资源',
             selected_action=_action_registry_item_by_code('k8s.diagnose', user=user),
         )
+    selected_action_preempts_llm = selected_action_should_preempt_llm(
+        question,
+        selected_action,
+        provider_ready=provider_ready,
+    )
     if (
-        selected_action
+        selected_action_preempts_llm
         and not _is_direct_container_question(question)
         and not _is_direct_promql_question(question)
         and (change_correlation_selected or not _is_direct_event_list_question(question))
@@ -15804,36 +16139,21 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
 
     messages = [
         {'role': 'system', 'content': _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_diagnostics=mcp_diagnostics)},
-        *_build_history_messages(session, config),
+        *_build_history_messages(session, config, before_message=user_message),
     ]
+    session_memory = _build_session_memory_snapshot(session)
     messages.append({
         'role': 'user',
-        'content': (
-            '当前已确认知识图谱环境：'
-            + (knowledge_environment.get('name') or '')
-            + '\nanalysis_scope：'
-            + json.dumps(analysis_scope, ensure_ascii=False, default=_json_default)[:3000]
-            + '\n用户问题：'
-            + scoped_question
-            + '\n优先证据：'
-            + json.dumps(collected_tool_outputs, ensure_ascii=False, default=_json_default)[:3000]
+        'content': build_agent_context_prompt(
+            knowledge_environment,
+            analysis_scope,
+            session_memory,
+            scoped_question,
+            collected_tool_outputs=collected_tool_outputs,
         ),
     })
-    if any(keyword in question.lower() for keyword in ['链路追踪', '调用链', 'trace', 'tracing']):
-        messages.append({
-            'role': 'user',
-            'content': '路由约束：本问题明确限定在链路追踪/Trace/调用链中排查服务异常，必须调用 query_traces；不要改用 query_alerts。query 参数只传服务名或 traceId，若用户问异常/错误则 errors_only=true。',
-        })
-    if _is_direct_log_question(question):
-        messages.append({
-            'role': 'user',
-            'content': '路由约束：本问题明确限定在日志中查询或分析，必须调用 query_logs；不要先调用 query_alerts。若用户同时提到警告和错误，使用 levels=["warning","error"]。',
-        })
-    if analysis_only:
-        messages.append({
-            'role': 'user',
-            'content': '请求约束：本轮为只分析模式，只能做查询、分析、解释和建议；禁止生成、创建、新建、安排待执行任务，禁止调用 generate_host_task。',
-        })
+    for constraint in build_routing_constraints(question, session_memory=session_memory, analysis_only=analysis_only):
+        messages.append({'role': 'user', 'content': constraint})
 
     try:
         for round_index in range(6):
@@ -16124,6 +16444,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             ),
             'formatter_attempts': (formatter_result or {}).get('attempts', 0),
             'mcp_diagnostics': mcp_diagnostics,
+            'incident_context': session_memory.get('incident_context') or {},
             'skill_trace': _build_skill_trace(
                 active_skills,
                 formatter_result=formatter_result,

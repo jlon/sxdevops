@@ -17,7 +17,7 @@ from rest_framework.test import APIClient
 from cmdb.models import CIType, ConfigItem
 from eventwall.models import EventRecord, EventSource
 from marketplace.models import ServiceDeployment, ServiceTemplate
-from ops.models import Alert, Deployment, DockerHost, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, LogEntry, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource, TransactionTicket
+from ops.models import Alert, Deployment, DockerHost, GrafanaSetting, Host, HostTask, HostTaskExecution, K8sCluster, LogDataSource, LogEntry, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource, TransactionTicket
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -45,9 +45,11 @@ from .services import (
     DEFAULT_SUGGESTED_QUESTIONS,
     DEFAULT_WELCOME_MESSAGE,
     _apply_dispatch_result_to_message,
+    _build_session_memory_snapshot,
     _ensure_followup_line,
     _formatter_repair_issue,
     _build_history_messages,
+    _extract_shell_command_from_question,
     _is_formatted_answer_valid,
     _is_direct_log_question,
     _normalize_formatter_output,
@@ -61,6 +63,7 @@ from .services import (
     _skills_for_action,
     _summarize_external_tool_result,
     _build_runtime_tool_registry,
+    _should_query_task_resources_directly,
     list_platform_mcp_tools,
     recover_masked_suggested_question,
     build_action_preflight_contract,
@@ -91,6 +94,7 @@ from .services import (
     query_traces,
     query_workorders,
 )
+from .routing_policy import should_use_task_resource_fallback
 
 
 User = get_user_model()
@@ -174,6 +178,47 @@ class AIOpsApiTests(TestCase):
         )
         return cluster, resource_env, resource_system
 
+    def ensure_hbase_task_resource_environment(self):
+        K8sCluster.objects.create(
+            name='dev-k8s-cluster',
+            api_server='https://dev-k8s-cluster.example.local:6443',
+            kubeconfig='demo',
+            status='connected',
+        )
+        env = TaskResourceGroup.objects.create(
+            name='本地 HBase 集群',
+            code='local-hbase',
+            group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
+        system = TaskResourceGroup.objects.create(
+            name='HBase 服务节点',
+            code='hbase-services',
+            group_type=TaskResourceGroup.GROUP_SYSTEM,
+            parent=env,
+        )
+        for name, role in [
+            ('hbase-master', 'master'),
+            ('hbase-regionserver-1', 'regionserver'),
+            ('hbase-regionserver-2', 'regionserver'),
+        ]:
+            TaskResource.objects.create(
+                name=name,
+                resource_type=TaskResource.RESOURCE_HOST,
+                environment=env,
+                system=system,
+                status=TaskResource.STATUS_ACTIVE,
+                ip_address='127.0.0.1',
+                metadata={'cluster_type': 'hbase', 'role': role},
+            )
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='本地 HBase 集群',
+            aliases=['hbase', '本地HBase'],
+            task_resource_environment_ids=[env.id],
+            is_enabled=True,
+            is_default=True,
+        )
+        return env, system
+
     def test_bootstrap_returns_runtime(self):
         response = self.client.get('/api/aiops/bootstrap/')
         self.assertEqual(response.status_code, 200)
@@ -213,9 +258,10 @@ class AIOpsApiTests(TestCase):
         self.assertIn('query_knowledge_graph', active_tools)
         self.assertIn('generate_host_task', active_tools)
         self.assertIn('query_task_resources', active_tools)
+        self.assertIn('query_host_tasks', active_tools)
+        self.assertIn('query_task_center', active_tools)
         self.assertIn('query_k8s_resources', active_tools)
         self.assertNotIn('query_workorders', active_tools)
-        self.assertNotIn('query_task_center', active_tools)
         self.assertNotIn('query_middleware_assets', active_tools)
         self.assertNotIn('query_cmdb_items', active_tools)
         self.assertNotIn('query_cost_report', active_tools)
@@ -1454,7 +1500,7 @@ class AIOpsApiTests(TestCase):
             enabled=True,
             folders=[{'path': '交易系统'}],
             dashboards=[
-                {'key': 'trade-overview', 'title': '交易总览', 'folder': '交易系统'},
+                {'key': 'trade-overview', 'title': '生产态势', 'folder': '交易系统'},
                 {'key': 'trade-service-detail', 'title': '服务详情', 'folder': '交易系统/服务明细'},
                 {'key': 'other-overview', 'title': '其他总览', 'folder': '其他系统'},
             ],
@@ -4933,8 +4979,6 @@ class AIOpsApiTests(TestCase):
         self.assertIn('基于日志中心证据', assistant_message['content'])
         mocked_completion.assert_not_called()
 
-    @mock.patch('aiops.services._request_model_completion')
-
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_direct_log_fastpath_uses_observability_mapping(self, mocked_completion, mocked_run_query):
@@ -5489,6 +5533,114 @@ class AIOpsApiTests(TestCase):
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
+    def test_send_message_hbase_cluster_count_falls_back_to_task_resource_scope_without_llm(self, mocked_completion):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_hbase_task_resource_environment()
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'hbase-count'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '使用本地 HBase 集群环境继续分析：再看看有几个集群？'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_task_resource_lookup')
+        self.assertEqual(assistant_message['tool_calls'], ['query_task_resources'])
+        self.assertEqual(assistant_message['metadata']['resource_base_summary']['cluster_count'], 1)
+        self.assertEqual(assistant_message['metadata']['resource_base_summary']['count'], 3)
+        self.assertIn('集群数量：1', assistant_message['content'])
+        self.assertIn('节点/机器：3 个', assistant_message['content'])
+        self.assertIn('hbase-master', assistant_message['content'])
+        self.assertIn('hbase-regionserver-1', assistant_message['content'])
+        self.assertIn('hbase-regionserver-2', assistant_message['content'])
+        self.assertNotIn('dev-k8s-cluster', assistant_message['content'])
+        self.assertNotIn('query_k8s_resources', assistant_message['tool_calls'])
+        mocked_completion.assert_not_called()
+
+    @mock.patch('aiops.services._run_answer_formatter', return_value={'used': False, 'fell_back': False, 'attempts': 0})
+    @mock.patch('aiops.services._request_model_completion')
+    def test_send_message_hbase_cluster_count_lets_llm_choose_task_resource_tool_when_provider_ready(
+        self,
+        mocked_completion,
+        mocked_formatter,
+    ):
+        provider = AIOpsModelProvider.objects.create(
+            name='mock-hbase-provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='mock-model',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+        config = get_agent_config()
+        config.default_provider = provider
+        config.save(update_fields=['default_provider'])
+        self.ensure_hbase_task_resource_environment()
+        mocked_completion.side_effect = [
+            {
+                'choices': [{
+                    'message': {
+                        'content': '',
+                        'tool_calls': [{
+                            'id': 'call-task-resources',
+                            'type': 'function',
+                            'function': {
+                                'name': 'query_task_resources',
+                                'arguments': json.dumps({
+                                    'query': '本地 HBase 集群 集群数量 节点清单',
+                                    'environment': '本地 HBase 集群',
+                                    'resource_type': 'host',
+                                    'status': 'active',
+                                    'limit': 50,
+                                }, ensure_ascii=False),
+                            },
+                        }],
+                    },
+                }],
+            },
+            {
+                'choices': [{
+                    'message': {
+                        'content': '本地 HBase 集群共有 1 个集群，3 个节点：hbase-master、hbase-regionserver-1、hbase-regionserver-2。',
+                    },
+                }],
+            },
+        ]
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'hbase-count-llm'}, format='json')
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '使用本地 HBase 集群环境继续分析：再看看有几个集群？'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        planning_calls = [
+            call
+            for call in mocked_completion.call_args_list
+            if call.kwargs.get('purpose') == AIOpsModelInvocation.PURPOSE_CHAT_PLANNING
+        ]
+        first_payload = planning_calls[0].args[1]
+        first_tool_names = {
+            (tool.get('function') or {}).get('name')
+            for tool in first_payload.get('tools', [])
+        }
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'mcp_skills')
+        self.assertEqual(assistant_message['tool_calls'], ['query_task_resources'])
+        self.assertIn('query_task_resources', first_tool_names)
+        self.assertNotIn('query_k8s_resources', assistant_message['tool_calls'])
+        self.assertNotIn('query_k8s_cluster_summary', assistant_message['tool_calls'])
+        self.assertIn('3 个节点', assistant_message['content'])
+        mocked_formatter.assert_called_once()
+
+    @mock.patch('aiops.services._request_model_completion')
     def test_send_message_direct_container_fastpath_handles_chinese_pod_status(self, mocked_completion):
         get_agent_config()
         AIOpsModelProvider.objects.all().update(is_enabled=False)
@@ -5726,6 +5878,7 @@ class AIOpsApiTests(TestCase):
 
         response = self.client.post(
             f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '查看电商测试环境 ?? monitoring ?? svc grafana'},
             format='json',
         )
 
@@ -6611,8 +6764,11 @@ class AIOpsApiTests(TestCase):
         mocked_completion.assert_not_called()
 
     def test_recover_masked_suggested_question(self):
+        expected = '电商测试环境订单服务最近一小时 ERROR/WARN 日志有什么共同模式'
+        masked = ''.join(char if ord(char) < 128 and char.isprintable() else '?' for char in expected)
         self.assertEqual(
-            '电商测试环境订单服务最近一小时 ERROR/WARN 日志有什么共同模式',
+            recover_masked_suggested_question(masked),
+            expected,
         )
 
     @mock.patch('aiops.views.start_async_chat_processing')
@@ -6889,6 +7045,228 @@ class AIOpsApiTests(TestCase):
         history = _build_history_messages(session, config)
 
         self.assertEqual([item['content'] for item in history], ['msg-2', 'msg-3', 'msg-4', 'msg-5'])
+
+    def test_history_window_excludes_current_turn_and_placeholder_assistant(self):
+        config = get_agent_config()
+        config.max_history_messages = 8
+        config.save(update_fields=['max_history_messages'])
+        session = AIOpsChatSession.objects.create(user=self.user, title='context-window-current')
+        AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='上一轮问题')
+        AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_ASSISTANT, content='上一轮回答')
+        current = AIOpsChatMessage.objects.create(session=session, role=AIOpsChatMessage.ROLE_USER, content='当前问题')
+        AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            content='正在分析平台数据，请稍等...',
+            metadata={'processing_status': 'pending'},
+        )
+
+        history = _build_history_messages(session, config, before_message=current)
+
+        self.assertEqual([item['content'] for item in history], ['上一轮问题', '上一轮回答'])
+
+    def test_session_memory_snapshot_includes_recent_failed_aiops_task(self):
+        session = AIOpsChatSession.objects.create(user=self.user, title='failed-task-memory')
+        task = HostTask.objects.create(
+            name='重启 HBase 集群',
+            task_type=HostTask.TASK_RUN_COMMAND,
+            status=HostTask.STATUS_FAILED,
+            lifecycle_status=HostTask.LIFECYCLE_FAILED,
+            payload={'command': 'systemctl restart hbase-master'},
+            execution_mode=HostTask.EXECUTION_MODE_ANSIBLE,
+            trigger_source=HostTask.TRIGGER_SOURCE_AIOPS,
+            target_count=3,
+            success_count=0,
+            failed_count=3,
+            created_by=self.user.username,
+            source_context={'source': 'aiops', 'session_id': session.id, 'request_summary': '重启 HBase 集群'},
+        )
+        HostTaskExecution.objects.create(
+            task=task,
+            host_name='hbase-master',
+            host_ip='127.0.0.1',
+            status=HostTaskExecution.STATUS_FAILED,
+            command='systemctl restart hbase-master',
+            error_message='Unit hbase-master.service not found',
+        )
+
+        memory = _build_session_memory_snapshot(session)
+
+        self.assertEqual(memory['recent_aiops_tasks'][0]['id'], task.id)
+        self.assertEqual(memory['recent_aiops_tasks'][0]['status'], HostTask.STATUS_FAILED)
+        self.assertIn('systemctl restart hbase-master', memory['recent_aiops_tasks'][0]['payload']['command_preview'])
+        self.assertIn('Unit hbase-master.service not found', memory['recent_aiops_tasks'][0]['executions'][0]['error_message'])
+        self.assertEqual(memory['incident_context']['last_failed_task']['id'], task.id)
+        self.assertIn('query_host_tasks', memory['incident_context']['suggested_next_step'])
+
+    def test_session_memory_snapshot_summarizes_resource_scope_for_inventory_followups(self):
+        env, _ = self.ensure_hbase_task_resource_environment()
+        session = AIOpsChatSession.objects.create(
+            user=self.user,
+            title='hbase-inventory-memory',
+            context={
+                'current_environment': {'name': '本地 HBase 集群'},
+                'analysis_scope': {
+                    'environment': '本地 HBase 集群',
+                    'task_resource_environment_ids': [env.id],
+                    'k8s_cluster_ids': [],
+                },
+            },
+        )
+
+        memory = _build_session_memory_snapshot(session)
+
+        incident = memory['incident_context']
+        self.assertEqual(incident['environment'], '本地 HBase 集群')
+        self.assertEqual(incident['resource_scope']['task_resource_environment_ids'], [env.id])
+        self.assertIn('query_task_resources', incident['suggested_next_step'])
+
+    def test_hbase_task_resource_query_returns_non_k8s_cluster_inventory(self):
+        self.ensure_hbase_task_resource_environment()
+        session = AIOpsChatSession.objects.create(user=self.user, title='hbase-resource-inventory')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='本地 HBase 集群有几个集群，有哪些节点',
+        )
+
+        result = query_task_resources(
+            session,
+            user_message,
+            self.user,
+            query='本地 HBase 集群有几个集群，有哪些节点',
+            environment='本地 HBase 集群',
+            resource_type='host',
+            status='active',
+            limit=50,
+        )
+
+        inventory = result['cluster_inventory']
+        self.assertEqual(inventory['cluster_count'], 1)
+        self.assertEqual(inventory['node_count'], 3)
+        self.assertFalse(inventory['is_k8s'])
+        self.assertEqual(set(inventory['node_names']), {'hbase-master', 'hbase-regionserver-1', 'hbase-regionserver-2'})
+        self.assertEqual(result['summary']['cluster_count'], 1)
+        self.assertIn('非 K8s 集群资源事实', result['sections'][0]['title'])
+
+    def test_resource_inventory_fastpath_only_when_provider_unavailable(self):
+        env, _ = self.ensure_hbase_task_resource_environment()
+        knowledge_environment = {'name': '本地 HBase 集群', 'task_resource_environment_ids': [env.id]}
+        analysis_scope = {'task_resource_environment_ids': [env.id]}
+
+        self.assertTrue(should_use_task_resource_fallback(
+            '本地 HBase 集群有几个集群',
+            provider_ready=False,
+            knowledge_environment=knowledge_environment,
+            analysis_scope=analysis_scope,
+        ))
+        self.assertFalse(should_use_task_resource_fallback(
+            '本地 HBase 集群有几个集群',
+            provider_ready=True,
+            knowledge_environment=knowledge_environment,
+            analysis_scope=analysis_scope,
+        ))
+        self.assertTrue(_should_query_task_resources_directly(
+            '本地 HBase 集群有几个集群',
+            knowledge_environment=knowledge_environment,
+            analysis_scope=analysis_scope,
+        ))
+
+    def test_failed_followup_text_is_not_extracted_as_shell_command(self):
+        self.assertEqual(_extract_shell_command_from_question('前面我让你重启集群的命令，执行失败了，你来解决下'), '')
+        self.assertEqual(_extract_shell_command_from_question('执行失败了，解决下'), '')
+        self.assertEqual(_extract_shell_command_from_question('执行命令：systemctl restart hbase-master'), 'systemctl restart hbase-master')
+
+    @mock.patch('aiops.services._run_answer_formatter', return_value={'used': False, 'fell_back': False, 'attempts': 0})
+    @mock.patch('aiops.services._request_model_completion')
+    def test_failed_task_followup_uses_session_memory_and_host_task_lookup(self, mocked_completion, mocked_formatter):
+        provider = AIOpsModelProvider.objects.create(
+            name='mock-memory-provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='mock-model',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+        config = get_agent_config()
+        config.default_provider = provider
+        config.save(update_fields=['default_provider'])
+        self.ensure_hbase_task_resource_environment()
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'hbase-failed-followup'}, format='json')
+        session_id = session_response.data['id']
+        AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': '本地 HBase 集群'}})
+        session = AIOpsChatSession.objects.get(pk=session_id)
+        task = HostTask.objects.create(
+            name='重启 HBase 集群',
+            task_type=HostTask.TASK_RUN_COMMAND,
+            status=HostTask.STATUS_FAILED,
+            lifecycle_status=HostTask.LIFECYCLE_FAILED,
+            payload={'command': 'systemctl restart hbase-master'},
+            execution_mode=HostTask.EXECUTION_MODE_ANSIBLE,
+            trigger_source=HostTask.TRIGGER_SOURCE_AIOPS,
+            target_count=3,
+            success_count=0,
+            failed_count=3,
+            created_by=self.user.username,
+            source_context={'source': 'aiops', 'session_id': session.id, 'request_summary': '重启 HBase 集群'},
+        )
+        HostTaskExecution.objects.create(
+            task=task,
+            host_name='hbase-master',
+            host_ip='127.0.0.1',
+            status=HostTaskExecution.STATUS_FAILED,
+            command='systemctl restart hbase-master',
+            error_message='Unit hbase-master.service not found',
+        )
+        mocked_completion.side_effect = [
+            {
+                'choices': [{
+                    'message': {
+                        'content': '',
+                        'tool_calls': [{
+                            'id': 'call-host-tasks',
+                            'type': 'function',
+                            'function': {
+                                'name': 'query_host_tasks',
+                                'arguments': json.dumps({'query': '重启 HBase 集群', 'status': 'failed', 'limit': 5}, ensure_ascii=False),
+                            },
+                        }],
+                    },
+                }],
+            },
+            {
+                'choices': [{
+                    'message': {
+                        'content': '上次重启任务失败，错误是 Unit hbase-master.service not found。需要改为 Docker/HBase 容器方式排查，不能把“执行失败了”当作命令执行。',
+                    },
+                }],
+            },
+        ]
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '前面我让你重启集群的命令，执行失败了，你来解决下'},
+            format='json',
+        )
+
+        assistant_message = response.data['assistant_message']
+        first_payload = mocked_completion.call_args_list[0].args[1]
+        memory_message = '\n'.join(
+            item.get('content') or ''
+            for item in first_payload['messages']
+            if '会话短期记忆' in (item.get('content') or '')
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'mcp_skills')
+        self.assertEqual(assistant_message['tool_calls'], ['query_host_tasks'])
+        self.assertIsNone(response.data['pending_action'])
+        self.assertIn('recent_aiops_tasks', memory_message)
+        self.assertIn('Unit hbase-master.service not found', memory_message)
+        self.assertIn('Unit hbase-master.service not found', assistant_message['content'])
+        self.assertNotIn('generate_host_task', assistant_message['tool_calls'])
+        self.assertFalse(AIOpsPendingAction.objects.filter(session=session, title__icontains='失败了').exists())
+        mocked_formatter.assert_called_once()
 
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_uses_llm_tool_calling_runtime(self, mocked_completion):
@@ -8815,6 +9193,21 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(diagnostics[0]['status'], 'connected')
         self.assertEqual(diagnostics[0]['tool_count'], 1)
         self.assertEqual(managed_clients, [fake_session])
+
+    def test_runtime_registry_reports_platform_tool_consistency(self):
+        get_agent_config()
+        builtin_servers = list(AIOpsMCPServer.objects.filter(server_type=AIOpsMCPServer.SERVER_PLATFORM_BUILTIN, is_enabled=True))
+
+        tools, registry, managed_clients, diagnostics = _build_runtime_tool_registry(builtin_servers, self.user)
+
+        platform_diagnostic = next(item for item in diagnostics if item.get('name') == '平台内置 MCP')
+        validation = platform_diagnostic.get('registry_validation') or {}
+        self.assertIn('query_task_resources', {item['function']['name'] for item in tools})
+        self.assertIn('query_host_tasks', registry)
+        self.assertEqual(validation['missing_catalog'], [])
+        self.assertEqual(validation['missing_executor'], [])
+        self.assertEqual(validation['catalog_without_executor'], [])
+        self.assertEqual(managed_clients, [])
 
     @mock.patch('aiops.services._create_mcp_client_session')
     def test_runtime_registry_exposes_external_mcp_failure_diagnostics(self, mocked_create_session):

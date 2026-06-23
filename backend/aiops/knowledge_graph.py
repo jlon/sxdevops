@@ -2426,6 +2426,29 @@ def build_knowledge_graph(params=None):
         add_edge(_node_key('capability', 'dashboards'), node_id, '展示看板', 'capability_dashboard')
         return node_id
 
+    def add_dashboard_node(dashboard, folder_name):
+        key = _clean(dashboard.get('key') or dashboard.get('uid') or dashboard.get('slug') or dashboard.get('title') or dashboard.get('name'))
+        title = _clean(dashboard.get('display_name') or dashboard.get('label') or dashboard.get('title') or dashboard.get('name') or key)
+        if not key or not title:
+            return ''
+        node_id = _node_key('dashboard', key)
+        add_node(
+            node_id,
+            title,
+            'dashboard',
+            'Grafana 看板',
+            route=dashboard.get('path') or dashboard.get('url') or '/observability/grafana',
+            status='enabled',
+            description=dashboard.get('description') or f'看板：{title}',
+            dashboard_key=key,
+            dashboard_folder=folder_name,
+        )
+        folder_id = add_dashboard_folder_node(folder_name)
+        if folder_id:
+            add_edge(folder_id, node_id, '包含看板', 'dashboard_folder_item')
+            add_edge(_node_key('capability', 'dashboards'), node_id, '展示看板', 'capability_dashboard')
+        return node_id
+
     for setting in GrafanaSetting.objects.filter(enabled=True).order_by('name'):
         folders = setting.folders if isinstance(setting.folders, list) else []
         for folder in folders:
@@ -2441,8 +2464,10 @@ def build_knowledge_graph(params=None):
             folder_name = _matched_configured_folder(dashboard_folder, selected_grafana_folders if use_knowledge_env else None)
             if use_knowledge_env and not folder_name:
                 continue
+            if use_knowledge_env and selected_grafana_folders and dashboard_folder != folder_name:
+                continue
             dashboard_folder_counts[folder_name] += 1
-            node_id = add_dashboard_folder_node(folder_name)
+            node_id = add_dashboard_node(dashboard, folder_name)
             if node_id:
                 dashboard_nodes[key] = node_id
 
