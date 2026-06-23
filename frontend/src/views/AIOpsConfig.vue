@@ -5,7 +5,7 @@
         <div class="hero-title-row">
           <span class="hero-icon"><el-icon><ChatDotSquare /></el-icon></span>
           <h2>智能体配置</h2>
-          <p class="page-inline-desc">统一管理智能助手的策略、Action、Skill、MCP 与模型提供商。</p>
+          <p class="page-inline-desc">以 Agent 为中心管理模型、MCP、Skill、Action 与协同沉淀。</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -15,19 +15,14 @@
 
     <section class="tabs-card">
       <el-tabs v-model="activeTab" class="event-like-tabs">
-        <el-tab-pane name="strategy">
+        <el-tab-pane name="agents">
           <template #label>
-            <span class="tab-label"><el-icon><Setting /></el-icon>智能体策略</span>
+            <span class="tab-label"><el-icon><Setting /></el-icon>Agent 管理</span>
           </template>
         </el-tab-pane>
-        <el-tab-pane name="actions">
+        <el-tab-pane name="providers">
           <template #label>
-            <span class="tab-label"><el-icon><Promotion /></el-icon>Action</span>
-          </template>
-        </el-tab-pane>
-        <el-tab-pane name="skills">
-          <template #label>
-            <span class="tab-label"><el-icon><Tools /></el-icon>Skill</span>
+            <span class="tab-label"><el-icon><Cpu /></el-icon>模型</span>
           </template>
         </el-tab-pane>
         <el-tab-pane name="mcp">
@@ -35,96 +30,31 @@
             <span class="tab-label"><el-icon><Connection /></el-icon>MCP</span>
           </template>
         </el-tab-pane>
-        <el-tab-pane name="orchestration">
+        <el-tab-pane name="skills">
           <template #label>
-            <span class="tab-label"><el-icon><Message /></el-icon>拓展功能-待实现</span>
+            <span class="tab-label"><el-icon><Tools /></el-icon>Skill</span>
           </template>
         </el-tab-pane>
-        <el-tab-pane name="providers">
+        <el-tab-pane name="actions">
           <template #label>
-            <span class="tab-label"><el-icon><Cpu /></el-icon>模型提供商</span>
+            <span class="tab-label"><el-icon><Promotion /></el-icon>Action</span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="orchestration">
+          <template #label>
+            <span class="tab-label"><el-icon><Message /></el-icon>协同沉淀</span>
           </template>
         </el-tab-pane>
       </el-tabs>
     </section>
 
     <section class="panel">
-      <template v-if="activeTab === 'strategy'">
-        <div class="section-toolbar strategy-actions">
-          <div class="toolbar-head">
-            <span class="toolbar-title">智能体策略</span>
-            <span class="toolbar-desc">统一配置默认模型、欢迎语与运行安全开关</span>
-          </div>
-          <el-button size="small" type="primary" :loading="saving.config" @click="saveConfig">保存策略</el-button>
-        </div>
-        <div class="config-grid">
-          <div class="config-section config-section--main surface-card">
-            <div class="section-title">基础策略</div>
-            <el-form :model="configForm" label-width="118px">
-              <el-form-item label="默认提供商">
-                <el-select v-model="configForm.default_provider_id" clearable style="width:100%">
-                  <el-option
-                    v-for="provider in providers"
-                    :key="provider.id"
-                    :label="providerOptionLabel(provider)"
-                    :value="provider.id"
-                    :disabled="!provider.runtime_ready"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="欢迎语">
-                <el-input v-model="configForm.welcome_message" />
-              </el-form-item>
-              <el-form-item label="建议问题">
-                <el-select v-model="configForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" />
-              </el-form-item>
-              <el-form-item label="启用 MCP">
-                <el-select v-model="configForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
-                  <el-option v-for="item in mcpServers" :key="item.id" :label="item.name" :value="item.id" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="启用 Skill">
-                <el-select v-model="configForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
-                  <el-option v-for="item in skills" :key="item.id" :label="item.name" :value="item.id" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="系统提示语">
-                <el-input v-model="configForm.system_prompt" type="textarea" :rows="8" />
-              </el-form-item>
-            </el-form>
-          </div>
-          <div class="config-section config-section--runtime surface-card">
-            <div class="section-title">运行生效项</div>
-            <div class="runtime-note">这些配置会被聊天入口或后端任务生成逻辑直接读取。</div>
-            <div class="switch-list">
-              <div class="switch-item">
-                <div class="switch-copy">
-                  <span>启用智能助手</span>
-                  <small>关闭后聊天入口不可用，已有会话仍保留。</small>
-                </div>
-                <el-switch v-model="configForm.is_enabled" />
-              </div>
-              <div class="switch-item">
-                <div class="switch-copy">
-                  <span>允许生成待执行任务</span>
-                  <small>关闭后只返回分析结果，不创建待确认任务。</small>
-                </div>
-                <el-switch v-model="configForm.allow_action_execution" />
-              </div>
-            </div>
-            <el-form :model="configForm" label-width="126px" class="runtime-form">
-              <el-form-item label="模型上下文消息数">
-                <el-input-number v-model="configForm.max_history_messages" :min="4" :max="40" />
-                <div class="runtime-field-tip">仅限制每次发送给模型的最近用户/助手消息数，不影响会话历史展示。</div>
-              </el-form-item>
-            </el-form>
-          </div>
-        </div>
+      <template v-if="activeTab === 'agents'">
         <div class="agent-registry-panel surface-card">
           <div class="section-toolbar audit-toolbar">
             <div class="toolbar-head">
-              <span class="toolbar-title">Agent Registry</span>
-              <span class="toolbar-desc">管理默认通用 Agent 与团队自定义 Agent，绑定模型、Skill、MCP 和执行策略</span>
+              <span class="toolbar-title">Agent 管理</span>
+              <span class="toolbar-desc">先选择或注册 Agent，再覆盖模型、MCP、Skill 和执行策略</span>
             </div>
             <el-button v-if="canManageAgents" size="small" type="primary" @click="openAgentDialog()">注册 Agent</el-button>
           </div>
@@ -194,6 +124,76 @@
               </template>
             </el-table-column>
           </el-table>
+        </div>
+        <div class="section-toolbar agent-baseline-actions">
+          <div class="toolbar-head">
+            <span class="toolbar-title">全局默认与安全基线</span>
+            <span class="toolbar-desc">作为 Agent 未覆盖字段时的兜底模型、Prompt、MCP、Skill 与运行开关</span>
+          </div>
+          <el-button size="small" type="primary" :loading="saving.config" @click="saveConfig">保存基线</el-button>
+        </div>
+        <div class="config-grid">
+          <div class="config-section config-section--main surface-card">
+            <div class="section-title">默认会话体验</div>
+            <el-form :model="configForm" label-width="118px">
+              <el-form-item label="默认模型">
+                <el-select v-model="configForm.default_provider_id" clearable style="width:100%">
+                  <el-option
+                    v-for="provider in providers"
+                    :key="provider.id"
+                    :label="providerOptionLabel(provider)"
+                    :value="provider.id"
+                    :disabled="!provider.runtime_ready"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="欢迎语">
+                <el-input v-model="configForm.welcome_message" />
+              </el-form-item>
+              <el-form-item label="建议问题">
+                <el-select v-model="configForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" />
+              </el-form-item>
+              <el-form-item label="启用 MCP">
+                <el-select v-model="configForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
+                  <el-option v-for="item in mcpServers" :key="item.id" :label="item.name" :value="item.id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="启用 Skill">
+                <el-select v-model="configForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
+                  <el-option v-for="item in skills" :key="item.id" :label="item.name" :value="item.id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="系统提示语">
+                <el-input v-model="configForm.system_prompt" type="textarea" :rows="8" />
+              </el-form-item>
+            </el-form>
+          </div>
+          <div class="config-section config-section--runtime surface-card">
+            <div class="section-title">安全基线</div>
+            <div class="runtime-note">Agent 没有覆盖时使用这些开关；只读 Agent 会继续收紧可执行范围。</div>
+            <div class="switch-list">
+              <div class="switch-item">
+                <div class="switch-copy">
+                  <span>启用智能助手</span>
+                  <small>关闭后聊天入口不可用，已有会话仍保留。</small>
+                </div>
+                <el-switch v-model="configForm.is_enabled" />
+              </div>
+              <div class="switch-item">
+                <div class="switch-copy">
+                  <span>允许生成待执行任务</span>
+                  <small>关闭后只返回分析结果，不创建待确认任务。</small>
+                </div>
+                <el-switch v-model="configForm.allow_action_execution" />
+              </div>
+            </div>
+            <el-form :model="configForm" label-width="126px" class="runtime-form">
+              <el-form-item label="模型上下文消息数">
+                <el-input-number v-model="configForm.max_history_messages" :min="4" :max="40" />
+                <div class="runtime-field-tip">仅限制每次发送给模型的最近用户/助手消息数，不影响会话历史展示。</div>
+              </el-form-item>
+            </el-form>
+          </div>
         </div>
       </template>
 
@@ -1076,10 +1076,10 @@ import {
   updateAIOpsSkill,
 } from '@/api/modules/aiops'
 
-const configTabs = ['strategy', 'actions', 'skills', 'mcp', 'orchestration', 'providers']
+const configTabs = ['agents', 'providers', 'mcp', 'skills', 'actions', 'orchestration']
 const { activeTab } = useRouteTabState({
   tabs: configTabs,
-  defaultTab: 'strategy',
+  defaultTab: 'agents',
 })
 const authStore = useAuthStore()
 const loading = reactive({ page: false })
@@ -1440,7 +1440,7 @@ function openAgentStatDetail(type = 'all') {
   }))
   openStatDetail({
     title: titles[type] || 'Agent 详情',
-    subtitle: '来自当前 Agent Registry',
+    subtitle: '来自当前 Agent 列表',
     items,
     emptyText: '暂无符合条件的 Agent',
   })
@@ -1886,7 +1886,7 @@ async function saveConfig() {
   saving.config = true
   try {
     await updateAIOpsConfig({ ...configForm, require_confirmation: true })
-    ElMessage.success('智能体策略已保存')
+    ElMessage.success('全局基线已保存')
     await loadAll()
   } finally {
     saving.config = false
@@ -2680,12 +2680,12 @@ onMounted(async () => {
   line-height: 1.4;
 }
 
-.strategy-actions {
+.agent-baseline-actions {
   margin-top: 0;
 }
 
 .agent-registry-panel {
-  margin-top: 10px;
+  margin-bottom: 14px;
 }
 
 .agent-summary-row {
