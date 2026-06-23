@@ -3,7 +3,7 @@ from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from aiops.models import AIOpsAgentConfig, AIOpsAgentProfile
+from aiops.models import AIOpsAgentConfig, AIOpsAgentProfile, AIOpsMCPServer, AIOpsModelProvider, AIOpsSkill
 from aiops.services import ensure_default_agent_profile, resolve_agent_profile_for_user, runtime_config_for_agent
 from rbac.models import PermissionDefinition
 from rbac.models import Role
@@ -162,6 +162,160 @@ class AgentRegistryApiTests(TestCase):
         self.assertEqual(runtime.enabled_mcp_server_ids, [1])
         self.assertEqual(runtime.enabled_skill_ids, [2])
         self.assertFalse(runtime.allow_action_execution)
+
+    def test_runtime_config_for_empty_custom_agent_inherits_default_agent(self):
+        config = AIOpsAgentConfig.objects.create(
+            name='runtime-inherit-test',
+            system_prompt='global prompt',
+            welcome_message='global welcome',
+            suggested_questions=['global'],
+            allow_action_execution=True,
+        )
+        provider = AIOpsModelProvider.objects.create(
+            name='Default Runtime Provider',
+            base_url='https://model.example.test/v1',
+            default_model='ops-model',
+        )
+        mcp = AIOpsMCPServer.objects.create(name='Default Runtime MCP')
+        skill = AIOpsSkill.objects.create(name='Default Runtime Skill', slug='default-runtime-skill')
+        default_agent = ensure_default_agent_profile(config)
+        default_agent.default_provider = provider
+        default_agent.system_prompt = 'default prompt'
+        default_agent.welcome_message = 'default welcome'
+        default_agent.suggested_questions = ['default question']
+        default_agent.enabled_mcp_server_ids = [mcp.id]
+        default_agent.enabled_skill_ids = [skill.id]
+        default_agent.save(update_fields=[
+            'default_provider',
+            'system_prompt',
+            'welcome_message',
+            'suggested_questions',
+            'enabled_mcp_server_ids',
+            'enabled_skill_ids',
+        ])
+        custom_agent = AIOpsAgentProfile.objects.create(
+            name='Empty Custom Agent',
+            slug='empty-custom-agent',
+            is_enabled=True,
+        )
+
+        runtime = runtime_config_for_agent(config, custom_agent)
+
+        self.assertEqual(runtime.default_provider_id, provider.id)
+        self.assertEqual(runtime.system_prompt, 'default prompt')
+        self.assertEqual(runtime.welcome_message, 'default welcome')
+        self.assertEqual(runtime.suggested_questions, ['default question'])
+        self.assertEqual(runtime.enabled_mcp_server_ids, [mcp.id])
+        self.assertEqual(runtime.enabled_skill_ids, [skill.id])
+
+    def test_resource_registration_can_bind_provider_mcp_and_skill_to_agents(self):
+        ensure_default_agent_profile(AIOpsAgentConfig.objects.create(name='resource-bind-test'))
+        agent = AIOpsAgentProfile.objects.create(
+            name='Bound Agent',
+            slug='bound-agent',
+            is_enabled=True,
+        )
+
+        provider_response = self.client.post('/api/aiops/admin/providers/', {
+            'name': 'Bound Provider',
+            'base_url': 'https://bound-provider.example.test/v1',
+            'default_model': 'bound-model',
+            'bind_agent_ids': [agent.id],
+        }, format='json')
+        self.assertEqual(provider_response.status_code, 201, provider_response.data)
+        agent.refresh_from_db()
+        self.assertEqual(agent.default_provider_id, provider_response.data['id'])
+
+        mcp_response = self.client.post('/api/aiops/admin/mcp-servers/', {
+            'name': 'Bound MCP',
+            'server_type': 'http',
+            'endpoint_or_command': 'https://mcp.example.test',
+            'bind_agent_ids': [agent.id],
+        }, format='json')
+        self.assertEqual(mcp_response.status_code, 201, mcp_response.data)
+        agent.refresh_from_db()
+        self.assertIn(mcp_response.data['id'], agent.enabled_mcp_server_ids)
+
+        other_agent = AIOpsAgentProfile.objects.create(
+            name='Other Bound Agent',
+            slug='other-bound-agent',
+            enabled_mcp_server_ids=[mcp_response.data['id']],
+            is_enabled=True,
+        )
+        update_mcp_response = self.client.patch(f"/api/aiops/admin/mcp-servers/{mcp_response.data['id']}/", {
+            'bind_agent_ids': [agent.id],
+        }, format='json')
+        self.assertEqual(update_mcp_response.status_code, 200, update_mcp_response.data)
+        other_agent.refresh_from_db()
+        self.assertNotIn(mcp_response.data['id'], other_agent.enabled_mcp_server_ids)
+
+        skill_response = self.client.post('/api/aiops/admin/skills/', {
+            'name': 'Bound Skill',
+            'slug': 'bound-skill',
+            'description': '绑定到 Agent 的测试 Skill',
+            'bind_agent_ids': [agent.id],
+        }, format='json')
+        self.assertEqual(skill_response.status_code, 201, skill_response.data)
+        agent.refresh_from_db()
+        self.assertIn(skill_response.data['id'], agent.enabled_skill_ids)
+
+        update_skill_response = self.client.patch(f"/api/aiops/admin/skills/{skill_response.data['id']}/", {
+            'bind_agent_ids': [],
+        }, format='json')
+        self.assertEqual(update_skill_response.status_code, 200, update_skill_response.data)
+        agent.refresh_from_db()
+        self.assertNotIn(skill_response.data['id'], agent.enabled_skill_ids)
+
+    def test_skill_clone_can_bind_cloned_skill_to_agent(self):
+        ensure_default_agent_profile(AIOpsAgentConfig.objects.create(name='skill-clone-bind-test'))
+        agent = AIOpsAgentProfile.objects.create(
+            name='Skill Clone Agent',
+            slug='skill-clone-agent',
+            is_enabled=True,
+        )
+        source = AIOpsSkill.objects.create(
+            name='Source Clone Skill',
+            slug='source-clone-skill',
+        )
+
+        response = self.client.post(f'/api/aiops/admin/skills/{source.id}/clone/', {
+            'bind_agent_ids': [agent.id],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        agent.refresh_from_db()
+        self.assertIn(response.data['id'], agent.enabled_skill_ids)
+
+    def test_resource_agent_binding_requires_agent_manage_permission(self):
+        config_manage_perm = PermissionDefinition.objects.get(code='aiops.config.manage')
+        role = Role.objects.create(code='aiops-config-manager', name='AIOps Config Manager')
+        role.permissions.set([config_manage_perm])
+        user = User.objects.create_user(username='config_manager', password='Passw0rd!123')
+        user.rbac_roles.add(role)
+        token = Token.objects.create(user=user)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        agent = ensure_default_agent_profile(AIOpsAgentConfig.objects.create(name='resource-bind-permission-test'))
+
+        response = client.post('/api/aiops/admin/mcp-servers/', {
+            'name': 'Unauthorized Bound MCP',
+            'server_type': 'http',
+            'endpoint_or_command': 'https://mcp.example.test',
+            'bind_agent_ids': [agent.id],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_resource_agent_binding_rejects_unknown_agent_ids(self):
+        response = self.client.post('/api/aiops/admin/mcp-servers/', {
+            'name': 'Unknown Agent Bound MCP',
+            'server_type': 'http',
+            'endpoint_or_command': 'https://mcp.example.test',
+            'bind_agent_ids': [99999],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('bind_agent_ids', response.data)
 
     def test_non_default_agent_requires_agent_run_permission(self):
         chat_perm = PermissionDefinition.objects.get(code='aiops.chat.view')

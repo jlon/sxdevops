@@ -22,6 +22,12 @@ from .services import _ensure_task_draft_title, _is_generic_task_title, get_mode
 
 class AIOpsModelProviderSerializer(serializers.ModelSerializer):
     api_key = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    bind_agent_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        write_only=True,
+        required=False,
+        allow_empty=True,
+    )
     has_api_key = serializers.BooleanField(read_only=True)
     runtime_ready = serializers.SerializerMethodField()
     setup_hint = serializers.SerializerMethodField()
@@ -32,13 +38,14 @@ class AIOpsModelProviderSerializer(serializers.ModelSerializer):
             'id', 'name', 'provider_type', 'base_url', 'provider_preset', 'api_key', 'has_api_key', 'default_model', 'backup_model',
             'temperature', 'max_tokens', 'timeout_seconds', 'is_enabled', 'runtime_ready', 'setup_hint',
             'price_currency', 'input_token_price_per_1m', 'output_token_price_per_1m',
-            'last_test_status', 'last_test_message',
+            'last_test_status', 'last_test_message', 'bind_agent_ids',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['runtime_ready', 'setup_hint', 'last_test_status', 'last_test_message', 'created_at', 'updated_at', 'has_api_key']
 
     def create(self, validated_data):
         api_key = validated_data.pop('api_key', '')
+        validated_data.pop('bind_agent_ids', None)
         instance = super().create(validated_data)
         if api_key:
             instance.set_api_key(api_key)
@@ -47,6 +54,7 @@ class AIOpsModelProviderSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         api_key = validated_data.pop('api_key', None)
+        validated_data.pop('bind_agent_ids', None)
         instance = super().update(instance, validated_data)
         if api_key is not None:
             instance.set_api_key(api_key)
@@ -172,12 +180,24 @@ class AIOpsAgentProfileSerializer(serializers.ModelSerializer):
 
 
 class AIOpsMCPServerSerializer(serializers.ModelSerializer):
+    bind_agent_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        write_only=True,
+        required=False,
+        allow_empty=True,
+    )
+
     class Meta:
         model = AIOpsMCPServer
         fields = '__all__'
         read_only_fields = ['is_builtin']
 
+    def create(self, validated_data):
+        validated_data.pop('bind_agent_ids', None)
+        return super().create(validated_data)
+
     def update(self, instance, validated_data):
+        validated_data.pop('bind_agent_ids', None)
         if instance.is_builtin:
             validated_data.pop('name', None)
             validated_data.pop('server_type', None)
@@ -185,6 +205,13 @@ class AIOpsMCPServerSerializer(serializers.ModelSerializer):
 
 
 class AIOpsSkillSerializer(serializers.ModelSerializer):
+    bind_agent_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        write_only=True,
+        required=False,
+        allow_empty=True,
+    )
+
     class Meta:
         model = AIOpsSkill
         fields = '__all__'
@@ -225,7 +252,12 @@ class AIOpsSkillSerializer(serializers.ModelSerializer):
             attrs['max_iterations'] = 0
         return attrs
 
+    def create(self, validated_data):
+        validated_data.pop('bind_agent_ids', None)
+        return super().create(validated_data)
+
     def update(self, instance, validated_data):
+        validated_data.pop('bind_agent_ids', None)
         if instance.is_builtin:
             validated_data.pop('slug', None)
             validated_data.pop('source_type', None)

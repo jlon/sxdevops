@@ -740,6 +740,21 @@
         <div class="dialog-grid">
           <el-form-item label="启用"><el-switch v-model="providerForm.is_enabled" /></el-form-item>
         </div>
+        <el-form-item label="绑定 Agent">
+          <el-select
+            v-model="providerForm.bind_agent_ids"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            filterable
+            :disabled="!canManageAgents"
+            style="width:100%"
+            placeholder="保存后作为所选 Agent 的默认模型"
+          >
+            <el-option v-for="agent in agentBindOptions" :key="agent.id" :label="agentBindLabel(agent)" :value="agent.id" />
+          </el-select>
+          <div class="runtime-field-tip">{{ agentBindTip('Provider') }}</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="providerDialogVisible = false">取消</el-button>
@@ -768,6 +783,21 @@
         </div>
         <el-form-item label="启用工具"><el-select v-model="mcpForm.tool_whitelist" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="mcpForm.is_enabled" /></el-form-item>
+        <el-form-item label="绑定 Agent">
+          <el-select
+            v-model="mcpForm.bind_agent_ids"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            filterable
+            :disabled="!canManageAgents"
+            style="width:100%"
+            placeholder="保存后加入所选 Agent 的 MCP 能力"
+          >
+            <el-option v-for="agent in agentBindOptions" :key="agent.id" :label="agentBindLabel(agent)" :value="agent.id" />
+          </el-select>
+          <div class="runtime-field-tip">{{ agentBindTip('MCP') }}</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="mcpDialogVisible = false">取消</el-button>
@@ -847,6 +877,21 @@
         </el-form-item>
         <el-form-item label="方法内容"><el-input v-model="skillForm.content" type="textarea" :rows="10" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="skillForm.is_enabled" /></el-form-item>
+        <el-form-item label="绑定 Agent">
+          <el-select
+            v-model="skillForm.bind_agent_ids"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            filterable
+            :disabled="!canManageAgents"
+            style="width:100%"
+            placeholder="保存后加入所选 Agent 的 Skill 能力"
+          >
+            <el-option v-for="agent in agentBindOptions" :key="agent.id" :label="agentBindLabel(agent)" :value="agent.id" />
+          </el-select>
+          <div class="runtime-field-tip">{{ agentBindTip('Skill') }}</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="skillDialogVisible = false">取消</el-button>
@@ -1277,6 +1322,7 @@ const selectedAgent = computed(() => {
     || agents.value[0]
 })
 const defaultAgent = computed(() => agents.value.find(item => item.is_default) || agents.value.find(item => item.slug === 'general') || null)
+const agentBindOptions = computed(() => agents.value.slice().sort((a, b) => Number(b.is_default) - Number(a.is_default) || String(a.name).localeCompare(String(b.name), 'zh-CN')))
 const builtinRoleOptions = [
   { label: '平台管理员', value: 'platform-admin' },
   { label: '运维管理员', value: 'ops-admin' },
@@ -1522,6 +1568,33 @@ function agentFallbackLabel(agent = {}, fieldName = '配置') {
 
 function agentMcpNames(agent = {}) {
   return namesByIds(mcpServers.value, agent.enabled_mcp_server_ids, agentFallbackLabel(agent, 'MCP'))
+}
+
+function agentBindLabel(agent = {}) {
+  const flags = []
+  if (agent.is_default) flags.push('默认')
+  if (!agent.is_enabled) flags.push('停用')
+  const suffix = flags.length ? `（${flags.join(' / ')}）` : ''
+  return `${agent.name || agent.slug}${suffix}`
+}
+
+function agentBindTip(resourceName) {
+  if (!canManageAgents.value) return `当前账号没有 Agent 管理权限，只能保存 ${resourceName} 自身配置。`
+  return `选择 Agent 后保存会同步绑定；留空表示不把该 ${resourceName} 绑定到任何 Agent。`
+}
+
+function boundAgentIdsForProvider(provider = {}) {
+  if (!provider?.id) return []
+  return agents.value
+    .filter(agent => Number(agent.default_provider?.id || agent.default_provider_id || 0) === Number(provider.id))
+    .map(agent => agent.id)
+}
+
+function boundAgentIdsForListField(fieldName, resourceId) {
+  if (!resourceId) return []
+  return agents.value
+    .filter(agent => (agent[fieldName] || []).map(item => Number(item)).includes(Number(resourceId)))
+    .map(agent => agent.id)
 }
 
 function boolPolicyLabel(value) {
@@ -1794,6 +1867,7 @@ function resetProviderForm() {
     output_token_price_per_1m: 0,
     provider_preset: '',
     is_enabled: true,
+    bind_agent_ids: [],
   })
   selectedProviderPreset.value = ''
 }
@@ -1849,6 +1923,7 @@ function resetMcpForm() {
     auth_config_text: '{}',
     tool_whitelist: [],
     is_enabled: true,
+    bind_agent_ids: [],
   })
   mcpToolDiagnostics.value = []
 }
@@ -1873,6 +1948,7 @@ function resetSkillForm() {
     allowed_role_codes: [],
     is_builtin: false,
     is_enabled: true,
+    bind_agent_ids: [],
   })
 }
 
@@ -2046,6 +2122,7 @@ function openProviderDialog(row) {
     Object.assign(providerForm, row, { api_key: '' })
     selectedProviderPreset.value = detectProviderPreset(row)
     providerForm.provider_preset = selectedProviderPreset.value
+    providerForm.bind_agent_ids = boundAgentIdsForProvider(row)
   }
   providerDialogVisible.value = true
 }
@@ -2173,6 +2250,12 @@ async function saveProvider() {
     payload.input_token_price_per_1m = Number(payload.input_token_price_per_1m || 0).toFixed(2)
     payload.output_token_price_per_1m = Number(payload.output_token_price_per_1m || 0).toFixed(2)
     if (!payload.api_key) delete payload.api_key
+    payload.bind_agent_ids = canManageAgents.value ? (providerForm.bind_agent_ids || []) : undefined
+    delete payload.has_api_key
+    delete payload.runtime_ready
+    delete payload.setup_hint
+    delete payload.last_test_status
+    delete payload.last_test_message
     if (providerForm.id) await updateAIOpsProvider(providerForm.id, payload)
     else await createAIOpsProvider(payload)
     providerDialogVisible.value = false
@@ -2243,7 +2326,12 @@ async function handleDeleteProvider(row) {
 
 function openMcpDialog(row) {
   resetMcpForm()
-  if (row) Object.assign(mcpForm, row, { auth_config_text: JSON.stringify(row.auth_config || {}, null, 2) })
+  if (row) {
+    Object.assign(mcpForm, row, {
+      auth_config_text: JSON.stringify(row.auth_config || {}, null, 2),
+      bind_agent_ids: boundAgentIdsForListField('enabled_mcp_server_ids', row.id),
+    })
+  }
   mcpDialogVisible.value = true
 }
 
@@ -2271,6 +2359,9 @@ async function saveMcp() {
       return
     }
     delete payload.auth_config_text
+    payload.bind_agent_ids = canManageAgents.value ? (mcpForm.bind_agent_ids || []) : undefined
+    delete payload.id
+    delete payload.is_builtin
     if (mcpForm.id) await updateAIOpsMcpServer(mcpForm.id, payload)
     else await createAIOpsMcpServer(payload)
     mcpDialogVisible.value = false
@@ -2300,6 +2391,7 @@ function openSkillDialog(row) {
       allowed_role_codes: Array.isArray(row.allowed_role_codes) ? [...row.allowed_role_codes] : [],
       output_contract: row.output_contract && typeof row.output_contract === 'object' ? row.output_contract : {},
       output_contract_text: JSON.stringify(row.output_contract && typeof row.output_contract === 'object' ? row.output_contract : {}, null, 2),
+      bind_agent_ids: boundAgentIdsForListField('enabled_skill_ids', row.id),
     })
   }
   skillDialogVisible.value = true
@@ -2333,6 +2425,7 @@ async function saveSkill() {
     delete payload.output_contract_text
     delete payload.id
     delete payload.is_builtin
+    payload.bind_agent_ids = canManageAgents.value ? (skillForm.bind_agent_ids || []) : undefined
     if (skillForm.id) await updateAIOpsSkill(skillForm.id, payload)
     else await createAIOpsSkill(payload)
     skillDialogVisible.value = false

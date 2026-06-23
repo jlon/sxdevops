@@ -7,7 +7,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework import pagination, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -58,6 +58,7 @@ from .serializers import (
 from .services import (
     archive_runbook,
     auto_ingest_review_knowledge,
+    bind_runtime_resource_to_agents,
     build_action_preflight_contract,
     build_platform_mcp_manifest,
     build_action_registry_summary,
@@ -104,6 +105,40 @@ AUDIT_RECENT_PAGE_SIZE = 20
 DEMO_CHAT_DISABLED_MESSAGE = '演示账号问答权限已临时关闭，如需体验请联系作者：592095766@qq.com'
 
 
+def _request_includes_agent_binding(request):
+    return isinstance(getattr(request, 'data', None), dict) and 'bind_agent_ids' in request.data
+
+
+def _request_bind_agent_ids(request):
+    if not _request_includes_agent_binding(request):
+        return None
+    value = request.data.get('bind_agent_ids')
+    if value in (None, ''):
+        return []
+    if not isinstance(value, list):
+        raise ValidationError({'bind_agent_ids': '必须为数组'})
+    normalized = []
+    for item in value:
+        try:
+            agent_id = int(item)
+        except (TypeError, ValueError):
+            raise ValidationError({'bind_agent_ids': 'Agent ID 必须为正整数'})
+        if agent_id <= 0:
+            raise ValidationError({'bind_agent_ids': 'Agent ID 必须为正整数'})
+        if agent_id > 0 and agent_id not in normalized:
+            normalized.append(agent_id)
+    existing_ids = set(AIOpsAgentProfile.objects.filter(id__in=normalized).values_list('id', flat=True))
+    missing_ids = [item for item in normalized if item not in existing_ids]
+    if missing_ids:
+        raise ValidationError({'bind_agent_ids': f'Agent 不存在: {", ".join(str(item) for item in missing_ids)}'})
+    return normalized
+
+
+def _assert_agent_binding_permission(request):
+    if _request_includes_agent_binding(request) and not user_has_permissions(request.user, ['aiops.agent.manage']):
+        raise PermissionDenied('绑定 Agent 需要 aiops.agent.manage 权限')
+
+
 class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = AIOpsModelProvider.objects.all()
     serializer_class = AIOpsModelProviderSerializer
@@ -120,6 +155,22 @@ class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'list_models': ['aiops.config.manage'],
         'presets': ['aiops.config.view'],
     }
+
+    def perform_create(self, serializer):
+        _assert_agent_binding_permission(self.request)
+        bind_agent_ids = _request_bind_agent_ids(self.request)
+        with transaction.atomic():
+            instance = serializer.save()
+            if bind_agent_ids is not None:
+                bind_runtime_resource_to_agents('provider', instance.id, bind_agent_ids, replace_existing=True)
+
+    def perform_update(self, serializer):
+        _assert_agent_binding_permission(self.request)
+        bind_agent_ids = _request_bind_agent_ids(self.request)
+        with transaction.atomic():
+            instance = serializer.save()
+            if bind_agent_ids is not None:
+                bind_runtime_resource_to_agents('provider', instance.id, bind_agent_ids, replace_existing=True)
 
     @action(detail=False, methods=['get'])
     def presets(self, request):
@@ -240,6 +291,22 @@ class AIOpsMCPServerViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'list_tools': ['aiops.config.manage'],
     }
 
+    def perform_create(self, serializer):
+        _assert_agent_binding_permission(self.request)
+        bind_agent_ids = _request_bind_agent_ids(self.request)
+        with transaction.atomic():
+            instance = serializer.save()
+            if bind_agent_ids is not None:
+                bind_runtime_resource_to_agents('mcp', instance.id, bind_agent_ids, replace_existing=True)
+
+    def perform_update(self, serializer):
+        _assert_agent_binding_permission(self.request)
+        bind_agent_ids = _request_bind_agent_ids(self.request)
+        with transaction.atomic():
+            instance = serializer.save()
+            if bind_agent_ids is not None:
+                bind_runtime_resource_to_agents('mcp', instance.id, bind_agent_ids, replace_existing=True)
+
     def get_queryset(self):
         get_agent_config()
         return AIOpsMCPServer.objects.exclude(name__in=DEPRECATED_BUILTIN_MCP_SERVER_NAMES).order_by('is_builtin', 'name', 'id')
@@ -284,6 +351,22 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'clone': ['aiops.config.manage'],
     }
 
+    def perform_create(self, serializer):
+        _assert_agent_binding_permission(self.request)
+        bind_agent_ids = _request_bind_agent_ids(self.request)
+        with transaction.atomic():
+            instance = serializer.save()
+            if bind_agent_ids is not None:
+                bind_runtime_resource_to_agents('skill', instance.id, bind_agent_ids, replace_existing=True)
+
+    def perform_update(self, serializer):
+        _assert_agent_binding_permission(self.request)
+        bind_agent_ids = _request_bind_agent_ids(self.request)
+        with transaction.atomic():
+            instance = serializer.save()
+            if bind_agent_ids is not None:
+                bind_runtime_resource_to_agents('skill', instance.id, bind_agent_ids, replace_existing=True)
+
     def get_queryset(self):
         get_agent_config()
         return AIOpsSkill.objects.all().order_by('is_builtin', 'name', 'id')
@@ -301,12 +384,16 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def clone(self, request, pk=None):
         source = self.get_object()
+        _assert_agent_binding_permission(request)
+        bind_agent_ids = _request_bind_agent_ids(request)
         cloned = clone_skill_to_team(
             source,
             user=request.user,
             name=request.data.get('name', ''),
             slug=request.data.get('slug', ''),
         )
+        if bind_agent_ids is not None:
+            bind_runtime_resource_to_agents('skill', cloned.id, bind_agent_ids, replace_existing=True)
         record_event(
             request=request,
             module='aiops',

@@ -2951,22 +2951,93 @@ def runtime_config_for_agent(config, agent):
     runtime = copy.copy(config)
     if not agent:
         return runtime
+    default_agent = None
+    if not agent.is_default:
+        default_agent = get_default_agent_profile(config)
     if agent.default_provider_id:
         runtime.default_provider = agent.default_provider
         runtime.default_provider_id = agent.default_provider_id
+    elif default_agent and default_agent.default_provider_id:
+        runtime.default_provider = default_agent.default_provider
+        runtime.default_provider_id = default_agent.default_provider_id
     if agent.system_prompt:
         runtime.system_prompt = agent.system_prompt
+    elif default_agent and default_agent.system_prompt:
+        runtime.system_prompt = default_agent.system_prompt
     if agent.welcome_message:
         runtime.welcome_message = agent.welcome_message
+    elif default_agent and default_agent.welcome_message:
+        runtime.welcome_message = default_agent.welcome_message
     if agent.suggested_questions:
         runtime.suggested_questions = agent.suggested_questions
+    elif default_agent and default_agent.suggested_questions:
+        runtime.suggested_questions = default_agent.suggested_questions
     if agent.enabled_mcp_server_ids:
         runtime.enabled_mcp_server_ids = agent.enabled_mcp_server_ids
+    elif default_agent and default_agent.enabled_mcp_server_ids:
+        runtime.enabled_mcp_server_ids = default_agent.enabled_mcp_server_ids
     if agent.enabled_skill_ids:
         runtime.enabled_skill_ids = agent.enabled_skill_ids
+    elif default_agent and default_agent.enabled_skill_ids:
+        runtime.enabled_skill_ids = default_agent.enabled_skill_ids
     if agent.execution_policy == AIOpsAgentProfile.EXECUTION_READ_ONLY:
         runtime.allow_action_execution = False
     return runtime
+
+
+def bind_runtime_resource_to_agents(resource_kind, resource_id, agent_ids, *, replace_existing=False):
+    normalized_agent_ids = _normalize_json_id_list(agent_ids)
+    resource_id = int(resource_id)
+    field_map = {
+        'provider': 'default_provider_id',
+        'mcp': 'enabled_mcp_server_ids',
+        'skill': 'enabled_skill_ids',
+    }
+    field = field_map.get(resource_kind)
+    if not field:
+        raise ValueError('不支持的 Agent 绑定资源类型')
+
+    agents = list(AIOpsAgentProfile.objects.filter(id__in=normalized_agent_ids))
+    target_ids = {agent.id for agent in agents}
+    updated_count = 0
+    if replace_existing:
+        existing_queryset = AIOpsAgentProfile.objects.all()
+        if resource_kind == 'provider':
+            existing_queryset = existing_queryset.filter(default_provider_id=resource_id)
+        else:
+            existing_queryset = [
+                agent
+                for agent in existing_queryset
+                if resource_id in _normalize_json_id_list(getattr(agent, field, []))
+            ]
+        for agent in existing_queryset:
+            if agent.id in target_ids:
+                continue
+            if resource_kind == 'provider':
+                agent.default_provider = None
+                agent.save(update_fields=['default_provider', 'updated_at'])
+            else:
+                values = [item for item in _normalize_json_id_list(getattr(agent, field, [])) if item != resource_id]
+                setattr(agent, field, values)
+                agent.save(update_fields=[field, 'updated_at'])
+            updated_count += 1
+
+    for agent in agents:
+        if resource_kind == 'provider':
+            if agent.default_provider_id == resource_id:
+                continue
+            agent.default_provider_id = resource_id
+            agent.save(update_fields=['default_provider', 'updated_at'])
+            updated_count += 1
+            continue
+        values = _normalize_json_id_list(getattr(agent, field, []))
+        if resource_id in values:
+            continue
+        values.append(resource_id)
+        setattr(agent, field, values)
+        agent.save(update_fields=[field, 'updated_at'])
+        updated_count += 1
+    return {'agent_ids': sorted(target_ids), 'updated_count': updated_count}
 
 
 def get_active_provider(config=None):
