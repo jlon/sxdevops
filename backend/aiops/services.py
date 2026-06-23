@@ -29,7 +29,7 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from ops.host_tasks import build_host_target_snapshot as build_ops_host_target_snapshot
 from ops.host_tasks import build_k8s_target_snapshot as build_ops_k8s_target_snapshot
-from ops.host_tasks import resolve_host_source_refs, start_host_task
+from ops.host_tasks import resolve_host_source_refs, start_host_task, start_k8s_task
 from ops.models import (
     Alert,
     Deployment,
@@ -13389,6 +13389,155 @@ def _create_host_task_record_from_draft(draft, user, session=None, request=None)
     return task
 
 
+def _agent_for_action(action, config=None):
+    config = config or get_agent_config()
+    try:
+        return resolve_agent_profile_for_user(action.session.user, session=action.session, config=config)
+    except ValueError:
+        return get_default_agent_profile(config)
+
+
+def _authorization_snapshot_for_action(action, user, agent, mode='manual_confirm'):
+    permissions = ['aiops.task.execute', 'ops.host.execute']
+    if (action.action_payload or {}).get('target_type') == HostTask.TARGET_K8S:
+        permissions.extend(['ops.k8s.manage', 'ops.k8s.exec'])
+    return {
+        'mode': mode,
+        'confirmed_by': user.username,
+        'confirmed_at': timezone.now().isoformat(),
+        'agent_slug': agent.slug if agent else '',
+        'agent_name': agent.name if agent else '',
+        'execution_policy': agent.execution_policy if agent else AIOpsAgentProfile.EXECUTION_MANUAL_CONFIRM,
+        'risk_level': action.risk_level,
+        'permissions_checked': permissions,
+    }
+
+
+def _task_source_context_for_action(action, task_draft, agent, authorization):
+    base_context = dict(task_draft.get('source_context') or {})
+    base_context.update({
+        'source': 'aiops',
+        'session_id': action.session_id,
+        'message_id': action.message_id,
+        'pending_action_id': action.id,
+        'agent_slug': agent.slug if agent else '',
+        'agent_name': agent.name if agent else '',
+        'execution_policy': agent.execution_policy if agent else AIOpsAgentProfile.EXECUTION_MANUAL_CONFIRM,
+        'authorization_mode': authorization.get('mode') or '',
+        'authorized_by': authorization.get('confirmed_by') or '',
+        'authorized_at': authorization.get('confirmed_at') or '',
+        'request_summary': task_draft.get('request_summary') or base_context.get('request_summary') or '',
+        'risk_level': action.risk_level,
+        'risk_reason': (action.action_payload or {}).get('reason') or task_draft.get('reason') or '',
+        'authorization': authorization,
+    })
+    return base_context
+
+
+def _create_and_start_task_center_task_from_action(action, user, task_draft, agent, authorization, request=None):
+    target_type = task_draft.get('target_type') or HostTask.TARGET_HOST
+    hosts = []
+    k8s_targets = []
+    if target_type == HostTask.TARGET_K8S:
+        if not user_has_permissions(user, ['ops.k8s.manage']):
+            raise ValueError('当前账号无权执行 K8s 任务。')
+        k8s_targets = task_draft.get('k8s_targets') or []
+        if not k8s_targets:
+            raise ValueError('没有找到有效的 K8s 目标。')
+    else:
+        target_refs = task_draft.get('target_refs') or []
+        if not target_refs:
+            target_refs = [{'source': 'host', 'id': item} for item in (task_draft.get('host_ids') or [])]
+            target_refs.extend({'source': 'task_resource', 'id': item} for item in (task_draft.get('resource_ids') or []))
+            target_refs = _dedupe_target_refs(target_refs)
+        hosts = resolve_host_source_refs(target_refs)
+        if not hosts:
+            raise ValueError('没有找到有效的目标主机。')
+
+    task = HostTask.objects.create(
+        name=task_draft.get('name') or 'AIOps 智能任务',
+        target_type=target_type,
+        task_type=task_draft.get('task_type') or HostTask.TASK_REFRESH_METRICS,
+        description=task_draft.get('description') or '',
+        payload=task_draft.get('payload') or {},
+        selection_filters={
+            'source': 'aiops',
+            'session_id': action.session_id,
+            'pending_action_id': action.id,
+            'request_summary': task_draft.get('request_summary') or '',
+            'target_refs': task_draft.get('target_refs') or [],
+            'resource_ids': task_draft.get('resource_ids') or [],
+        },
+        execution_mode=task_draft.get('execution_mode') or HostTask.EXECUTION_MODE_SSH,
+        execution_strategy=task_draft.get('execution_strategy') or HostTask.STRATEGY_CONTINUE,
+        timeout_seconds=_host_task_timeout_seconds(task_draft.get('timeout_seconds'), 30),
+        trigger_source=HostTask.TRIGGER_SOURCE_AIOPS,
+        lifecycle_status=HostTask.LIFECYCLE_PENDING_EXECUTION,
+        risk_level=task_draft.get('risk_level') or action.risk_level or HostTask.RISK_LOW,
+        correlation_id=f'aiops-action:{action.id}',
+        source_context=_task_source_context_for_action(action, task_draft, agent, authorization),
+        created_by=user.username,
+        summary='任务已由 AIOps 智能助手确认载入，正在通过任务中心执行',
+    )
+
+    if target_type == HostTask.TARGET_K8S:
+        task.target_snapshot = build_ops_k8s_target_snapshot(k8s_targets)
+        task.target_count = len(k8s_targets)
+        task.save(update_fields=['target_snapshot', 'target_count'])
+        start_k8s_task(task, k8s_targets)
+    else:
+        task.target_snapshot = build_ops_host_target_snapshot(hosts)
+        task.target_count = len(hosts)
+        task.save(update_fields=['target_snapshot', 'target_count'])
+        start_host_task(task, hosts)
+
+    task.refresh_from_db()
+    record_event(
+        request=request,
+        module='aiops',
+        category='execution',
+        action='create_host_task_record',
+        title='AIOps 创建任务中心任务',
+        summary=f'已创建任务中心任务 {task.name}',
+        result=EventRecord.RESULT_PENDING,
+        resource_type='host_task',
+        resource_id=task.id,
+        resource_name=task.name,
+        correlation_id=task.correlation_id,
+        metadata={
+            'task_type': task.task_type,
+            'execution_mode': task.execution_mode,
+            'target_count': task.target_count,
+            'created_by': user.username,
+            'source': 'aiops',
+            'pending_action_id': action.id,
+            'agent_slug': agent.slug if agent else '',
+            'authorization_mode': authorization.get('mode') or '',
+        },
+    )
+    record_event(
+        request=request,
+        module='aiops',
+        category='execution',
+        action='start_host_task_from_aiops',
+        title='AIOps 启动任务中心任务',
+        summary=f'任务 {task.name} 已由 AIOps 确认后启动',
+        result=EventRecord.RESULT_PENDING,
+        resource_type='host_task',
+        resource_id=task.id,
+        resource_name=task.name,
+        correlation_id=task.correlation_id,
+        metadata={
+            'pending_action_id': action.id,
+            'agent_slug': agent.slug if agent else '',
+            'authorization_mode': authorization.get('mode') or '',
+            'task_status': task.status,
+            'lifecycle_status': task.lifecycle_status,
+        },
+    )
+    return task
+
+
 def _should_materialize_host_task(question, result, draft):
     return False
 
@@ -13419,13 +13568,23 @@ def confirm_action(action, user, request=None):
     action.save(update_fields=['title', 'action_payload', 'status', 'confirmed_by', 'confirmed_at', 'updated_at'])
 
     task_draft = _build_task_center_draft_from_aiops_draft(action.action_payload or {}, action=action)
+    agent = _agent_for_action(action, config=config)
+    authorization = _authorization_snapshot_for_action(action, user, agent, mode='manual_confirm')
+    task = _create_and_start_task_center_task_from_action(
+        action,
+        user,
+        task_draft,
+        agent,
+        authorization,
+        request=request,
+    )
     record_event(
         request=request,
         module='aiops',
         category='execution',
-        action='prepare_host_task_draft',
-        title='AIOps 载入任务中心草稿',
-        summary=f'已将任务草稿 {task_draft["name"]} 载入任务中心，等待人工编辑后执行',
+        action='confirm_and_execute_host_task',
+        title='AIOps 确认载入并执行',
+        summary=f'已确认并执行任务中心任务 {task.name}',
         result=EventRecord.RESULT_PENDING,
         resource_type='aiops_action',
         resource_id=action.id,
@@ -13440,13 +13599,20 @@ def confirm_action(action, user, request=None):
             'target_type': task_draft['target_type'],
             'host_count': task_draft['host_count'],
             'confirmed_by': user.username,
+            'task_id': task.id,
+            'agent_slug': agent.slug if agent else '',
+            'authorization_mode': authorization.get('mode') or '',
         },
     )
     action.status = AIOpsPendingAction.STATUS_EXECUTED
     action.result_payload = {
         'draft_ready': True,
+        'task_id': task.id,
+        'created_task_id': task.id,
         'task_name': task_draft['name'],
-        'materialized_in_task_center': False,
+        'materialized_in_task_center': True,
+        'execution_started': True,
+        'authorization': authorization,
         'task_draft': task_draft,
     }
     action.save(update_fields=['status', 'result_payload', 'updated_at'])

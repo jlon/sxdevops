@@ -13,7 +13,7 @@ from rest_framework.response import Response
 
 from eventwall.models import EventRecord
 from eventwall.services import record_event
-from ops.models import Alert, DockerHost, GrafanaSetting, K8sCluster, LogDataSource, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource
+from ops.models import Alert, DockerHost, GrafanaSetting, HostTask, K8sCluster, LogDataSource, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
 
@@ -2019,7 +2019,26 @@ def confirm_pending_action(request, pk):
         return Response({'detail': '动作不存在'}, status=status.HTTP_404_NOT_FOUND)
     try:
         task_draft = confirm_action(action, request.user, request=request)
-        return Response({'success': True, 'task_name': task_draft['name'], 'task_draft': task_draft})
+        action.refresh_from_db()
+        result_payload = action.result_payload if isinstance(action.result_payload, dict) else {}
+        task = HostTask.objects.filter(pk=result_payload.get('task_id')).first()
+        task_summary = None
+        if task:
+            task_summary = {
+                'id': task.id,
+                'name': task.name,
+                'status': task.status,
+                'lifecycle_status': task.lifecycle_status,
+                'trigger_source': task.trigger_source,
+            }
+        return Response({
+            'success': True,
+            'task_name': result_payload.get('task_name') or task_draft['name'],
+            'task_id': result_payload.get('task_id'),
+            'execution_started': bool(result_payload.get('execution_started')),
+            'task': task_summary,
+            'task_draft': task_draft,
+        })
     except ValueError as exc:
         action.status = AIOpsPendingAction.STATUS_FAILED
         action.result_payload = {'error': str(exc)}

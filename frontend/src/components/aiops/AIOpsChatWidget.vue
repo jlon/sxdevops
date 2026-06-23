@@ -413,7 +413,7 @@
                         </div>
                         <div class="pending-meta">状态：{{ message.pending_action.status_display }}</div>
                         <div v-if="message.pending_action.status === 'pending'" class="pending-hint">
-                          确认后将载入任务中心草稿，可编辑后再执行
+                          确认后将录入任务中心并立即执行
                         </div>
                         <div v-if="message.pending_action.action_payload" class="pending-detail-grid">
                           <div class="pending-detail-item">
@@ -443,14 +443,13 @@
                           <el-button size="small" type="primary" @click="handleConfirmAction(message.pending_action)">{{ getPendingActionConfirmLabel(message.pending_action) }}</el-button>
                           <el-button size="small" @click="handleCancelAction(message.pending_action)">取消</el-button>
                         </div>
-                        <div v-else-if="message.pending_action.result_payload?.draft_ready" class="pending-result">
-                          <span>任务草稿已准备就绪</span>
-                          <el-button size="small" text @click="handleConfirmAction(message.pending_action)">再次载入</el-button>
-                          <el-button size="small" text @click="openTaskCenter">前往任务中心</el-button>
-                        </div>
                         <div v-else-if="message.pending_action.result_payload?.task_id" class="pending-result">
                           <span>已创建任务 #{{ message.pending_action.result_payload.task_id }}</span>
                           <el-button size="small" text @click="openTaskCenter">查看任务中心</el-button>
+                        </div>
+                        <div v-else-if="message.pending_action.result_payload?.draft_ready" class="pending-result">
+                          <span>任务草稿已准备就绪</span>
+                          <el-button size="small" text @click="openTaskCenter">前往任务中心</el-button>
                         </div>
                       </div>
 
@@ -1100,7 +1099,7 @@ function buildApprovalFormBlock(pendingAction) {
     type: 'approval_form',
     title: pendingAction?.title || '待确认动作',
     summary: pendingAction?.status === 'pending'
-      ? '确认后将载入任务中心草稿，可编辑后再执行。'
+      ? '确认后将录入任务中心并立即执行。'
       : '动作已进入下一步处理。',
     status: pendingAction?.status || 'pending',
     status_display: pendingAction?.status_display || '待确认',
@@ -1239,19 +1238,18 @@ function getBlockActions(block, message) {
   const actions = Array.isArray(block?.actions) ? block.actions.filter(Boolean).map(action => ({ ...action })) : []
   if (block?.type === 'approval_form') {
     const actionTypes = new Set(actions.map(action => action.type).filter(Boolean))
-    if (message?.pending_action?.result_payload?.draft_ready) {
+    if (message?.pending_action?.status === 'pending') {
       actions.forEach((action) => {
-        if (action.type === 'confirm') action.label = '再次载入'
+        if (action.type === 'confirm') action.label = getPendingActionConfirmLabel(message.pending_action)
       })
     }
     if (message?.pending_action?.status === 'pending') {
       if (!actionTypes.has('confirm')) actions.unshift({ type: 'confirm', label: getPendingActionConfirmLabel(message.pending_action) })
       if (!actionTypes.has('cancel')) actions.push({ type: 'cancel', label: '取消' })
-    } else if (message?.pending_action?.result_payload?.draft_ready) {
-      if (!actionTypes.has('confirm')) actions.unshift({ type: 'confirm', label: '再次载入' })
-      if (!actionTypes.has('open_task_center')) actions.push({ type: 'open_task_center', label: '前往任务中心' })
     } else if (message?.pending_action?.result_payload?.task_id) {
       if (!actionTypes.has('open_task_center')) actions.unshift({ type: 'open_task_center', label: '查看任务中心' })
+    } else if (message?.pending_action?.result_payload?.draft_ready) {
+      if (!actionTypes.has('open_task_center')) actions.push({ type: 'open_task_center', label: '前往任务中心' })
     }
   }
   if (!actions.length && block?.summary) {
@@ -1261,7 +1259,7 @@ function getBlockActions(block, message) {
 }
 
 function getPendingActionConfirmLabel(pendingAction) {
-  return pendingAction?.result_payload?.draft_ready ? '再次载入' : '确认载入'
+  return pendingAction?.status === 'pending' ? '确认载入并执行' : '查看任务中心'
 }
 
 function getBlockActionIcon(type) {
@@ -2479,5 +2477,4 @@ onBeforeUnmount(() => {
   .aiops-panel{right:8px;width:calc(100vw - var(--sidebar-collapsed-width,68px) - 16px);max-width:calc(100vw - var(--sidebar-collapsed-width,68px) - 16px)}
 }
 </style>
-
 
