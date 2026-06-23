@@ -327,13 +327,61 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
 class AIOpsPendingActionSerializer(serializers.ModelSerializer):
     risk_level_display = serializers.CharField(source='get_risk_level_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    task_id = serializers.SerializerMethodField()
+    task_name = serializers.SerializerMethodField()
+    agent_slug = serializers.SerializerMethodField()
+    agent_name = serializers.SerializerMethodField()
+    authorization_mode = serializers.SerializerMethodField()
+    materialized_in_task_center = serializers.SerializerMethodField()
+    execution_started = serializers.SerializerMethodField()
 
     class Meta:
         model = AIOpsPendingAction
         fields = [
             'id', 'action_type', 'title', 'risk_level', 'risk_level_display', 'status', 'status_display',
-            'action_payload', 'result_payload', 'confirmed_by', 'confirmed_at', 'created_at', 'updated_at',
+            'action_payload', 'result_payload', 'task_id', 'task_name', 'agent_slug', 'agent_name',
+            'authorization_mode', 'materialized_in_task_center', 'execution_started',
+            'confirmed_by', 'confirmed_at', 'created_at', 'updated_at',
         ]
+
+    def _result_payload(self, obj):
+        return obj.result_payload if isinstance(obj.result_payload, dict) else {}
+
+    def _action_payload(self, obj):
+        return obj.action_payload if isinstance(obj.action_payload, dict) else {}
+
+    def _authorization(self, obj):
+        authorization = self._result_payload(obj).get('authorization')
+        return authorization if isinstance(authorization, dict) else {}
+
+    def _session_context(self, obj):
+        session = getattr(obj, 'session', None)
+        context = getattr(session, 'context', None)
+        return context if isinstance(context, dict) else {}
+
+    def get_task_id(self, obj):
+        payload = self._result_payload(obj)
+        return payload.get('task_id') or payload.get('created_task_id') or payload.get('host_task_id')
+
+    def get_task_name(self, obj):
+        payload = self._result_payload(obj)
+        action_payload = self._action_payload(obj)
+        return payload.get('task_name') or action_payload.get('name') or obj.title
+
+    def get_agent_slug(self, obj):
+        return self._authorization(obj).get('agent_slug') or self._session_context(obj).get('agent_slug') or ''
+
+    def get_agent_name(self, obj):
+        return self._authorization(obj).get('agent_name') or self._session_context(obj).get('agent_name') or ''
+
+    def get_authorization_mode(self, obj):
+        return self._authorization(obj).get('mode') or ''
+
+    def get_materialized_in_task_center(self, obj):
+        return bool(self._result_payload(obj).get('materialized_in_task_center'))
+
+    def get_execution_started(self, obj):
+        return bool(self._result_payload(obj).get('execution_started'))
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

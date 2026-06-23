@@ -658,15 +658,28 @@
             <el-tag size="small" :type="statusTone(row.status)" effect="plain">{{ row.status_display || row.status || '-' }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="Agent" min-width="146" show-overflow-tooltip>
+          <template #default="{ row }">
+            <div class="audit-agent-cell">
+              <strong>{{ actionAgentName(row) }}</strong>
+              <span>{{ actionAgentSlug(row) }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="授权" width="118">
+          <template #default="{ row }">
+            <el-tag size="small" :type="authorizationTone(row.authorization_mode)" effect="plain">{{ authorizationModeLabel(row.authorization_mode) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="confirmed_by" label="确认人" width="90" show-overflow-tooltip />
         <el-table-column label="更新时间" width="150">
           <template #default="{ row }">
             {{ formatDateTimeDisplay(row.updated_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="关联任务" width="96">
+        <el-table-column label="任务中心" width="112">
           <template #default="{ row }">
-            <el-button v-if="getActionTaskId(row)" link type="primary" @click="goTaskWorkbenchTask(row)">查看任务</el-button>
+            <el-button v-if="getActionTaskId(row)" link type="primary" @click="goTaskWorkbenchTask(row)">#{{ getActionTaskId(row) }}</el-button>
             <span v-else class="muted-text">-</span>
           </template>
         </el-table-column>
@@ -1202,8 +1215,36 @@ async function switchInvocationAuditTab(tab) {
 }
 
 function getActionTaskId(action) {
-  const value = action?.result_payload?.task_id || action?.result_payload?.created_task_id || action?.result_payload?.host_task_id
+  const value = action?.task_id || action?.result_payload?.task_id || action?.result_payload?.created_task_id || action?.result_payload?.host_task_id
   return value ? String(value) : ''
+}
+
+function actionAuthorization(action = {}) {
+  const authorization = action.result_payload?.authorization
+  return authorization && typeof authorization === 'object' ? authorization : {}
+}
+
+function actionAgentName(action = {}) {
+  return action.agent_name || actionAuthorization(action).agent_name || action.session_context?.agent_name || '-'
+}
+
+function actionAgentSlug(action = {}) {
+  return action.agent_slug || actionAuthorization(action).agent_slug || action.session_context?.agent_slug || '-'
+}
+
+function authorizationModeLabel(mode) {
+  const labels = {
+    manual_confirm: '人工确认',
+    full_auto: '自动授权',
+    read_only: '只读',
+  }
+  return labels[mode] || mode || '-'
+}
+
+function authorizationTone(mode) {
+  if (mode === 'full_auto') return 'success'
+  if (mode === 'manual_confirm') return 'warning'
+  return 'info'
 }
 
 function appendEnvironmentValue(list, value) {
@@ -2391,6 +2432,32 @@ watch(
   background: #f8fafc;
   color: #475569;
   font-weight: 700;
+}
+
+.audit-agent-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.audit-agent-cell strong,
+.audit-agent-cell span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-agent-cell strong {
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.audit-agent-cell span {
+  color: #94a3b8;
+  font-size: 11px;
 }
 
 .audit-invocation-table :deep(.cell) {

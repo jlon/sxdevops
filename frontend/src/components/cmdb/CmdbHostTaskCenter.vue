@@ -683,6 +683,16 @@
               </div>
               <div v-if="detailTask.cancel_requested" class="detail-kv danger-text">{{ ui.cancelRequestedBy }}: {{ detailTask.cancel_requested_by || '-' }} | {{ ui.cancelRequestedAt }}: {{ formatDateTime(detailTask.cancel_requested_at) }}</div>
             </div>
+            <div v-if="isAIOpsTask(detailTask)" class="detail-section">
+              <div class="detail-section-title">{{ ui.aiopsSource }}</div>
+              <div class="detail-kv compact-stack aiops-source-stack">
+                <span>{{ ui.aiopsAgent }}: {{ aiopsSourceContext(detailTask).agent_name || aiopsSourceContext(detailTask).agent_slug || '-' }}</span>
+                <span>{{ ui.authorizationMode }}: {{ authorizationModeLabel(aiopsSourceContext(detailTask).authorization_mode) }}</span>
+                <span>{{ ui.authorizedBy }}: {{ aiopsSourceContext(detailTask).authorized_by || '-' }}</span>
+                <span>{{ ui.pendingActionId }}: {{ aiopsSourceContext(detailTask).pending_action_id || '-' }}</span>
+                <span>{{ ui.executionPolicy }}: {{ executionPolicyLabel(aiopsSourceContext(detailTask).execution_policy) }}</span>
+              </div>
+            </div>
             <div class="detail-section">
               <div class="detail-section-title">{{ detailTask.target_type === 'k8s' ? ui.targetResources : ui.targetHosts }}</div>
               <div v-if="detailTask.target_snapshot?.length" class="target-list">
@@ -929,6 +939,12 @@ const ui = {
   executionOverview: '\u6267\u884c\u6982\u89c8',
   executionDetails: '执行明细',
   triggerSource: '\u89e6\u53d1\u6765\u6e90',
+  aiopsSource: 'AIOps 来源',
+  aiopsAgent: '智能体',
+  authorizationMode: '授权方式',
+  authorizedBy: '授权人',
+  pendingActionId: '动作审计',
+  executionPolicy: '执行策略',
   riskLevel: '\u98ce\u9669',
   startTask: '\u6267\u884c',
   startedAt: '\u5f00\u59cb\u65f6\u95f4',
@@ -1677,6 +1693,24 @@ function canCancelTask(task) { return ['pending', 'running'].includes(task.statu
 function canExecuteTask(task) { return task.status === 'pending' && !task.cancel_requested }
 function canDeleteTask(task) { return !['pending', 'running'].includes(task.status) }
 function isTaskActive(task) { return ['pending', 'running'].includes(task?.status) }
+function aiopsSourceContext(task = {}) { return task.source_context || {} }
+function isAIOpsTask(task = {}) { return task.trigger_source === 'aiops' || aiopsSourceContext(task).source === 'aiops' }
+function authorizationModeLabel(mode) {
+  const labels = {
+    manual_confirm: '人工确认',
+    full_auto: '自动授权',
+    read_only: '只读',
+  }
+  return labels[mode] || mode || '-'
+}
+function executionPolicyLabel(policy) {
+  const labels = {
+    manual_confirm: '逐操作确认',
+    full_auto: 'Full Auto',
+    read_only: '只读',
+  }
+  return labels[policy] || policy || '-'
+}
 function riskTagType(risk) { if (risk === 'critical' || risk === 'high') return 'danger'; if (risk === 'medium') return 'warning'; return 'success' }
 function applySourceFilter(source, targetType = '') { taskFilters.value.trigger_source = source; taskFilters.value.target_type = targetType; taskPage.value = 1; activeTab.value = 'history'; fetchTasks() }
 function handleEnvironmentChange() { targetFilters.value.system = '' }

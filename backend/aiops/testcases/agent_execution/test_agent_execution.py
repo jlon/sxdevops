@@ -122,6 +122,37 @@ class AgentExecutionE2ETests(TestCase):
         self.assertTrue(events.filter(action='start_host_task_from_aiops').exists())
 
     @patch('aiops.services.start_host_task')
+    def test_execution_audit_links_pending_action_and_task_center_context(self, mocked_start_host_task):
+        action = self.create_pending_action()
+        confirm_response = self.client.post(f'/api/aiops/actions/{action.id}/confirm/', {}, format='json')
+        self.assertEqual(confirm_response.status_code, 200, confirm_response.data)
+        task_id = confirm_response.data['task_id']
+
+        audit_response = self.client.get('/api/aiops/admin/audit/actions/')
+
+        self.assertEqual(audit_response.status_code, 200, audit_response.data)
+        audit_rows = audit_response.data['results']
+        audit_row = next(item for item in audit_rows if item['id'] == action.id)
+        self.assertEqual(audit_row['task_id'], task_id)
+        self.assertEqual(audit_row['task_name'], 'Agent 资源巡检')
+        self.assertEqual(audit_row['agent_slug'], 'general')
+        self.assertEqual(audit_row['agent_name'], '通用运维 Agent')
+        self.assertEqual(audit_row['authorization_mode'], 'manual_confirm')
+        self.assertTrue(audit_row['materialized_in_task_center'])
+        self.assertTrue(audit_row['execution_started'])
+
+        task_response = self.client.get(f'/api/host-tasks/{task_id}/')
+
+        self.assertEqual(task_response.status_code, 200, task_response.data)
+        source_context = task_response.data['source_context']
+        self.assertEqual(source_context['source'], 'aiops')
+        self.assertEqual(source_context['pending_action_id'], action.id)
+        self.assertEqual(source_context['agent_slug'], 'general')
+        self.assertEqual(source_context['agent_name'], '通用运维 Agent')
+        self.assertEqual(source_context['authorization_mode'], 'manual_confirm')
+        self.assertEqual(source_context['authorized_by'], self.user.username)
+
+    @patch('aiops.services.start_host_task')
     def test_confirm_pending_action_does_not_create_task_for_invalid_targets(self, mocked_start_host_task):
         action = self.create_invalid_target_action()
 
