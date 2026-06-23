@@ -412,6 +412,7 @@ const filters = reactive({
   tag: '',
 })
 const grafanaConfig = reactive({
+  url: '',
   folders: [],
   dashboards: [],
 })
@@ -853,6 +854,7 @@ function queryFolderSuggestions(queryString, callback) {
 }
 
 function applyGrafanaConfig(data = {}) {
+  grafanaConfig.url = String(data.url || '').trim()
   grafanaConfig.folders = Array.isArray(data.folders)
     ? data.folders.map((item, index) => normalizeFolder(item, index)).filter((item) => item.path)
     : []
@@ -937,6 +939,7 @@ function mergeFolderConfigs(foldersSource = [], dashboardsSource = []) {
 function buildGrafanaPayload({ dashboardsSource = grafanaConfig.dashboards, foldersSource = grafanaConfig.folders } = {}) {
   const normalizedDashboards = dashboardsSource.map((item, index) => {
     const normalized = normalizeDashboard(item, index)
+    const resolvedFullUrl = String(normalized.full_url || buildDashboardFullUrl(normalized, grafanaConfig.url) || '').trim()
     return {
       key: normalized.key || `dashboard-${index + 1}`,
       slug: normalized.slug || normalized.key || `dashboard-${index + 1}`,
@@ -944,8 +947,8 @@ function buildGrafanaPayload({ dashboardsSource = grafanaConfig.dashboards, fold
       description: '',
       folder: normalizeFolderPath(normalized.folder),
       folder_collapsed: false,
-      path: '',
-      full_url: String(normalized.full_url || '').trim(),
+      path: normalized.path,
+      full_url: resolvedFullUrl,
       panel_count: Number(normalized.panel_count || 0),
       tags: Array.isArray(normalized.tags) ? normalized.tags.map((tag) => String(tag).trim()).filter(Boolean) : [],
     }
@@ -953,16 +956,11 @@ function buildGrafanaPayload({ dashboardsSource = grafanaConfig.dashboards, fold
 
   const pendingRows = normalizedDashboards
     .map((item, index) => ({ item, index }))
-    .filter(({ item }) => item.title || item.folder || item.full_url || (item.tags || []).length)
+    .filter(({ item }) => item.full_url)
 
-  const missingTitleRow = pendingRows.find(({ item }) => !item.title)
+  const missingTitleRow = pendingRows.find(({ item }) => item.full_url && !item.title)
   if (missingTitleRow) {
     throw new Error(`第 ${missingTitleRow.index + 1} 行缺少看板名称`)
-  }
-
-  const missingUrlRow = pendingRows.find(({ item }) => !item.full_url)
-  if (missingUrlRow) {
-    throw new Error(`第 ${missingUrlRow.index + 1} 行缺少完整 Grafana URL`)
   }
 
   const invalidUrlRow = pendingRows.find(({ item }) => getDashboardUrlError(item.full_url))
@@ -981,7 +979,7 @@ function buildGrafanaPayload({ dashboardsSource = grafanaConfig.dashboards, fold
       description: String(item.description || '').trim(),
       folder_collapsed: Boolean(item.folder_collapsed),
     })),
-    dashboards: normalizedDashboards.filter((item) => item.title && item.full_url),
+    dashboards: normalizedDashboards.filter((item) => item.title && (item.full_url || item.path)),
   }
 }
 
