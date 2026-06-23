@@ -213,6 +213,16 @@ class AgentExecutionE2ETests(TestCase):
         self.assertEqual(task.source_context['agent_slug'], agent.slug)
         self.assertEqual(task.source_context['authorization_mode'], 'full_auto')
         mocked_start_host_task.assert_called_once()
+        authorization_events = EventRecord.objects.filter(
+            resource_type='aiops_action',
+            resource_id=pending_action.id,
+            action='auto_authorize_host_task_from_aiops',
+        )
+        self.assertTrue(authorization_events.exists())
+        authorization_event = authorization_events.get()
+        self.assertEqual(authorization_event.metadata['task_id'], task.id)
+        self.assertEqual(authorization_event.metadata['agent_slug'], agent.slug)
+        self.assertEqual(authorization_event.metadata['authorization_mode'], 'full_auto')
 
         assistant_message.refresh_from_db()
         self.assertEqual(assistant_message.metadata['created_task_id'], task.id)

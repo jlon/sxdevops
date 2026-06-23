@@ -17088,6 +17088,28 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
                 merged_metadata['created_task_id'] = task.id
                 merged_metadata['task_materialized_in_center'] = True
                 merged_metadata['agent_auto_authorized'] = True
+                record_event(
+                    module='aiops',
+                    category='execution',
+                    action='auto_authorize_host_task_from_aiops',
+                    title='AIOps 自动授权并执行',
+                    summary=f'Full Auto 已自动授权并启动任务 {task.name}',
+                    result=EventRecord.RESULT_PENDING,
+                    resource_type='aiops_action',
+                    resource_id=pending_action.id,
+                    resource_name=pending_action.title,
+                    correlation_id=f'aiops-action:{pending_action.id}',
+                    metadata={
+                        'session_id': session.id,
+                        'pending_action_id': pending_action.id,
+                        'task_id': task.id,
+                        'task_name': task.name,
+                        'agent_slug': agent.slug,
+                        'agent_name': agent.name,
+                        'authorization_mode': authorization.get('mode') or 'full_auto',
+                        'authorized_by': user.username,
+                    },
+                )
                 action_decision = {
                     'status': 'materialized',
                     'reason': 'full_auto',
