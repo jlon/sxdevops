@@ -79,6 +79,7 @@ from .action_handlers import (
 )
 from .routing_policy import (
     build_routing_constraints,
+    has_non_k8s_inventory_scope,
     is_non_k8s_inventory_question,
     selected_action_should_preempt_llm,
     should_use_task_resource_fallback,
@@ -4631,7 +4632,16 @@ def query_task_resources(session, user_message, user, query='', environment='', 
     resources = list(queryset.order_by('environment__sort_order', 'system__sort_order', 'resource_type', 'name', 'id')[:limit])
     formatted_resources = [_format_task_resource(item) for item in resources]
     cluster_inventory = None
-    if resources and resource_type == TaskResource.RESOURCE_HOST and is_non_k8s_inventory_question(query):
+    inventory_scope_text = ' '.join(filter(None, [
+        str(query or ''),
+        str(environment or ''),
+        str((knowledge_environment or {}).get('name') or ''),
+    ]))
+    should_include_cluster_inventory = (
+        is_non_k8s_inventory_question(query)
+        or has_non_k8s_inventory_scope(inventory_scope_text)
+    )
+    if resources and resource_type == TaskResource.RESOURCE_HOST and should_include_cluster_inventory:
         roles = Counter(
             str((item.metadata or {}).get('role') or item.resource_type or 'node')
             for item in resources

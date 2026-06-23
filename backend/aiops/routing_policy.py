@@ -42,11 +42,18 @@ def has_explicit_k8s_scope(question):
     return _contains_any(question, K8S_SCOPE_WORDS)
 
 
+def has_non_k8s_inventory_scope(question):
+    text = str(question or '')
+    if not text or has_explicit_k8s_scope(text):
+        return False
+    return _contains_any(text, NON_K8S_INVENTORY_WORDS) or _contains_any(text, GENERIC_CLUSTER_WORDS)
+
+
 def is_resource_inventory_question(question):
     text = str(question or '')
     lowered = text.lower()
     has_lookup = _contains_any(lowered, LOOKUP_WORDS)
-    has_inventory_scope = _contains_any(lowered, NON_K8S_INVENTORY_WORDS) or _contains_any(lowered, GENERIC_CLUSTER_WORDS)
+    has_inventory_scope = has_non_k8s_inventory_scope(lowered)
     return has_lookup and has_inventory_scope and not has_mutation_intent(text)
 
 
@@ -54,9 +61,7 @@ def is_non_k8s_inventory_question(question):
     text = str(question or '')
     if not is_resource_inventory_question(text):
         return False
-    if has_explicit_k8s_scope(text):
-        return False
-    return _contains_any(text, NON_K8S_INVENTORY_WORDS) or _contains_any(text, GENERIC_CLUSTER_WORDS)
+    return has_non_k8s_inventory_scope(text)
 
 
 def should_use_task_resource_fallback(question, *, provider_ready, knowledge_environment=None, analysis_scope=None):

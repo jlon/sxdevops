@@ -7149,6 +7149,32 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(result['summary']['cluster_count'], 1)
         self.assertIn('非 K8s 集群资源事实', result['sections'][0]['title'])
 
+    def test_hbase_task_resource_query_includes_cluster_inventory_for_sparse_query(self):
+        self.ensure_hbase_task_resource_environment()
+        session = AIOpsChatSession.objects.create(user=self.user, title='hbase-sparse-inventory')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='使用本地 HBase 集群环境继续分析：再看看有几个集群？',
+        )
+
+        result = query_task_resources(
+            session,
+            user_message,
+            self.user,
+            query='本地 HBase 集群',
+            environment='本地 HBase 集群',
+            resource_type='host',
+            status='active',
+            limit=50,
+        )
+
+        inventory = result['cluster_inventory']
+        self.assertEqual(inventory['cluster_count'], 1)
+        self.assertEqual(inventory['node_count'], 3)
+        self.assertEqual(set(inventory['node_names']), {'hbase-master', 'hbase-regionserver-1', 'hbase-regionserver-2'})
+        self.assertEqual(result['summary']['node_count'], 3)
+
     def test_resource_inventory_fastpath_only_when_provider_unavailable(self):
         env, _ = self.ensure_hbase_task_resource_environment()
         knowledge_environment = {'name': '本地 HBase 集群', 'task_resource_environment_ids': [env.id]}
