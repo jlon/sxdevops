@@ -4,7 +4,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from aiops.models import AIOpsAgentConfig, AIOpsAgentProfile
-from aiops.services import resolve_agent_profile_for_user, runtime_config_for_agent
+from aiops.services import ensure_default_agent_profile, resolve_agent_profile_for_user, runtime_config_for_agent
 from rbac.models import PermissionDefinition
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
@@ -26,6 +26,55 @@ class AgentRegistryApiTests(TestCase):
         if isinstance(response.data, dict) and 'results' in response.data:
             return response.data['results']
         return response.data
+
+    def test_default_agent_initializes_with_runtime_defaults(self):
+        config = AIOpsAgentConfig.objects.create(
+            name='default-init-test',
+            system_prompt='default prompt',
+            welcome_message='default welcome',
+            suggested_questions=['default question'],
+            enabled_mcp_server_ids=[11],
+            enabled_skill_ids=[22],
+        )
+
+        agent = ensure_default_agent_profile(config)
+
+        self.assertEqual(agent.slug, 'general')
+        self.assertEqual(agent.name, '通用运维 Agent')
+        self.assertTrue(agent.is_builtin)
+        self.assertTrue(agent.is_default)
+        self.assertTrue(agent.is_enabled)
+        self.assertEqual(agent.system_prompt, 'default prompt')
+        self.assertEqual(agent.welcome_message, 'default welcome')
+        self.assertEqual(agent.suggested_questions, ['default question'])
+        self.assertEqual(agent.enabled_mcp_server_ids, [11])
+        self.assertEqual(agent.enabled_skill_ids, [22])
+        self.assertEqual(agent.execution_policy, AIOpsAgentProfile.EXECUTION_MANUAL_CONFIRM)
+
+    def test_create_agent_seeds_runtime_fields_from_default_agent(self):
+        default_agent = ensure_default_agent_profile(AIOpsAgentConfig.objects.create(
+            name='seed-default-test',
+            system_prompt='seed prompt',
+            welcome_message='seed welcome',
+            suggested_questions=['seed question'],
+            enabled_mcp_server_ids=[31],
+            enabled_skill_ids=[41],
+        ))
+        default_agent.execution_policy = AIOpsAgentProfile.EXECUTION_FULL_AUTO
+        default_agent.save(update_fields=['execution_policy'])
+
+        response = self.client.post('/api/aiops/admin/agents/', {
+            'name': 'Seeded Agent',
+            'slug': 'seeded-agent',
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['system_prompt'], 'seed prompt')
+        self.assertEqual(response.data['welcome_message'], 'seed welcome')
+        self.assertEqual(response.data['suggested_questions'], ['seed question'])
+        self.assertEqual(response.data['enabled_mcp_server_ids'], [31])
+        self.assertEqual(response.data['enabled_skill_ids'], [41])
+        self.assertEqual(response.data['execution_policy'], AIOpsAgentProfile.EXECUTION_MANUAL_CONFIRM)
 
     def test_bootstrap_creates_default_agent_and_custom_agent_can_be_default(self):
         bootstrap_response = self.client.get('/api/aiops/bootstrap/')

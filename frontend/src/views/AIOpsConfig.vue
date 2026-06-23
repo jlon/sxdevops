@@ -136,13 +136,13 @@
                 </div>
                 <div class="agent-insight-card">
                   <span>模型来源</span>
-                  <strong>{{ selectedAgent.default_provider?.name || '继承全局模型' }}</strong>
-                  <small>{{ selectedAgent.default_provider?.default_model || '使用全局默认 provider' }}</small>
+                  <strong>{{ selectedAgent.default_provider?.name || agentFallbackLabel(selectedAgent, '模型') }}</strong>
+                  <small>{{ selectedAgent.default_provider?.default_model || '未指定模型时使用默认 Agent 或平台兼容回退' }}</small>
                 </div>
                 <div class="agent-insight-card">
                   <span>能力覆盖</span>
                   <strong>{{ agentCapabilitySummary(selectedAgent) }}</strong>
-                  <small>MCP / Skill 为空表示继承全局基线</small>
+                  <small>MCP / Skill 为空表示跟随默认 Agent 或平台兼容回退</small>
                 </div>
               </div>
 
@@ -175,7 +175,7 @@
                 <div class="agent-experience-grid">
                   <div class="agent-experience-item">
                     <span>欢迎语</span>
-                    <strong>{{ selectedAgent.welcome_message || '继承全局欢迎语' }}</strong>
+                    <strong>{{ selectedAgent.welcome_message || agentFallbackLabel(selectedAgent, '欢迎语') }}</strong>
                   </div>
                   <div class="agent-experience-item">
                     <span>建议问题</span>
@@ -185,7 +185,7 @@
                   </div>
                   <div class="agent-experience-item wide">
                     <span>系统提示语</span>
-                    <strong>{{ selectedAgent.system_prompt ? '已覆盖专属 Prompt' : '继承全局系统提示语' }}</strong>
+                    <strong>{{ selectedAgent.system_prompt ? '已配置专属 Prompt' : agentFallbackLabel(selectedAgent, 'Prompt') }}</strong>
                   </div>
                 </div>
               </div>
@@ -208,79 +208,44 @@
           <el-collapse-item name="baseline">
             <template #title>
               <div class="baseline-collapse-title">
-                <span>全局默认与安全基线</span>
-                <small>Agent 未覆盖字段时才使用</small>
+                <span>平台安全基线</span>
+                <small>只放全局开关和硬边界；默认能力由默认 Agent 承载</small>
               </div>
             </template>
             <div class="section-toolbar agent-baseline-actions">
               <div class="toolbar-head">
-                <span class="toolbar-title">全局基线</span>
-                <span class="toolbar-desc">兜底模型、Prompt、MCP、Skill 与运行开关</span>
+                <span class="toolbar-title">平台安全基线</span>
+                <span class="toolbar-desc">控制智能助手入口、任务生成总开关和上下文窗口；模型、Prompt、MCP、Skill 请在默认 Agent 中维护</span>
               </div>
-              <el-button size="small" type="primary" :loading="saving.config" @click="saveConfig">保存基线</el-button>
+              <el-button size="small" type="primary" :loading="saving.config" @click="saveConfig">保存安全基线</el-button>
             </div>
-            <div class="config-grid">
-              <div class="config-section config-section--main surface-card">
-                <div class="section-title">默认会话体验</div>
-                <el-form :model="configForm" label-width="118px">
-                  <el-form-item label="默认模型">
-                    <el-select v-model="configForm.default_provider_id" clearable style="width:100%">
-                      <el-option
-                        v-for="provider in providers"
-                        :key="provider.id"
-                        :label="providerOptionLabel(provider)"
-                        :value="provider.id"
-                        :disabled="!provider.runtime_ready"
-                      />
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item label="欢迎语">
-                    <el-input v-model="configForm.welcome_message" />
-                  </el-form-item>
-                  <el-form-item label="建议问题">
-                    <el-select v-model="configForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" />
-                  </el-form-item>
-                  <el-form-item label="启用 MCP">
-                    <el-select v-model="configForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
-                      <el-option v-for="item in mcpServers" :key="item.id" :label="item.name" :value="item.id" />
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item label="启用 Skill">
-                    <el-select v-model="configForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
-                      <el-option v-for="item in skills" :key="item.id" :label="item.name" :value="item.id" />
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item label="系统提示语">
-                    <el-input v-model="configForm.system_prompt" type="textarea" :rows="8" />
-                  </el-form-item>
-                </el-form>
+            <div class="agent-baseline-panel surface-card">
+              <div class="baseline-scope-note">
+                <strong>{{ defaultAgent?.name || '通用运维 Agent' }}</strong>
+                <span>是系统初始化的默认 Agent。新 Agent 的模型、Prompt、MCP、Skill、欢迎语和建议问题应在 Agent 自身配置；平台安全基线只负责所有 Agent 都必须遵守的总约束。</span>
               </div>
-              <div class="config-section config-section--runtime surface-card">
-                <div class="section-title">安全基线</div>
-                <div class="runtime-note">Agent 没有覆盖时使用这些开关；只读 Agent 会继续收紧可执行范围。</div>
-                <div class="switch-list">
-                  <div class="switch-item">
-                    <div class="switch-copy">
-                      <span>启用智能助手</span>
-                      <small>关闭后聊天入口不可用，已有会话仍保留。</small>
-                    </div>
-                    <el-switch v-model="configForm.is_enabled" />
+              <div class="switch-list">
+                <div class="switch-item">
+                  <div class="switch-copy">
+                    <span>启用智能助手</span>
+                    <small>关闭后聊天入口不可用，已有会话仍保留。</small>
                   </div>
-                  <div class="switch-item">
-                    <div class="switch-copy">
-                      <span>允许生成待执行任务</span>
-                      <small>关闭后只返回分析结果，不创建待确认任务。</small>
-                    </div>
-                    <el-switch v-model="configForm.allow_action_execution" />
-                  </div>
+                  <el-switch v-model="configForm.is_enabled" />
                 </div>
-                <el-form :model="configForm" label-width="126px" class="runtime-form">
-                  <el-form-item label="模型上下文消息数">
-                    <el-input-number v-model="configForm.max_history_messages" :min="4" :max="40" />
-                    <div class="runtime-field-tip">仅限制每次发送给模型的最近用户/助手消息数，不影响会话历史展示。</div>
-                  </el-form-item>
-                </el-form>
+                <div class="switch-item">
+                  <div class="switch-copy">
+                    <span>允许生成待执行任务</span>
+                    <small>平台总开关。关闭后所有 Agent 只能分析，不创建待确认任务。</small>
+                  </div>
+                  <el-switch v-model="configForm.allow_action_execution" />
+                </div>
               </div>
+              <el-form :model="configForm" label-width="126px" class="runtime-form">
+                <el-form-item label="上下文消息数">
+                  <el-input-number v-model="configForm.max_history_messages" :min="4" :max="40" />
+                  <div class="runtime-field-tip">限制每次发送给模型的最近用户/助手消息数，不影响会话历史展示。</div>
+                </el-form-item>
+              </el-form>
             </div>
           </el-collapse-item>
         </el-collapse>
@@ -942,7 +907,7 @@
         </el-form-item>
         <div class="dialog-grid">
           <el-form-item label="默认模型">
-            <el-select v-model="agentForm.default_provider_id" clearable filterable style="width:100%" placeholder="继承全局默认模型">
+            <el-select v-model="agentForm.default_provider_id" clearable filterable style="width:100%" placeholder="未设置则使用默认 Agent 或平台兼容回退">
               <el-option
                 v-for="provider in providers"
                 :key="provider.id"
@@ -966,23 +931,23 @@
           </el-select>
         </el-form-item>
         <el-form-item label="启用 MCP">
-          <el-select v-model="agentForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%" placeholder="空表示继承全局配置">
+          <el-select v-model="agentForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%" placeholder="空表示跟随默认 Agent 或平台兼容回退">
             <el-option v-for="item in mcpServers" :key="item.id" :label="item.name" :value="item.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="启用 Skill">
-          <el-select v-model="agentForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%" placeholder="空表示继承全局配置">
+          <el-select v-model="agentForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%" placeholder="空表示跟随默认 Agent 或平台兼容回退">
             <el-option v-for="item in skills" :key="item.id" :label="item.name" :value="item.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="建议问题">
-          <el-select v-model="agentForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" placeholder="空表示继承全局建议问题" />
+          <el-select v-model="agentForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" placeholder="空表示跟随默认 Agent 建议问题" />
         </el-form-item>
         <el-form-item label="欢迎语">
           <el-input v-model="agentForm.welcome_message" />
         </el-form-item>
         <el-form-item label="系统提示语">
-          <el-input v-model="agentForm.system_prompt" type="textarea" :rows="6" placeholder="空表示继承全局系统提示语" />
+          <el-input v-model="agentForm.system_prompt" type="textarea" :rows="6" placeholder="空表示跟随默认 Agent Prompt" />
         </el-form-item>
         <el-form-item label="工具策略">
           <el-input v-model="agentForm.tool_policy_text" type="textarea" :rows="7" />
@@ -1311,6 +1276,7 @@ const selectedAgent = computed(() => {
     || agents.value.find(item => item.is_default)
     || agents.value[0]
 })
+const defaultAgent = computed(() => agents.value.find(item => item.is_default) || agents.value.find(item => item.slug === 'general') || null)
 const builtinRoleOptions = [
   { label: '平台管理员', value: 'platform-admin' },
   { label: '运维管理员', value: 'ops-admin' },
@@ -1526,12 +1492,8 @@ function namesByIds(items, ids, fallbackText) {
   return names.length ? names : ['已选择资源不可见']
 }
 
-function agentMcpNames(agent = {}) {
-  return namesByIds(mcpServers.value, agent.enabled_mcp_server_ids, '继承全局 MCP')
-}
-
 function agentSkillNames(agent = {}) {
-  return namesByIds(skills.value, agent.enabled_skill_ids, '继承全局 Skill')
+  return namesByIds(skills.value, agent.enabled_skill_ids, agentFallbackLabel(agent, 'Skill'))
 }
 
 function agentRoleNames(agent = {}) {
@@ -1543,14 +1505,23 @@ function agentRoleNames(agent = {}) {
 
 function agentSuggestedQuestions(agent = {}) {
   const questions = Array.isArray(agent.suggested_questions) ? agent.suggested_questions.filter(Boolean) : []
-  return questions.length ? questions : ['继承全局建议问题']
+  return questions.length ? questions : [agentFallbackLabel(agent, '建议问题')]
 }
 
 function agentCapabilitySummary(agent = {}) {
   const mcpCount = (agent.enabled_mcp_server_ids || []).length
   const skillCount = (agent.enabled_skill_ids || []).length
-  if (!mcpCount && !skillCount) return '继承全局'
-  return `MCP ${mcpCount || '继承'} / Skill ${skillCount || '继承'}`
+  if (!mcpCount && !skillCount) return agentFallbackLabel(agent, '能力')
+  return `MCP ${mcpCount || '跟随默认'} / Skill ${skillCount || '跟随默认'}`
+}
+
+function agentFallbackLabel(agent = {}, fieldName = '配置') {
+  if (agent.is_default || agent.slug === defaultAgent.value?.slug) return `使用平台兼容回退${fieldName}`
+  return `跟随默认 Agent ${fieldName}`
+}
+
+function agentMcpNames(agent = {}) {
+  return namesByIds(mcpServers.value, agent.enabled_mcp_server_ids, agentFallbackLabel(agent, 'MCP'))
 }
 
 function boolPolicyLabel(value) {
@@ -1589,7 +1560,7 @@ function openAgentStatDetail(type = 'all') {
   const items = agents.value.filter(agent => agentMatchesStat(agent, type)).map(agent => ({
     label: agent.name || agent.slug,
     tag: agent.is_default ? '默认' : (agent.is_enabled ? '启用' : '停用'),
-    desc: `${agent.slug} · ${executionPolicyLabel(agent.execution_policy)} · ${agent.default_provider?.name || '继承全局模型'}`,
+    desc: `${agent.slug} · ${executionPolicyLabel(agent.execution_policy)} · ${agent.default_provider?.name || agentFallbackLabel(agent, '模型')}`,
   }))
   openStatDetail({
     title: titles[type] || 'Agent 详情',
@@ -1854,6 +1825,19 @@ function resetAgentForm() {
   })
 }
 
+function applyDefaultAgentSeedToForm() {
+  const source = defaultAgent.value
+  if (!source) return
+  Object.assign(agentForm, {
+    default_provider_id: source.default_provider?.id || null,
+    system_prompt: source.system_prompt || '',
+    welcome_message: source.welcome_message || '',
+    suggested_questions: Array.isArray(source.suggested_questions) ? [...source.suggested_questions] : [],
+    enabled_mcp_server_ids: Array.isArray(source.enabled_mcp_server_ids) ? [...source.enabled_mcp_server_ids] : [],
+    enabled_skill_ids: Array.isArray(source.enabled_skill_ids) ? [...source.enabled_skill_ids] : [],
+  })
+}
+
 function resetMcpForm() {
   Object.assign(mcpForm, {
     id: null,
@@ -2041,8 +2025,13 @@ async function loadReviewKnowledge(page = 1, config = {}) {
 async function saveConfig() {
   saving.config = true
   try {
-    await updateAIOpsConfig({ ...configForm, require_confirmation: true })
-    ElMessage.success('全局基线已保存')
+    await updateAIOpsConfig({
+      is_enabled: Boolean(configForm.is_enabled),
+      allow_action_execution: Boolean(configForm.allow_action_execution),
+      max_history_messages: Number(configForm.max_history_messages || 12),
+      require_confirmation: true,
+    })
+    ElMessage.success('平台安全基线已保存')
     await loadAll()
   } finally {
     saving.config = false
@@ -2077,6 +2066,8 @@ function openAgentDialog(row) {
       tool_policy: toolPolicy,
       tool_policy_text: JSON.stringify(toolPolicy, null, 2),
     })
+  } else {
+    applyDefaultAgentSeedToForm()
   }
   agentDialogVisible.value = true
 }
@@ -3181,6 +3172,38 @@ onMounted(async () => {
 
 .agent-baseline-actions {
   margin-top: 0;
+}
+
+.agent-baseline-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-color: rgba(96, 165, 250, 0.2);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.baseline-scope-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(191, 219, 254, 0.8);
+  border-radius: 12px;
+  background: #eff6ff;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.baseline-scope-note strong {
+  flex: 0 0 auto;
+  color: #1d4ed8;
+  font-size: 12px;
+}
+
+.baseline-scope-note span {
+  min-width: 0;
 }
 
 .agent-drawer-switches {

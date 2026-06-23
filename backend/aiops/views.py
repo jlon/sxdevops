@@ -183,9 +183,19 @@ class AIOpsAgentProfileViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         is_default = bool(serializer.validated_data.get('is_default'))
         with transaction.atomic():
+            default_agent = ensure_default_agent_profile(get_agent_config())
+            seed_fields = {}
+            if not serializer.validated_data.get('default_provider') and default_agent.default_provider_id:
+                seed_fields['default_provider'] = default_agent.default_provider
+            for field in ['system_prompt', 'welcome_message']:
+                if not serializer.validated_data.get(field) and getattr(default_agent, field, ''):
+                    seed_fields[field] = getattr(default_agent, field)
+            for field in ['suggested_questions', 'enabled_mcp_server_ids', 'enabled_skill_ids']:
+                if not serializer.validated_data.get(field) and getattr(default_agent, field, None):
+                    seed_fields[field] = list(getattr(default_agent, field) or [])
             if is_default:
                 AIOpsAgentProfile.objects.update(is_default=False)
-            serializer.save(created_by=self.request.user.username, updated_by=self.request.user.username)
+            serializer.save(**seed_fields, created_by=self.request.user.username, updated_by=self.request.user.username)
 
     def perform_update(self, serializer):
         is_default = bool(serializer.validated_data.get('is_default'))
