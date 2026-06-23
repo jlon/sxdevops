@@ -11,7 +11,7 @@ export const updateUser = (id, data) => request.patch(`/users/${id}/`, data)
 export const deleteUser = (id) => request.delete(`/users/${id}/`)
 export const resetUserPassword = (id, password) => request.post(`/users/${id}/reset_password/`, { password })
 
-export const getRoles = (params) => request.get('/roles/', { params })
+export const getRoles = (params, config = {}) => request.get('/roles/', { params, ...config })
 export const createRole = (data) => request.post('/roles/', data)
 export const updateRole = (id, data) => request.patch(`/roles/${id}/`, data)
 export const deleteRole = (id) => request.delete(`/roles/${id}/`)

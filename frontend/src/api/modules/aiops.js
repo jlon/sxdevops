@@ -51,6 +51,12 @@ export const deleteAIOpsProvider = (id) => request.delete(`/aiops/admin/provider
 export const testAIOpsProvider = (id) => request.post(`/aiops/admin/providers/${id}/test_connection/`, null, { timeout: AIOPS_MODEL_TEST_TIMEOUT })
 export const listAIOpsProviderModels = (id, params) => request.get(`/aiops/admin/providers/${id}/models/`, { params, timeout: AIOPS_MODEL_TEST_TIMEOUT })
 
+export const getAIOpsAgents = (config = {}) => request.get('/aiops/admin/agents/', config)
+export const createAIOpsAgent = (data) => request.post('/aiops/admin/agents/', data)
+export const updateAIOpsAgent = (id, data) => request.patch(`/aiops/admin/agents/${id}/`, data)
+export const deleteAIOpsAgent = (id) => request.delete(`/aiops/admin/agents/${id}/`)
+export const setDefaultAIOpsAgent = (id) => request.post(`/aiops/admin/agents/${id}/set-default/`)
+
 export const getAIOpsMcpServers = () => request.get('/aiops/admin/mcp-servers/')
 export const createAIOpsMcpServer = (data) => request.post('/aiops/admin/mcp-servers/', data)
 export const updateAIOpsMcpServer = (id, data) => request.patch(`/aiops/admin/mcp-servers/${id}/`, data)
