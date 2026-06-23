@@ -13397,10 +13397,54 @@ def _agent_for_action(action, config=None):
         return get_default_agent_profile(config)
 
 
-def _authorization_snapshot_for_action(action, user, agent, mode='manual_confirm'):
-    permissions = ['aiops.task.execute', 'ops.host.execute']
-    if (action.action_payload or {}).get('target_type') == HostTask.TARGET_K8S:
+def _execution_permissions_for_action_payload(payload, *, full_auto=False):
+    permissions = ['aiops.task.execute', 'ops.task.execute']
+    if full_auto:
+        permissions.insert(0, 'aiops.agent.full_execute')
+    if (payload or {}).get('target_type') == HostTask.TARGET_K8S:
         permissions.extend(['ops.k8s.manage', 'ops.k8s.exec'])
+    else:
+        permissions.append('ops.host.execute')
+    return list(dict.fromkeys(permissions))
+
+
+def _risk_rank(risk_level):
+    return {
+        AIOpsPendingAction.RISK_LOW: 1,
+        AIOpsPendingAction.RISK_MEDIUM: 2,
+        AIOpsPendingAction.RISK_HIGH: 3,
+        AIOpsPendingAction.RISK_CRITICAL: 4,
+        HostTask.RISK_LOW: 1,
+        HostTask.RISK_MEDIUM: 2,
+        HostTask.RISK_HIGH: 3,
+        HostTask.RISK_CRITICAL: 4,
+    }.get(risk_level or AIOpsPendingAction.RISK_LOW, 1)
+
+
+def _agent_policy_allows_risk(agent, risk_level):
+    policy = agent.tool_policy if agent and isinstance(agent.tool_policy, dict) else {}
+    if policy.get('allow_execute') is False:
+        return False
+    if risk_level == AIOpsPendingAction.RISK_CRITICAL:
+        return bool(policy.get('critical_full_auto'))
+    max_risk_level = policy.get('max_risk_level') or AIOpsPendingAction.RISK_HIGH
+    return _risk_rank(risk_level) <= _risk_rank(max_risk_level)
+
+
+def _can_full_auto_execute_task(user, agent, draft):
+    if not agent or agent.execution_policy != AIOpsAgentProfile.EXECUTION_FULL_AUTO:
+        return False
+    risk_level = (draft or {}).get('risk_level') or AIOpsPendingAction.RISK_LOW
+    if not _agent_policy_allows_risk(agent, risk_level):
+        return False
+    return user_has_permissions(user, _execution_permissions_for_action_payload(draft or {}, full_auto=True))
+
+
+def _authorization_snapshot_for_action(action, user, agent, mode='manual_confirm'):
+    permissions = _execution_permissions_for_action_payload(
+        action.action_payload or {},
+        full_auto=mode == 'full_auto',
+    )
     return {
         'mode': mode,
         'confirmed_by': user.username,
@@ -13445,6 +13489,8 @@ def _create_and_start_task_center_task_from_action(action, user, task_draft, age
         if not k8s_targets:
             raise ValueError('没有找到有效的 K8s 目标。')
     else:
+        if not user_has_permissions(user, ['ops.host.execute']):
+            raise ValueError('当前账号无权执行主机任务。')
         target_refs = task_draft.get('target_refs') or []
         if not target_refs:
             target_refs = [{'source': 'host', 'id': item} for item in (task_draft.get('host_ids') or [])]
@@ -13538,6 +13584,33 @@ def _create_and_start_task_center_task_from_action(action, user, task_draft, age
     return task
 
 
+def _execute_pending_action_in_task_center(action, user, agent, mode='manual_confirm', request=None):
+    task_draft = _build_task_center_draft_from_aiops_draft(action.action_payload or {}, action=action)
+    authorization = _authorization_snapshot_for_action(action, user, agent, mode=mode)
+    task = _create_and_start_task_center_task_from_action(
+        action,
+        user,
+        task_draft,
+        agent,
+        authorization,
+        request=request,
+    )
+    action.status = AIOpsPendingAction.STATUS_EXECUTED
+    action.result_payload = {
+        'draft_ready': True,
+        'task_id': task.id,
+        'created_task_id': task.id,
+        'task_name': task_draft['name'],
+        'materialized_in_task_center': True,
+        'execution_started': True,
+        'auto_authorized': mode == 'full_auto',
+        'authorization': authorization,
+        'task_draft': task_draft,
+    }
+    action.save(update_fields=['status', 'result_payload', 'updated_at'])
+    return task_draft, task, authorization
+
+
 def _should_materialize_host_task(question, result, draft):
     return False
 
@@ -13550,7 +13623,7 @@ def confirm_action(action, user, request=None):
         raise ValueError('只能确认自己的动作。')
     if action.action_type != AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK:
         raise ValueError('不支持的动作类型。')
-    if not user_has_permissions(user, ['aiops.task.execute', 'ops.host.execute']):
+    if not user_has_permissions(user, ['aiops.task.execute', 'ops.task.execute', 'ops.host.execute']):
         raise ValueError('当前账号无权执行机器人任务。')
     if action.status != AIOpsPendingAction.STATUS_PENDING:
         result_payload = action.result_payload if isinstance(action.result_payload, dict) else {}
@@ -13567,15 +13640,12 @@ def confirm_action(action, user, request=None):
     action.confirmed_at = timezone.now()
     action.save(update_fields=['title', 'action_payload', 'status', 'confirmed_by', 'confirmed_at', 'updated_at'])
 
-    task_draft = _build_task_center_draft_from_aiops_draft(action.action_payload or {}, action=action)
     agent = _agent_for_action(action, config=config)
-    authorization = _authorization_snapshot_for_action(action, user, agent, mode='manual_confirm')
-    task = _create_and_start_task_center_task_from_action(
+    task_draft, task, authorization = _execute_pending_action_in_task_center(
         action,
         user,
-        task_draft,
         agent,
-        authorization,
+        mode='manual_confirm',
         request=request,
     )
     record_event(
@@ -13604,18 +13674,6 @@ def confirm_action(action, user, request=None):
             'authorization_mode': authorization.get('mode') or '',
         },
     )
-    action.status = AIOpsPendingAction.STATUS_EXECUTED
-    action.result_payload = {
-        'draft_ready': True,
-        'task_id': task.id,
-        'created_task_id': task.id,
-        'task_name': task_draft['name'],
-        'materialized_in_task_center': True,
-        'execution_started': True,
-        'authorization': authorization,
-        'task_draft': task_draft,
-    }
-    action.save(update_fields=['status', 'result_payload', 'updated_at'])
     return task_draft
 
 
@@ -17013,6 +17071,40 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
             if analysis_only:
                 merged_metadata['analysis_only_enforced'] = True
             action_decision = {'status': 'blocked', 'reason': action_block_reason}
+        elif _can_full_auto_execute_task(user, agent, draft):
+            pending_action = create_pending_task_action_from_draft(session, assistant_message, draft)
+            pending_action.status = AIOpsPendingAction.STATUS_CONFIRMED
+            pending_action.confirmed_by = user.username
+            pending_action.confirmed_at = timezone.now()
+            pending_action.save(update_fields=['status', 'confirmed_by', 'confirmed_at', 'updated_at'])
+            try:
+                task_draft, task, authorization = _execute_pending_action_in_task_center(
+                    pending_action,
+                    user,
+                    agent,
+                    mode='full_auto',
+                )
+                merged_metadata['pending_action_id'] = pending_action.id
+                merged_metadata['created_task_id'] = task.id
+                merged_metadata['task_materialized_in_center'] = True
+                merged_metadata['agent_auto_authorized'] = True
+                action_decision = {
+                    'status': 'materialized',
+                    'reason': 'full_auto',
+                    'task_id': task.id,
+                    'task_name': task.name,
+                    'pending_action_id': pending_action.id,
+                    'authorization_mode': authorization.get('mode') or 'full_auto',
+                }
+                final_content = f"{final_content}\n\nFull Auto 已在任务中心创建并启动任务：{task.name}（#{task.id}）。"
+            except ValueError as exc:
+                pending_action.status = AIOpsPendingAction.STATUS_FAILED
+                pending_action.result_payload = {'error': str(exc)}
+                pending_action.save(update_fields=['status', 'result_payload', 'updated_at'])
+                merged_metadata['pending_action_id'] = pending_action.id
+                merged_metadata['task_materialization_error'] = str(exc)[:200]
+                action_decision = {'status': 'failed', 'reason': 'task_materialization_error', 'error': str(exc)[:200], 'pending_action_id': pending_action.id}
+                final_content = f"{final_content}\n\n任务中心创建失败：{exc}"
         elif _should_materialize_host_task(question, result, draft):
             try:
                 task = _create_host_task_record_from_draft(draft, user, session=session)

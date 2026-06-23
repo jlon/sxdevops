@@ -6,7 +6,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from aiops.models import AIOpsAgentProfile, AIOpsChatMessage, AIOpsChatSession, AIOpsPendingAction
-from aiops.services import create_pending_task_action_from_draft, get_agent_config
+from aiops.services import _apply_dispatch_result_to_message, create_pending_task_action_from_draft, get_agent_config
 from eventwall.models import EventRecord
 from ops.models import HostTask, TaskResource, TaskResourceGroup
 from rbac.models import Role
@@ -54,7 +54,10 @@ class AgentExecutionE2ETests(TestCase):
             role=AIOpsChatMessage.ROLE_ASSISTANT,
             content='已生成巡检任务，等待确认。',
         )
-        draft = {
+        return create_pending_task_action_from_draft(session, message, self.create_task_draft())
+
+    def create_task_draft(self):
+        return {
             'name': 'Agent 资源巡检',
             'description': '由 AIOps Agent 生成的任务',
             'target_type': HostTask.TARGET_HOST,
@@ -69,7 +72,6 @@ class AgentExecutionE2ETests(TestCase):
             'request_summary': '检查 agent-exec-env 的资源状态',
             'payload': {'command': 'hostname && uptime', 'script_kind': 'shell'},
         }
-        return create_pending_task_action_from_draft(session, message, draft)
 
     def create_invalid_target_action(self):
         action = self.create_pending_action()
@@ -131,3 +133,103 @@ class AgentExecutionE2ETests(TestCase):
         action.refresh_from_db()
         self.assertEqual(action.status, AIOpsPendingAction.STATUS_FAILED)
         self.assertIn('没有找到有效的目标主机', action.result_payload['error'])
+
+    @patch('aiops.services.start_host_task')
+    def test_full_auto_agent_materializes_and_starts_task_without_manual_confirm(self, mocked_start_host_task):
+        agent = AIOpsAgentProfile.objects.create(
+            name='Full Auto Agent',
+            slug='full-auto-agent',
+            execution_policy=AIOpsAgentProfile.EXECUTION_FULL_AUTO,
+            tool_policy={
+                'allow_read_only': True,
+                'allow_generate_task': True,
+                'allow_execute': True,
+                'max_risk_level': AIOpsPendingAction.RISK_HIGH,
+            },
+            is_enabled=True,
+        )
+        session = AIOpsChatSession.objects.create(
+            user=self.user,
+            title='full auto e2e',
+            context={'agent_slug': agent.slug, 'agent_name': agent.name},
+        )
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            content='处理中',
+        )
+
+        _assistant_message, pending_action = _apply_dispatch_result_to_message(
+            session,
+            assistant_message,
+            {
+                'content': '已生成巡检任务。',
+                'pending_action_draft': self.create_task_draft(),
+                'tool_calls': ['generate_host_task'],
+            },
+            self.user,
+            question='检查 agent-exec-env 的资源状态',
+        )
+
+        self.assertIsNotNone(pending_action)
+        pending_action.refresh_from_db()
+        self.assertEqual(pending_action.status, AIOpsPendingAction.STATUS_EXECUTED)
+        self.assertTrue(pending_action.result_payload['materialized_in_task_center'])
+        self.assertTrue(pending_action.result_payload['execution_started'])
+        self.assertEqual(pending_action.result_payload['authorization']['mode'], 'full_auto')
+        self.assertEqual(pending_action.result_payload['authorization']['agent_slug'], agent.slug)
+        task = HostTask.objects.get(pk=pending_action.result_payload['task_id'])
+        self.assertEqual(task.source_context['agent_slug'], agent.slug)
+        self.assertEqual(task.source_context['authorization_mode'], 'full_auto')
+        mocked_start_host_task.assert_called_once()
+
+        assistant_message.refresh_from_db()
+        self.assertEqual(assistant_message.metadata['created_task_id'], task.id)
+        self.assertTrue(assistant_message.metadata['task_materialized_in_center'])
+        self.assertEqual(assistant_message.metadata['action_trace']['decision']['status'], 'materialized')
+        self.assertEqual(assistant_message.metadata['action_trace']['decision']['reason'], 'full_auto')
+
+    @patch('aiops.services.start_host_task')
+    def test_full_auto_agent_falls_back_to_manual_confirm_when_risk_exceeds_policy(self, mocked_start_host_task):
+        agent = AIOpsAgentProfile.objects.create(
+            name='Constrained Full Auto Agent',
+            slug='constrained-full-auto-agent',
+            execution_policy=AIOpsAgentProfile.EXECUTION_FULL_AUTO,
+            tool_policy={
+                'allow_read_only': True,
+                'allow_generate_task': True,
+                'allow_execute': True,
+                'max_risk_level': AIOpsPendingAction.RISK_MEDIUM,
+            },
+            is_enabled=True,
+        )
+        session = AIOpsChatSession.objects.create(
+            user=self.user,
+            title='full auto fallback',
+            context={'agent_slug': agent.slug, 'agent_name': agent.name},
+        )
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            content='处理中',
+        )
+
+        _assistant_message, pending_action = _apply_dispatch_result_to_message(
+            session,
+            assistant_message,
+            {
+                'content': '已生成高风险巡检任务。',
+                'pending_action_draft': self.create_task_draft(),
+                'tool_calls': ['generate_host_task'],
+            },
+            self.user,
+            question='检查 agent-exec-env 的资源状态',
+        )
+
+        self.assertIsNotNone(pending_action)
+        pending_action.refresh_from_db()
+        self.assertEqual(pending_action.status, AIOpsPendingAction.STATUS_PENDING)
+        self.assertFalse(HostTask.objects.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
+        mocked_start_host_task.assert_not_called()
+        assistant_message.refresh_from_db()
+        self.assertEqual(assistant_message.metadata['action_trace']['decision']['status'], 'pending_confirmation')
