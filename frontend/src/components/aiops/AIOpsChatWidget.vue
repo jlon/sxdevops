@@ -90,26 +90,28 @@
                   <span class="environment-chip" :class="{ empty: !currentEnvironmentName }">
                     {{ currentEnvironmentName ? `环境：${currentEnvironmentName}` : '未指定环境' }}
                   </span>
-                  <el-select
-                    v-if="availableAgents.length > 1"
-                    v-model="selectedAgentSlug"
-                    size="small"
-                    class="agent-select"
-                    title="新建会话使用的 Agent"
-                    :disabled="loading.send || loading.poll"
-                    @change="handleAgentChange"
-                  >
-                    <el-option
-                      v-for="agent in availableAgents"
-                      :key="agent.slug"
-                      :label="agent.name"
-                      :value="agent.slug"
-                    />
-                  </el-select>
-                  <label class="analysis-toggle">
-                    <span>只分析</span>
-                    <el-switch v-model="analysisSwitchValue" size="small" :disabled="forcedAnalysisOnly" />
-                  </label>
+                  <div class="agent-mode-controls">
+                    <el-select
+                      v-if="availableAgents.length > 1"
+                      :model-value="agentSelectorValue"
+                      size="small"
+                      class="agent-select"
+                      title="当前会话使用的 Agent"
+                      :disabled="loading.send || loading.poll || loading.sessions"
+                      @change="handleAgentChange"
+                    >
+                      <el-option
+                        v-for="agent in availableAgents"
+                        :key="agent.slug"
+                        :label="agent.name"
+                        :value="agent.slug"
+                      />
+                    </el-select>
+                    <label class="analysis-toggle">
+                      <span>只分析</span>
+                      <el-switch v-model="analysisSwitchValue" size="small" :disabled="forcedAnalysisOnly" />
+                    </label>
+                  </div>
                 </div>
                 <div class="chat-toolbar-right">
                   <span class="toolbar-hint">
@@ -618,7 +620,7 @@ const sessions = ref([])
 const messages = ref([])
 const composer = ref('')
 const currentSessionId = ref(Number(localStorage.getItem(STORAGE_SESSION_KEY) || '') || null)
-const selectedAgentSlug = ref(localStorage.getItem(STORAGE_AGENT_KEY) || '')
+const newSessionAgentSlug = ref(localStorage.getItem(STORAGE_AGENT_KEY) || '')
 const loading = ref({ bootstrap: false, sessions: false, messages: false, send: false, poll: false, deleteSession: null })
 const pendingAssistantMessage = ref(null)
 const messageListRef = ref(null)
@@ -651,9 +653,11 @@ const renderMessages = computed(() => pendingAssistantMessage.value ? [...messag
 const currentSession = computed(() => sessions.value.find(item => item.id === currentSessionId.value) || null)
 const availableAgents = computed(() => bootstrap.value.available_agents || [])
 const sessionAgentSlug = computed(() => currentSession.value?.agent?.slug || currentSession.value?.context?.agent_slug || '')
-const currentAgentSlug = computed(() => sessionAgentSlug.value || selectedAgentSlug.value || bootstrap.value.default_agent?.slug || '')
+const fallbackAgentSlug = computed(() => bootstrap.value.default_agent?.slug || availableAgents.value[0]?.slug || '')
+const currentAgentSlug = computed(() => currentSessionId.value ? sessionAgentSlug.value || fallbackAgentSlug.value : newSessionAgentSlug.value || fallbackAgentSlug.value)
 const currentAgent = computed(() => availableAgents.value.find(item => item.slug === currentAgentSlug.value) || bootstrap.value.default_agent || null)
 const currentAgentName = computed(() => currentAgent.value?.name || '')
+const agentSelectorValue = computed(() => currentSessionId.value ? currentAgentSlug.value : newSessionAgentSlug.value || fallbackAgentSlug.value)
 const currentRuntime = computed(() => currentSession.value?.context?.runtime || bootstrap.value.runtime || {})
 const actionExecutionAllowed = computed(() => currentRuntime.value?.allow_action_execution !== false)
 const forcedAnalysisOnly = computed(() => !actionExecutionAllowed.value)
@@ -1649,6 +1653,23 @@ async function refreshSessionListOnly() {
   sessions.value = response.results || response || []
 }
 
+function preferredAgentSlug() {
+  return newSessionAgentSlug.value || fallbackAgentSlug.value
+}
+
+async function createSessionForAgent(agentSlug = preferredAgentSlug(), draft = composer.value) {
+  const session = await createAIOpsSession({ title: '', agent_slug: agentSlug || '' })
+  sessions.value.unshift(session)
+  messages.value = []
+  if (draft) persistDraft(session.id, draft)
+  await selectSession(session.id)
+  if (draft) {
+    composer.value = draft
+    persistDraft(session.id, draft)
+  }
+  return session
+}
+
 async function applyLatestMessages(sessionId, latestMessages) {
   if (currentSessionId.value !== sessionId) return
   messages.value = latestMessages
@@ -1752,8 +1773,8 @@ async function fetchBootstrap() {
   loading.value.bootstrap = true
   try {
     bootstrap.value = await getAIOpsBootstrap()
-    if (!selectedAgentSlug.value) {
-      selectedAgentSlug.value = bootstrap.value.default_agent?.slug || availableAgents.value[0]?.slug || ''
+    if (!newSessionAgentSlug.value) {
+      newSessionAgentSlug.value = preferredAgentSlug()
     }
   } finally {
     loading.value.bootstrap = false
@@ -1786,11 +1807,6 @@ async function selectSession(sessionId) {
   loading.value.messages = true
   try {
     messages.value = await getAIOpsMessages(sessionId)
-    const sessionAgent = currentSession.value?.agent?.slug || currentSession.value?.context?.agent_slug || ''
-    if (sessionAgent) {
-      selectedAgentSlug.value = sessionAgent
-      localStorage.setItem(STORAGE_AGENT_KEY, sessionAgent)
-    }
     resumeMessagePolling(sessionId, messages.value)
     loadDraft(sessionId)
     await nextTick()
@@ -1803,10 +1819,7 @@ async function selectSession(sessionId) {
 
 async function handleCreateSession() {
   try {
-    const session = await createAIOpsSession({ title: '', agent_slug: selectedAgentSlug.value || bootstrap.value.default_agent?.slug || '' })
-    sessions.value.unshift(session)
-    messages.value = []
-    await selectSession(session.id)
+    await createSessionForAgent(preferredAgentSlug(), '')
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || '创建会话失败')
   }
@@ -1814,11 +1827,7 @@ async function handleCreateSession() {
 
 async function ensureSession() {
   if (currentSessionId.value) return currentSessionId.value
-  const session = await createAIOpsSession({ title: '', agent_slug: selectedAgentSlug.value || bootstrap.value.default_agent?.slug || '' })
-  sessions.value.unshift(session)
-  currentSessionId.value = session.id
-  localStorage.setItem(STORAGE_SESSION_KEY, String(session.id))
-  messages.value = []
+  const session = await createSessionForAgent(preferredAgentSlug(), composer.value)
   return session.id
 }
 
@@ -1851,7 +1860,7 @@ async function handleSend() {
     const response = await sendAIOpsMessageAsync(sessionId, {
       content,
       analysis_only: effectiveAnalysisOnly.value,
-      agent_slug: sessionAgentSlug.value || selectedAgentSlug.value || bootstrap.value.default_agent?.slug || '',
+      agent_slug: sessionAgentSlug.value || '',
     })
     messages.value.push(response.user_message)
     messages.value.push(response.assistant_message)
@@ -1871,14 +1880,36 @@ async function handleSend() {
   }
 }
 
-function handleAgentChange(value) {
-  if (value) {
-    localStorage.setItem(STORAGE_AGENT_KEY, value)
-  } else {
-    localStorage.removeItem(STORAGE_AGENT_KEY)
+async function handleAgentChange(value) {
+  if (!currentSessionId.value) {
+    newSessionAgentSlug.value = value || ''
+    if (value) {
+      localStorage.setItem(STORAGE_AGENT_KEY, value)
+    } else {
+      localStorage.removeItem(STORAGE_AGENT_KEY)
+    }
+    return
   }
-  if (!currentSessionId.value) return
-  ElMessage.info('Agent 选择会在新会话中生效')
+  if (value === sessionAgentSlug.value) return
+
+  const draft = composer.value
+  try {
+    loading.value.sessions = true
+    const session = await createSessionForAgent(value, draft)
+    const createdAgentSlug = session?.agent?.slug || session?.context?.agent_slug || value || ''
+    newSessionAgentSlug.value = createdAgentSlug
+    if (createdAgentSlug) {
+      localStorage.setItem(STORAGE_AGENT_KEY, createdAgentSlug)
+    } else {
+      localStorage.removeItem(STORAGE_AGENT_KEY)
+    }
+    ElMessage.success('已切换到新 Agent 会话')
+    focusComposer()
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.agent_slug || error?.response?.data?.detail || '切换 Agent 失败')
+  } finally {
+    loading.value.sessions = false
+  }
 }
 
 async function handleConfirmAction(action) {
@@ -2230,15 +2261,23 @@ onBeforeUnmount(() => {
 .session-title{display:block;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .session-empty{font-size:12px;color:#64748b}
 .aiops-chat-main{display:flex;flex-direction:column;min-width:0;min-height:0}
-.chat-toolbar{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;border-bottom:1px solid #edf2f7;background:rgba(255,255,255,.82)}
+.chat-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 12px;border-bottom:1px solid #edf2f7;background:rgba(255,255,255,.82)}
 .chat-toolbar-left,.chat-toolbar-right{display:flex;align-items:center;gap:10px;min-width:0}
+.chat-toolbar-left{flex:1 1 auto;overflow:hidden}
+.chat-toolbar-right{flex:0 1 auto;max-width:42%}
 .toolbar-chip{border:none;border-radius:999px;padding:6px 11px;background:#dbeafe;color:#1d4ed8;cursor:pointer;font-size:12px;font-weight:600}
-.session-indicator{display:flex;flex-direction:column;min-width:0;max-width:220px;line-height:1.1}
+.session-indicator{display:flex;flex-direction:column;min-width:72px;max-width:220px;line-height:1.1;flex:0 1 auto}
 .session-indicator-label{font-size:12px;font-weight:700;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.environment-chip{display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:6px;background:#ecfdf5;border:1px solid #bbf7d0;color:#047857;font-size:12px;font-weight:700;white-space:nowrap}
+.environment-chip{display:inline-flex;align-items:center;max-width:180px;height:24px;padding:0 8px;border-radius:6px;background:#ecfdf5;border:1px solid #bbf7d0;color:#047857;font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
 .environment-chip.empty{background:#fff7ed;border-color:#fed7aa;color:#c2410c}
 .page-context-chip{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
-.analysis-toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:#334155}
+.agent-mode-controls{display:inline-flex;align-items:center;gap:8px;min-width:0;flex:0 0 auto}
+.agent-select{width:168px;max-width:168px;flex:0 0 168px}
+.agent-select :deep(.el-select__wrapper){min-height:24px;border-radius:8px}
+.agent-select :deep(.el-select__placeholder),
+.agent-select :deep(.el-select__selected-item){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.analysis-toggle{display:inline-flex;align-items:center;gap:7px;min-width:max-content;flex:0 0 auto;font-size:12px;color:#334155;white-space:nowrap;line-height:1}
+.analysis-toggle span{display:inline-block;white-space:nowrap;word-break:keep-all}
 .toolbar-hint{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .quick-palette{padding:6px 12px 0}
 .aiops-quick-questions,.aiops-secondary-actions{display:flex;gap:8px;flex-wrap:wrap}
@@ -2477,4 +2516,3 @@ onBeforeUnmount(() => {
   .aiops-panel{right:8px;width:calc(100vw - var(--sidebar-collapsed-width,68px) - 16px);max-width:calc(100vw - var(--sidebar-collapsed-width,68px) - 16px)}
 }
 </style>
-

@@ -50,151 +50,240 @@
 
     <section class="panel">
       <template v-if="activeTab === 'agents'">
-        <div class="agent-registry-panel surface-card">
-          <div class="section-toolbar audit-toolbar">
-            <div class="toolbar-head">
-              <span class="toolbar-title">Agent 管理</span>
-              <span class="toolbar-desc">先选择或注册 Agent，再覆盖模型、MCP、Skill 和执行策略</span>
+        <div class="agent-workbench">
+          <aside class="agent-roster surface-card">
+            <div class="section-toolbar audit-toolbar agent-roster-head">
+              <div class="toolbar-head">
+                <span class="toolbar-title">Agent</span>
+                <span class="toolbar-desc">选择后在右侧配置能力与策略</span>
+              </div>
+              <el-button v-if="canManageAgents" size="small" type="primary" @click="openAgentDialog()">注册</el-button>
             </div>
-            <el-button v-if="canManageAgents" size="small" type="primary" @click="openAgentDialog()">注册 Agent</el-button>
-          </div>
-          <div class="agent-summary-row">
-            <button class="skill-summary-item stat-button" type="button" @click="openAgentStatDetail('all')">
-              <span>Agent 总数</span>
-              <strong>{{ agentSummary.total }}</strong>
-            </button>
-            <button class="skill-summary-item stat-button" type="button" @click="openAgentStatDetail('enabled')">
-              <span>已启用</span>
-              <strong>{{ agentSummary.enabled }}</strong>
-            </button>
-            <button class="skill-summary-item stat-button" type="button" @click="openAgentStatDetail('custom')">
-              <span>自定义</span>
-              <strong>{{ agentSummary.custom }}</strong>
-            </button>
-            <button class="skill-summary-item stat-button" type="button" @click="openAgentStatDetail('full_auto')">
-              <span>Full Auto</span>
-              <strong>{{ agentSummary.fullAuto }}</strong>
-            </button>
-          </div>
-          <el-table :data="agents" stripe size="small" class="console-table agent-table" empty-text="暂无 Agent">
-            <el-table-column label="Agent" min-width="220" show-overflow-tooltip>
-              <template #default="{ row }">
-                <div class="agent-name-cell">
-                  <div class="agent-name-line">
-                    <strong>{{ row.name }}</strong>
-                    <el-tag v-if="row.is_default" size="small" type="success" effect="plain">默认</el-tag>
-                    <el-tag v-if="row.is_builtin" size="small" effect="plain">内置</el-tag>
+            <div class="agent-summary-row compact">
+              <button class="skill-summary-item stat-button" type="button" @click="openAgentStatDetail('all')">
+                <span>总数</span>
+                <strong>{{ agentSummary.total }}</strong>
+              </button>
+              <button class="skill-summary-item stat-button" type="button" @click="openAgentStatDetail('enabled')">
+                <span>启用</span>
+                <strong>{{ agentSummary.enabled }}</strong>
+              </button>
+              <button class="skill-summary-item stat-button" type="button" @click="openAgentStatDetail('custom')">
+                <span>自定义</span>
+                <strong>{{ agentSummary.custom }}</strong>
+              </button>
+              <button class="skill-summary-item stat-button" type="button" @click="openAgentStatDetail('full_auto')">
+                <span>Full Auto</span>
+                <strong>{{ agentSummary.fullAuto }}</strong>
+              </button>
+            </div>
+            <div class="agent-roster-list">
+              <button
+                v-for="agent in agents"
+                :key="agent.id || agent.slug"
+                type="button"
+                class="agent-roster-item"
+                :class="{ active: selectedAgentId === agent.id }"
+                @click="selectedAgentId = agent.id"
+              >
+                <div class="agent-roster-main">
+                  <div class="agent-roster-title">
+                    <strong>{{ agent.name }}</strong>
+                    <el-tag v-if="agent.is_default" size="small" type="success" effect="plain">默认</el-tag>
                   </div>
-                  <span class="agent-slug">{{ row.slug }}</span>
+                  <span>{{ agent.slug }}</span>
                 </div>
-              </template>
-            </el-table-column>
-            <el-table-column prop="description" label="说明" min-width="220" show-overflow-tooltip />
-            <el-table-column label="执行策略" width="130">
-              <template #default="{ row }">
-                <el-tag size="small" :type="executionPolicyTagType(row.execution_policy)">
-                  {{ executionPolicyLabel(row.execution_policy) }}
+                <el-tag size="small" :type="agent.is_enabled ? 'success' : 'info'" effect="plain">
+                  {{ agent.is_enabled ? '启用' : '停用' }}
                 </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="模型" min-width="160" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.default_provider?.name || '继承全局' }}</template>
-            </el-table-column>
-            <el-table-column label="能力" width="150">
-              <template #default="{ row }">
-                <div class="agent-capability-counts">
-                  <span>MCP {{ (row.enabled_mcp_server_ids || []).length || '继承' }}</span>
-                  <span>Skill {{ (row.enabled_skill_ids || []).length || '继承' }}</span>
+              </button>
+              <div v-if="!agents.length" class="agent-empty">暂无 Agent</div>
+            </div>
+          </aside>
+
+          <div class="agent-detail surface-card">
+            <template v-if="selectedAgent">
+              <div class="agent-detail-head">
+                <div class="agent-detail-title">
+                  <div class="agent-name-line">
+                    <strong>{{ selectedAgent.name }}</strong>
+                    <el-tag v-if="selectedAgent.is_default" size="small" type="success" effect="plain">默认</el-tag>
+                    <el-tag v-if="selectedAgent.is_builtin" size="small" effect="plain">内置</el-tag>
+                    <el-tag size="small" :type="selectedAgent.is_enabled ? 'success' : 'info'">
+                      {{ selectedAgent.is_enabled ? '启用' : '停用' }}
+                    </el-tag>
+                  </div>
+                  <span class="agent-slug">{{ selectedAgent.slug }}</span>
+                  <p>{{ selectedAgent.description || '暂无说明' }}</p>
                 </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="92">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column v-if="canManageAgents" label="操作" width="250" fixed="right">
-              <template #default="{ row }">
-                <div class="table-actions">
-                  <el-button link type="primary" @click="openAgentDialog(row)">编辑</el-button>
-                  <el-button link :disabled="row.is_default || !row.is_enabled" @click="handleSetDefaultAgent(row)">设默认</el-button>
-                  <el-button link :disabled="row.is_default" @click="toggleAgentEnabled(row)">{{ row.is_enabled ? '停用' : '启用' }}</el-button>
-                  <el-button link type="danger" :disabled="row.is_builtin || row.is_default" @click="handleDeleteAgent(row)">删除</el-button>
+                <div v-if="canManageAgents" class="agent-detail-actions">
+                  <el-button size="small" type="primary" @click="openAgentDialog(selectedAgent)">编辑 Agent</el-button>
+                  <el-button size="small" :disabled="selectedAgent.is_default || !selectedAgent.is_enabled" @click="handleSetDefaultAgent(selectedAgent)">设为默认</el-button>
+                  <el-button size="small" :disabled="selectedAgent.is_default" @click="toggleAgentEnabled(selectedAgent)">
+                    {{ selectedAgent.is_enabled ? '停用' : '启用' }}
+                  </el-button>
+                  <el-button size="small" type="danger" plain :disabled="selectedAgent.is_builtin || selectedAgent.is_default" @click="handleDeleteAgent(selectedAgent)">删除</el-button>
                 </div>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-        <div class="section-toolbar agent-baseline-actions">
-          <div class="toolbar-head">
-            <span class="toolbar-title">全局默认与安全基线</span>
-            <span class="toolbar-desc">作为 Agent 未覆盖字段时的兜底模型、Prompt、MCP、Skill 与运行开关</span>
-          </div>
-          <el-button size="small" type="primary" :loading="saving.config" @click="saveConfig">保存基线</el-button>
-        </div>
-        <div class="config-grid">
-          <div class="config-section config-section--main surface-card">
-            <div class="section-title">默认会话体验</div>
-            <el-form :model="configForm" label-width="118px">
-              <el-form-item label="默认模型">
-                <el-select v-model="configForm.default_provider_id" clearable style="width:100%">
-                  <el-option
-                    v-for="provider in providers"
-                    :key="provider.id"
-                    :label="providerOptionLabel(provider)"
-                    :value="provider.id"
-                    :disabled="!provider.runtime_ready"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="欢迎语">
-                <el-input v-model="configForm.welcome_message" />
-              </el-form-item>
-              <el-form-item label="建议问题">
-                <el-select v-model="configForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" />
-              </el-form-item>
-              <el-form-item label="启用 MCP">
-                <el-select v-model="configForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
-                  <el-option v-for="item in mcpServers" :key="item.id" :label="item.name" :value="item.id" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="启用 Skill">
-                <el-select v-model="configForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
-                  <el-option v-for="item in skills" :key="item.id" :label="item.name" :value="item.id" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="系统提示语">
-                <el-input v-model="configForm.system_prompt" type="textarea" :rows="8" />
-              </el-form-item>
-            </el-form>
-          </div>
-          <div class="config-section config-section--runtime surface-card">
-            <div class="section-title">安全基线</div>
-            <div class="runtime-note">Agent 没有覆盖时使用这些开关；只读 Agent 会继续收紧可执行范围。</div>
-            <div class="switch-list">
-              <div class="switch-item">
-                <div class="switch-copy">
-                  <span>启用智能助手</span>
-                  <small>关闭后聊天入口不可用，已有会话仍保留。</small>
-                </div>
-                <el-switch v-model="configForm.is_enabled" />
               </div>
-              <div class="switch-item">
-                <div class="switch-copy">
-                  <span>允许生成待执行任务</span>
-                  <small>关闭后只返回分析结果，不创建待确认任务。</small>
+
+              <div class="agent-detail-grid">
+                <div class="agent-insight-card">
+                  <span>执行策略</span>
+                  <strong>{{ executionPolicyLabel(selectedAgent.execution_policy) }}</strong>
+                  <el-tag size="small" :type="executionPolicyTagType(selectedAgent.execution_policy)">
+                    {{ selectedAgent.execution_policy }}
+                  </el-tag>
                 </div>
-                <el-switch v-model="configForm.allow_action_execution" />
+                <div class="agent-insight-card">
+                  <span>模型来源</span>
+                  <strong>{{ selectedAgent.default_provider?.name || '继承全局模型' }}</strong>
+                  <small>{{ selectedAgent.default_provider?.default_model || '使用全局默认 provider' }}</small>
+                </div>
+                <div class="agent-insight-card">
+                  <span>能力覆盖</span>
+                  <strong>{{ agentCapabilitySummary(selectedAgent) }}</strong>
+                  <small>MCP / Skill 为空表示继承全局基线</small>
+                </div>
+              </div>
+
+              <div class="agent-detail-section">
+                <div class="agent-detail-section-title">能力绑定</div>
+                <div class="agent-scope-grid">
+                  <div class="agent-scope-panel">
+                    <span>MCP</span>
+                    <div class="agent-chip-list">
+                      <el-tag v-for="name in agentMcpNames(selectedAgent)" :key="name" size="small" effect="plain">{{ name }}</el-tag>
+                    </div>
+                  </div>
+                  <div class="agent-scope-panel">
+                    <span>Skill</span>
+                    <div class="agent-chip-list">
+                      <el-tag v-for="name in agentSkillNames(selectedAgent)" :key="name" size="small" effect="plain">{{ name }}</el-tag>
+                    </div>
+                  </div>
+                  <div class="agent-scope-panel">
+                    <span>角色范围</span>
+                    <div class="agent-chip-list">
+                      <el-tag v-for="name in agentRoleNames(selectedAgent)" :key="name" size="small" effect="plain">{{ name }}</el-tag>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="agent-detail-section">
+                <div class="agent-detail-section-title">对话体验</div>
+                <div class="agent-experience-grid">
+                  <div class="agent-experience-item">
+                    <span>欢迎语</span>
+                    <strong>{{ selectedAgent.welcome_message || '继承全局欢迎语' }}</strong>
+                  </div>
+                  <div class="agent-experience-item">
+                    <span>建议问题</span>
+                    <div class="agent-chip-list">
+                      <el-tag v-for="question in agentSuggestedQuestions(selectedAgent)" :key="question" size="small" effect="plain">{{ question }}</el-tag>
+                    </div>
+                  </div>
+                  <div class="agent-experience-item wide">
+                    <span>系统提示语</span>
+                    <strong>{{ selectedAgent.system_prompt ? '已覆盖专属 Prompt' : '继承全局系统提示语' }}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div class="agent-detail-section">
+                <div class="agent-detail-section-title">执行边界</div>
+                <div class="policy-list">
+                  <div v-for="item in agentPolicyItems(selectedAgent)" :key="item.label" class="policy-item">
+                    <span>{{ item.label }}</span>
+                    <strong>{{ item.value }}</strong>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div v-else class="agent-empty-state">暂无可配置 Agent</div>
+          </div>
+        </div>
+
+        <el-collapse v-model="agentBaselinePanels" class="agent-baseline-collapse">
+          <el-collapse-item name="baseline">
+            <template #title>
+              <div class="baseline-collapse-title">
+                <span>全局默认与安全基线</span>
+                <small>Agent 未覆盖字段时才使用</small>
+              </div>
+            </template>
+            <div class="section-toolbar agent-baseline-actions">
+              <div class="toolbar-head">
+                <span class="toolbar-title">全局基线</span>
+                <span class="toolbar-desc">兜底模型、Prompt、MCP、Skill 与运行开关</span>
+              </div>
+              <el-button size="small" type="primary" :loading="saving.config" @click="saveConfig">保存基线</el-button>
+            </div>
+            <div class="config-grid">
+              <div class="config-section config-section--main surface-card">
+                <div class="section-title">默认会话体验</div>
+                <el-form :model="configForm" label-width="118px">
+                  <el-form-item label="默认模型">
+                    <el-select v-model="configForm.default_provider_id" clearable style="width:100%">
+                      <el-option
+                        v-for="provider in providers"
+                        :key="provider.id"
+                        :label="providerOptionLabel(provider)"
+                        :value="provider.id"
+                        :disabled="!provider.runtime_ready"
+                      />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="欢迎语">
+                    <el-input v-model="configForm.welcome_message" />
+                  </el-form-item>
+                  <el-form-item label="建议问题">
+                    <el-select v-model="configForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" />
+                  </el-form-item>
+                  <el-form-item label="启用 MCP">
+                    <el-select v-model="configForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
+                      <el-option v-for="item in mcpServers" :key="item.id" :label="item.name" :value="item.id" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="启用 Skill">
+                    <el-select v-model="configForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip style="width:100%">
+                      <el-option v-for="item in skills" :key="item.id" :label="item.name" :value="item.id" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="系统提示语">
+                    <el-input v-model="configForm.system_prompt" type="textarea" :rows="8" />
+                  </el-form-item>
+                </el-form>
+              </div>
+              <div class="config-section config-section--runtime surface-card">
+                <div class="section-title">安全基线</div>
+                <div class="runtime-note">Agent 没有覆盖时使用这些开关；只读 Agent 会继续收紧可执行范围。</div>
+                <div class="switch-list">
+                  <div class="switch-item">
+                    <div class="switch-copy">
+                      <span>启用智能助手</span>
+                      <small>关闭后聊天入口不可用，已有会话仍保留。</small>
+                    </div>
+                    <el-switch v-model="configForm.is_enabled" />
+                  </div>
+                  <div class="switch-item">
+                    <div class="switch-copy">
+                      <span>允许生成待执行任务</span>
+                      <small>关闭后只返回分析结果，不创建待确认任务。</small>
+                    </div>
+                    <el-switch v-model="configForm.allow_action_execution" />
+                  </div>
+                </div>
+                <el-form :model="configForm" label-width="126px" class="runtime-form">
+                  <el-form-item label="模型上下文消息数">
+                    <el-input-number v-model="configForm.max_history_messages" :min="4" :max="40" />
+                    <div class="runtime-field-tip">仅限制每次发送给模型的最近用户/助手消息数，不影响会话历史展示。</div>
+                  </el-form-item>
+                </el-form>
               </div>
             </div>
-            <el-form :model="configForm" label-width="126px" class="runtime-form">
-              <el-form-item label="模型上下文消息数">
-                <el-input-number v-model="configForm.max_history_messages" :min="4" :max="40" />
-                <div class="runtime-field-tip">仅限制每次发送给模型的最近用户/助手消息数，不影响会话历史展示。</div>
-              </el-form-item>
-            </el-form>
-          </div>
-        </div>
+          </el-collapse-item>
+        </el-collapse>
       </template>
 
       <template v-else-if="activeTab === 'orchestration'">
@@ -1086,6 +1175,8 @@ const loading = reactive({ page: false })
 const saving = reactive({ config: false, agent: false, provider: false, models: false, mcp: false, skill: false })
 
 const agents = ref([])
+const selectedAgentId = ref(null)
+const agentBaselinePanels = ref([])
 const agentRoles = ref([])
 const providers = ref([])
 const providerPresets = ref([])
@@ -1214,6 +1305,12 @@ const agentSummary = computed(() => ({
   custom: agents.value.filter(item => !item.is_builtin).length,
   fullAuto: agents.value.filter(item => item.execution_policy === 'full_auto').length,
 }))
+const selectedAgent = computed(() => {
+  if (!agents.value.length) return null
+  return agents.value.find(item => item.id === selectedAgentId.value)
+    || agents.value.find(item => item.is_default)
+    || agents.value[0]
+})
 const builtinRoleOptions = [
   { label: '平台管理员', value: 'platform-admin' },
   { label: '运维管理员', value: 'ops-admin' },
@@ -1417,6 +1514,62 @@ function executionPolicyTagType(policy) {
   if (policy === 'read_only') return 'info'
   if (policy === 'full_auto') return 'danger'
   return 'warning'
+}
+
+function namesByIds(items, ids, fallbackText) {
+  const normalizedIds = Array.isArray(ids) ? ids : []
+  if (!normalizedIds.length) return [fallbackText]
+  const idSet = new Set(normalizedIds.map(item => Number(item)))
+  const names = items
+    .filter(item => idSet.has(Number(item.id)))
+    .map(item => item.name || item.slug || String(item.id))
+  return names.length ? names : ['已选择资源不可见']
+}
+
+function agentMcpNames(agent = {}) {
+  return namesByIds(mcpServers.value, agent.enabled_mcp_server_ids, '继承全局 MCP')
+}
+
+function agentSkillNames(agent = {}) {
+  return namesByIds(skills.value, agent.enabled_skill_ids, '继承全局 Skill')
+}
+
+function agentRoleNames(agent = {}) {
+  const codes = Array.isArray(agent.allowed_role_codes) ? agent.allowed_role_codes : []
+  if (!codes.length) return ['仅按 RBAC 控制']
+  const roleMap = new Map(roleOptions.value.map(role => [role.value, role.label]))
+  return codes.map(code => roleMap.get(code) || code)
+}
+
+function agentSuggestedQuestions(agent = {}) {
+  const questions = Array.isArray(agent.suggested_questions) ? agent.suggested_questions.filter(Boolean) : []
+  return questions.length ? questions : ['继承全局建议问题']
+}
+
+function agentCapabilitySummary(agent = {}) {
+  const mcpCount = (agent.enabled_mcp_server_ids || []).length
+  const skillCount = (agent.enabled_skill_ids || []).length
+  if (!mcpCount && !skillCount) return '继承全局'
+  return `MCP ${mcpCount || '继承'} / Skill ${skillCount || '继承'}`
+}
+
+function boolPolicyLabel(value) {
+  if (value === false) return '否'
+  if (value === true) return '是'
+  return '继承'
+}
+
+function agentPolicyItems(agent = {}) {
+  const policy = agent.tool_policy && typeof agent.tool_policy === 'object' && !Array.isArray(agent.tool_policy)
+    ? agent.tool_policy
+    : {}
+  return [
+    { label: '允许只读工具', value: boolPolicyLabel(policy.allow_read_only) },
+    { label: '允许生成任务', value: boolPolicyLabel(policy.allow_generate_task) },
+    { label: '允许执行动作', value: boolPolicyLabel(policy.allow_execute) },
+    { label: '最大风险', value: policy.max_risk_level || '继承 high' },
+    { label: 'Critical 自动执行', value: policy.critical_full_auto ? '允许' : '默认禁止' },
+  ]
 }
 
 function agentMatchesStat(agent = {}, type) {
@@ -1809,6 +1962,9 @@ async function loadAll() {
     ])
     applyConfig(config)
     agents.value = agentData || []
+    if (!agents.value.some(item => item.id === selectedAgentId.value)) {
+      selectedAgentId.value = agents.value.find(item => item.is_default)?.id || agents.value[0]?.id || null
+    }
     agentRoles.value = normalizeList(roleData)
     providerPresets.value = presetData?.presets || []
     providers.value = normalizeProviderList(providerData)
@@ -1968,8 +2124,13 @@ async function saveAgent() {
       is_default: Boolean(agentForm.is_default),
       is_enabled: Boolean(agentForm.is_enabled),
     }
-    if (agentForm.id) await updateAIOpsAgent(agentForm.id, payload)
-    else await createAIOpsAgent(payload)
+    if (agentForm.id) {
+      await updateAIOpsAgent(agentForm.id, payload)
+      selectedAgentId.value = agentForm.id
+    } else {
+      const createdAgent = await createAIOpsAgent(payload)
+      selectedAgentId.value = createdAgent?.id || null
+    }
     agentDialogVisible.value = false
     ElMessage.success('Agent 已保存')
     await loadAll()
@@ -1985,6 +2146,7 @@ async function handleSetDefaultAgent(row) {
   }
   await ElMessageBox.confirm(`确认将 ${row.name} 设为默认 Agent 吗？`, '设为默认', { type: 'warning' })
   await setDefaultAIOpsAgent(row.id)
+  selectedAgentId.value = row.id
   ElMessage.success('默认 Agent 已更新')
   await loadAll()
 }
@@ -1999,6 +2161,7 @@ async function toggleAgentEnabled(row) {
     await ElMessageBox.confirm(`确认停用 Agent ${row.name} 吗？`, '停用确认', { type: 'warning' })
   }
   await updateAIOpsAgent(row.id, { is_enabled: nextEnabled })
+  selectedAgentId.value = row.id
   ElMessage.success(nextEnabled ? 'Agent 已启用' : 'Agent 已停用')
   await loadAll()
 }
@@ -2680,12 +2843,25 @@ onMounted(async () => {
   line-height: 1.4;
 }
 
-.agent-baseline-actions {
-  margin-top: 0;
+.agent-workbench {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
 }
 
-.agent-registry-panel {
-  margin-bottom: 14px;
+.agent-roster,
+.agent-detail {
+  min-width: 0;
+}
+
+.agent-roster {
+  position: sticky;
+  top: 78px;
+}
+
+.agent-roster-head {
+  align-items: flex-start;
 }
 
 .agent-summary-row {
@@ -2693,6 +2869,10 @@ onMounted(async () => {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.agent-summary-row.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .stat-button {
@@ -2714,13 +2894,6 @@ onMounted(async () => {
 .stat-button:focus-visible {
   outline: 2px solid rgba(36, 91, 219, 0.22);
   outline-offset: 2px;
-}
-
-.agent-name-cell {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
 }
 
 .agent-name-line {
@@ -2747,13 +2920,267 @@ onMounted(async () => {
   line-height: 1.3;
 }
 
-.agent-capability-counts {
+.agent-roster-list {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 8px;
+}
+
+.agent-roster-item {
+  width: 100%;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 10px;
+  background: #ffffff;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.agent-roster-item:hover,
+.agent-roster-item.active {
+  border-color: rgba(37, 99, 235, 0.26);
+  background: #f8fbff;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.07);
+}
+
+.agent-roster-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-roster-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-roster-title strong,
+.agent-roster-main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-roster-title strong {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.agent-roster-main span {
   color: #64748b;
   font-size: 12px;
-  line-height: 1.35;
+}
+
+.agent-empty,
+.agent-empty-state {
+  min-height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(148, 163, 184, 0.32);
+  border-radius: 12px;
+  color: #94a3b8;
+  font-size: 12px;
+  background: rgba(248, 250, 252, 0.68);
+}
+
+.agent-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.agent-detail-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-detail-title .agent-name-line strong {
+  font-size: 18px;
+}
+
+.agent-detail-title p {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.agent-detail-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.agent-detail-grid,
+.agent-scope-grid,
+.agent-experience-grid,
+.policy-list {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-detail-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.agent-insight-card,
+.agent-scope-panel,
+.agent-experience-item,
+.policy-item {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.agent-insight-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-insight-card span,
+.agent-scope-panel > span,
+.agent-experience-item > span,
+.policy-item span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agent-insight-card strong,
+.agent-experience-item strong,
+.policy-item strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-insight-card small {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.agent-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-detail-section-title {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.agent-scope-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.agent-scope-panel,
+.agent-experience-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-experience-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.agent-experience-item.wide {
+  grid-column: 1 / -1;
+}
+
+.policy-list {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.policy-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.agent-baseline-collapse {
+  margin-top: 12px;
+  border: none;
+}
+
+.agent-baseline-collapse :deep(.el-collapse-item__header) {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.agent-baseline-collapse :deep(.el-collapse-item__wrap) {
+  border-bottom: none;
+  background: transparent;
+}
+
+.agent-baseline-collapse :deep(.el-collapse-item__content) {
+  padding: 12px 0 0;
+}
+
+.baseline-collapse-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.baseline-collapse-title span {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.baseline-collapse-title small {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.agent-baseline-actions {
+  margin-top: 0;
 }
 
 .agent-drawer-switches {
@@ -3532,7 +3959,27 @@ onMounted(async () => {
     grid-template-columns: 1fr;
   }
 
+  .agent-workbench,
   .config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-roster {
+    position: static;
+  }
+
+  .agent-detail-head {
+    flex-direction: column;
+  }
+
+  .agent-detail-actions {
+    justify-content: flex-start;
+  }
+
+  .agent-detail-grid,
+  .agent-scope-grid,
+  .agent-experience-grid,
+  .policy-list {
     grid-template-columns: 1fr;
   }
 
