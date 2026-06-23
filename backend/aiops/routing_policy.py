@@ -84,12 +84,22 @@ def should_defer_direct_route_to_llm(question, *, provider_ready, route_name='',
         return False
     if has_mutation_intent(question):
         return False
-    if route_name in {'direct_task_resource_lookup'}:
+    llm_first_read_only_routes = {
+        'direct_task_resource_lookup',
+        'direct_alert_root_cause_fastpath',
+        'direct_alerts_fastpath',
+        'latest_alert_root_cause',
+        'deterministic_alert_environment_analysis',
+        'direct_k8s_resource_lookup',
+        'deterministic_k8s_rca',
+        'direct_container_fastpath',
+        'deterministic_service_rca',
+        'direct_logs_fastpath',
+        'direct_events_fastpath',
+        'trace_fastpath',
+    }
+    if route_name in llm_first_read_only_routes:
         return True
-    if route_name in {'direct_k8s_resource_lookup', 'direct_container_fastpath'}:
-        return is_resource_inventory_question(question) and not has_explicit_k8s_scope(question)
-    if selected_action_code and selected_action_code not in {'host_task.generate'}:
-        return is_resource_inventory_question(question) and not has_explicit_k8s_scope(question)
     return False
 
 
@@ -99,6 +109,8 @@ def selected_action_should_preempt_llm(question, selected_action=None, *, provid
     code = selected_action.get('code') or ''
     if code == 'host_task.generate':
         return True
+    if provider_ready and not has_mutation_intent(question):
+        return False
     if should_defer_direct_route_to_llm(question, provider_ready=provider_ready, selected_action_code=code):
         return False
     return True

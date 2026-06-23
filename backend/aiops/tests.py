@@ -69,6 +69,7 @@ from .services import (
     build_action_preflight_contract,
     _should_materialize_host_task,
     _run_tool_call,
+    _run_action_root_cause,
     build_task_draft,
     confirm_action,
     create_pending_task_action_from_draft,
@@ -115,6 +116,23 @@ class AIOpsApiTests(TestCase):
         if isinstance(response.data, dict) and 'results' in response.data:
             return response.data['results']
         return response.data
+
+    def llm_tool_call_response(self, tool_name, arguments, call_id='call-tool'):
+        return {
+            'choices': [{
+                'message': {
+                    'content': '',
+                    'tool_calls': [{
+                        'id': call_id,
+                        'type': 'function',
+                        'function': {
+                            'name': tool_name,
+                            'arguments': json.dumps(arguments, ensure_ascii=False),
+                        },
+                    }],
+                },
+            }],
+        }
 
     def ensure_prod_knowledge_environment(self):
         AIOpsKnowledgeEnvironment.objects.create(
@@ -4533,6 +4551,49 @@ class AIOpsApiTests(TestCase):
         self.assertNotIn('Deployment 副本不可用', assistant_message['content'])
         mocked_completion.assert_not_called()
 
+    def test_action_root_cause_direct_branch_uses_provider_readiness_guard(self):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        self.ensure_prod_knowledge_environment()
+        alert = Alert.objects.create(
+            title='prod checkout action alert',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='monitor',
+            message='checkout error rate high',
+            environment='prod',
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='action-root-cause-direct')
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content=f'分析告警ID {alert.id} 的原因',
+        )
+        action = {
+            'code': 'alert.root_cause',
+            'display_name': '告警根因分析',
+            'risk_level': 'low',
+            'allowed_tools': ['query_alert_root_cause'],
+        }
+
+        result = _run_action_root_cause(
+            session,
+            user_message,
+            self.user,
+            f'分析告警ID {alert.id} 的原因',
+            f'prod 分析告警ID {alert.id} 的原因',
+            {'name': 'prod', 'alert_environments': ['prod']},
+            {'environment': 'prod'},
+            None,
+            [],
+            action,
+            lambda **kwargs: None,
+        )
+
+        self.assertEqual(result['metadata']['execution_mode'], 'direct_alert_root_cause_fastpath')
+        self.assertEqual(result['metadata']['selected_action']['code'], 'alert.root_cause')
+        self.assertIn('query_alert_root_cause', result['tool_calls'])
+
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_direct_alert_root_cause_by_alert_id(self, mocked_completion):
         get_agent_config()
@@ -5047,7 +5108,13 @@ class AIOpsApiTests(TestCase):
             }],
         }
         mocked_completion.side_effect = [
-            {'choices': [{'message': {'content': '{"service":"api-gateway","levels":["warning"],"duration_minutes":30}'}}]},
+            self.llm_tool_call_response('query_logs', {
+                'query': '电商测试环境 gateway 最近半小时 warn日志',
+                'service': 'api-gateway',
+                'levels': ['warning'],
+                'duration_minutes': 30,
+                'limit': 20,
+            }, call_id='call-logs'),
             {
                 'choices': [{
                     'message': {
@@ -5074,7 +5141,7 @@ class AIOpsApiTests(TestCase):
 
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_logs_fastpath')
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'mcp_skills')
         self.assertEqual(assistant_message['tool_calls'], ['query_logs'])
         self.assertNotIn('query_alerts', assistant_message['tool_calls'])
         tool_event_names = [item.get('name') for item in assistant_message['metadata'].get('tool_events', [])]
@@ -5085,7 +5152,7 @@ class AIOpsApiTests(TestCase):
         payload = mocked_run_query.call_args.args[2]
         self.assertEqual(payload['query'], '{container="api-gateway",namespace="ecommerce"} | json | detected_level=~"warn|warning"')
         mocked_completion.assert_called()
-        self.assertEqual(mocked_completion.call_count, 2)
+        self.assertEqual(mocked_completion.call_count, 3)
 
     def test_direct_log_question_requires_explicit_log_marker(self):
         self.assertTrue(_is_direct_log_question('电商测试环境 gateway 最近半小时 warn日志'))
@@ -5152,7 +5219,13 @@ class AIOpsApiTests(TestCase):
         )
         mocked_run_query.return_value = {'logs': []}
         mocked_completion.side_effect = [
-            {'choices': [{'message': {'content': '{"service":"order","levels":["warning"],"duration_minutes":30}'}}]},
+            self.llm_tool_call_response('query_logs', {
+                'query': '电商测试环境订单服务最近半小时的警告日志',
+                'service': 'order',
+                'levels': ['warning'],
+                'duration_minutes': 30,
+                'limit': 20,
+            }, call_id='call-order-logs'),
             {
                 'choices': [{
                     'message': {
@@ -5179,13 +5252,13 @@ class AIOpsApiTests(TestCase):
 
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_logs_fastpath')
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'mcp_skills')
         self.assertEqual(assistant_message['tool_calls'], ['query_logs'])
         self.assertNotIn('query_alerts', assistant_message['tool_calls'])
         self.assertIn('模型分析认为订单服务', assistant_message['content'])
         payload = mocked_run_query.call_args.args[2]
         self.assertEqual(payload['query'], '{container="order",namespace="ecommerce"} | json | detected_level=~"warn|warning"')
-        self.assertEqual(mocked_completion.call_count, 2)
+        self.assertEqual(mocked_completion.call_count, 3)
 
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
@@ -5254,7 +5327,13 @@ class AIOpsApiTests(TestCase):
             }],
         }
         mocked_completion.side_effect = [
-            {'choices': [{'message': {'content': '{"service":"order","levels":["warning","error"],"duration_minutes":30}'}}]},
+            self.llm_tool_call_response('query_logs', {
+                'query': '电商测试环境订单服务最近半小时警告和错误日志',
+                'service': 'order',
+                'levels': ['warning', 'error'],
+                'duration_minutes': 30,
+                'limit': 20,
+            }, call_id='call-combined-logs'),
             {
                 'choices': [{
                     'message': {
@@ -5281,7 +5360,7 @@ class AIOpsApiTests(TestCase):
 
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_logs_fastpath')
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'mcp_skills')
         self.assertEqual(assistant_message['tool_calls'], ['query_logs'])
         self.assertNotIn('query_alerts', assistant_message['tool_calls'])
         tool_event_names = [item.get('name') for item in assistant_message['metadata'].get('tool_events', [])]
@@ -5290,7 +5369,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('WARNING/ERROR', assistant_message['content'])
         payload = mocked_run_query.call_args.args[2]
         self.assertEqual(payload['query'], '{container="order",namespace="ecommerce"} | json | detected_level=~"warn|warning|error|err|fatal|critical|crit"')
-        self.assertEqual(mocked_completion.call_count, 2)
+        self.assertEqual(mocked_completion.call_count, 3)
 
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
@@ -5359,7 +5438,13 @@ class AIOpsApiTests(TestCase):
             }],
         }
         mocked_completion.side_effect = [
-            {'choices': [{'message': {'content': '{"service":"order","levels":["warning","error"],"duration_minutes":30}'}}]},
+            self.llm_tool_call_response('query_logs', {
+                'query': '电商测试环境订单服务最近半小时警告和错误日志',
+                'service': 'order',
+                'levels': ['warning', 'error'],
+                'duration_minutes': 30,
+                'limit': 20,
+            }, call_id='call-conflict-logs'),
             {
                 'choices': [{
                     'message': {
@@ -5386,7 +5471,7 @@ class AIOpsApiTests(TestCase):
 
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_logs_fastpath')
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'mcp_skills')
         self.assertEqual(assistant_message['tool_calls'], ['query_logs'])
         self.assertIn('命中 1 条 WARNING 日志', assistant_message['content'])
         self.assertIn('insufficient inventory', assistant_message['content'])
@@ -5474,7 +5559,13 @@ class AIOpsApiTests(TestCase):
             '  2026-05-21T15:52:03 / WARN / insufficient inventory\n'
         )
         mocked_completion.side_effect = [
-            {'choices': [{'message': {'content': '{"service":"order","levels":["warning","error"],"duration_minutes":30}'}}]},
+            self.llm_tool_call_response('query_logs', {
+                'query': '电商测试环境订单服务最近半小时警告和错误日志',
+                'service': 'order',
+                'levels': ['warning', 'error'],
+                'duration_minutes': 30,
+                'limit': 20,
+            }, call_id='call-list-only-logs'),
             {'choices': [{'message': {'content': list_only_answer}}]},
             {'choices': [{'message': {'content': list_only_answer}}]},
             {'choices': [{'message': {'content': list_only_answer}}]},
@@ -5490,14 +5581,14 @@ class AIOpsApiTests(TestCase):
 
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_logs_fastpath')
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'mcp_skills')
         self.assertIn(assistant_message['metadata']['formatter_mode'], {'fallback', 'draft_only'})
         self.assertIn('结论：', assistant_message['content'])
         self.assertIn('共同模式', assistant_message['content'])
         self.assertIn('建议操作：', assistant_message['content'])
         self.assertIn('insufficient inventory', assistant_message['content'])
         self.assertNotIn('智能助手回复', assistant_message['content'])
-        self.assertEqual(mocked_completion.call_count, 4)
+        self.assertEqual(mocked_completion.call_count, 5)
 
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_direct_container_fastpath_uses_environment_scope(self, mocked_completion):
@@ -5984,7 +6075,7 @@ class AIOpsApiTests(TestCase):
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
-    def test_send_message_direct_events_fastpath_skips_llm_planning_when_provider_ready(self, mocked_completion):
+    def test_send_message_events_uses_llm_tool_planning_when_provider_ready(self, mocked_completion):
         provider = AIOpsModelProvider.objects.create(
             name='mock-events-fastpath-provider',
             provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
@@ -6011,13 +6102,40 @@ class AIOpsApiTests(TestCase):
             result=EventRecord.RESULT_SUCCESS,
             environment='prod-events',
         )
-        mocked_completion.return_value = {
-            'choices': [{
-                'message': {
-                    'content': '结论：\n今天 prod 环境有 checkout 发布完成事件。\n关键点：\n- query_events 返回 checkout 发布完成。\n建议：\n- 如需排查风险，继续关联变更后的告警和日志。\n可继续查看：事件墙',
-                },
-            }],
-        }
+        mocked_completion.side_effect = [
+            {
+                'choices': [{
+                    'message': {
+                        'content': '',
+                        'tool_calls': [{
+                            'id': 'call-events',
+                            'type': 'function',
+                            'function': {
+                                'name': 'query_events',
+                                'arguments': json.dumps({
+                                    'query': 'prod 今天这个环境有哪些事件',
+                                    'limit': 10,
+                                }, ensure_ascii=False),
+                            },
+                        }],
+                    },
+                }],
+            },
+            {
+                'choices': [{
+                    'message': {
+                        'content': '结论：\n今天 prod 环境有 checkout 发布完成事件。\n关键点：\n- query_events 返回 checkout 发布完成。\n建议：\n- 如需排查风险，继续关联变更后的告警和日志。\n可继续查看：事件墙',
+                    },
+                }],
+            },
+            {
+                'choices': [{
+                    'message': {
+                        'content': '结论：\n今天 prod 环境有 checkout 发布完成事件。\n关键点：\n- query_events 返回 checkout 发布完成。\n建议：\n- 如需排查风险，继续关联变更后的告警和日志。\n可继续查看：事件墙',
+                    },
+                }],
+            },
+        ]
         session_response = self.client.post('/api/aiops/sessions/', {'title': 'direct-events-provider'}, format='json')
         session_id = session_response.data['id']
         AIOpsChatSession.objects.filter(pk=session_id).update(context={'current_environment': {'name': 'prod'}})
@@ -6030,15 +6148,14 @@ class AIOpsApiTests(TestCase):
 
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_events_fastpath')
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'mcp_skills')
         self.assertEqual(assistant_message['metadata']['selected_action']['code'], 'change.correlation')
         self.assertTrue(assistant_message['metadata']['action_trace']['hit'])
-        self.assertEqual(assistant_message['metadata']['event_filters']['date_filter'], 'today')
         self.assertEqual(assistant_message['tool_calls'], ['query_events'])
         self.assertIn('checkout 发布完成', assistant_message['content'])
-        self.assertEqual(mocked_completion.call_count, 1)
-        called_payload = mocked_completion.call_args.args[1]
-        self.assertNotIn('tools', called_payload)
+        self.assertEqual(mocked_completion.call_count, 3)
+        planning_payload = mocked_completion.call_args_list[0].args[1]
+        self.assertIn('tools', planning_payload)
 
     @mock.patch('aiops.services._request_model_completion')
     def test_preset_alert_question_runs_with_environment_scope(self, mocked_completion):
@@ -7486,7 +7603,7 @@ class AIOpsApiTests(TestCase):
 
         assistant_message = response.data['assistant_message']
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_alerts_fastpath')
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'mcp_skills')
         self.assertIn('query_alerts', assistant_message['tool_calls'])
         self.assertGreaterEqual(mocked_completion.call_count, 1)
 

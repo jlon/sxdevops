@@ -82,6 +82,7 @@ from .routing_policy import (
     has_non_k8s_inventory_scope,
     is_non_k8s_inventory_question,
     selected_action_should_preempt_llm,
+    should_defer_direct_route_to_llm,
     should_use_task_resource_fallback,
 )
 from .tool_registry import (
@@ -337,7 +338,7 @@ BUILTIN_MCP_SERVERS = [
         'name': '时间中心 MCP',
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询事件墙中的关键事件与最近动态。',
-        'tool_whitelist': ['query_event_wall'],
+        'tool_whitelist': ['query_event_wall', 'query_events'],
     },
     {
         'name': '容器管理 MCP',
@@ -8726,7 +8727,10 @@ def _run_self_heal_recommendation_evidence(session, user_message, user, question
 
 
 def _run_action_root_cause(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
-    if _is_direct_alert_analysis_question(question):
+    if (
+        _is_direct_alert_analysis_question(question)
+        and not should_defer_direct_route_to_llm(question, provider_ready=_provider_is_ready(provider), route_name='direct_alert_root_cause_fastpath')
+    ):
         emit(
             step={
                 'title': '告警根因直接分析',
@@ -15816,7 +15820,11 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             prefer_llm=provider_ready,
         )
         return _attach_selected_action_metadata(result, direct_action, extra_metadata={'action_route': 'direct_alert_root_cause_fastpath'}) if direct_action else result
-    if _is_direct_alert_list_question(question) and not (selected_action and selected_action.get('code') == 'change.correlation'):
+    if (
+        _is_direct_alert_list_question(question)
+        and not (selected_action and selected_action.get('code') == 'change.correlation')
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='direct_alerts_fastpath')
+    ):
         result = _direct_alert_list_fastpath(
             session,
             user_message,
@@ -15831,7 +15839,10 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         )
         alert_action = selected_action if selected_action and selected_action.get('code') == 'alert.root_cause' else _action_registry_item_by_code('alert.root_cause', user=user)
         return _attach_selected_action_metadata(result, alert_action, extra_metadata={'action_route': 'direct_alerts_fastpath'}) if alert_action else result
-    if _is_latest_alert_root_cause_question(question):
+    if (
+        _is_latest_alert_root_cause_question(question)
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='latest_alert_root_cause')
+    ):
         result = _run_latest_alert_rca_evidence(
             session,
             user_message,
@@ -15851,7 +15862,11 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         and selected_action.get('code') == 'change.correlation'
         and _is_change_correlation_analysis_question(question)
     )
-    if _is_alert_environment_analysis_question(question) and not change_correlation_selected:
+    if (
+        _is_alert_environment_analysis_question(question)
+        and not change_correlation_selected
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='deterministic_alert_environment_analysis')
+    ):
         alert_action = selected_action if selected_action and selected_action.get('code') == 'alert.root_cause' else _action_registry_item_by_code('alert.root_cause', user=user)
         return _run_alert_environment_analysis_evidence(
             session,
@@ -15866,7 +15881,10 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             alert_action,
             emit,
         )
-    if _is_direct_k8s_resource_lookup_question(question):
+    if (
+        _is_direct_k8s_resource_lookup_question(question)
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='direct_k8s_resource_lookup')
+    ):
         resource_type = _detect_k8s_resource_type(question)
         tool_name = 'query_k8s_cluster_summary' if resource_type == 'pods' else 'query_k8s_resources'
         arguments = (
@@ -15960,7 +15978,10 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         )
         task_action = _action_registry_item_by_code('host_task.generate', user=user)
         return _attach_selected_action_metadata(result, task_action, extra_metadata={'action_route': 'deterministic_task_generation'}) if task_action else result
-    if _is_k8s_analysis_question(question):
+    if (
+        _is_k8s_analysis_question(question)
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='deterministic_k8s_rca')
+    ):
         result = _run_k8s_analysis_evidence(
             session,
             user_message,
@@ -15975,7 +15996,10 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         )
         k8s_action = _action_registry_item_by_code('k8s.diagnose', user=user)
         return _attach_selected_action_metadata(result, k8s_action, extra_metadata={'action_route': 'deterministic_k8s_rca'}) if k8s_action else result
-    if _is_direct_container_question(question):
+    if (
+        _is_direct_container_question(question)
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='direct_container_fastpath')
+    ):
         resource_type = _detect_k8s_resource_type(question)
         if resource_type and resource_type != 'pods':
             tool_name = 'query_k8s_resources'
@@ -16002,7 +16026,10 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             step_text='正在通过平台接口查询容器环境',
             selected_action=_action_registry_item_by_code('k8s.diagnose', user=user),
         )
-    if _is_service_anomaly_question(question):
+    if (
+        _is_service_anomaly_question(question)
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='deterministic_service_rca')
+    ):
         return _run_service_anomaly_evidence(
             session,
             user_message,
@@ -16015,7 +16042,10 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             active_skills,
             emit,
         )
-    if _is_direct_log_question(question):
+    if (
+        _is_direct_log_question(question)
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='direct_logs_fastpath')
+    ):
         parameter_provider = formatter_provider if provider_ready else None
         log_arguments = _direct_log_query_arguments(question, scoped_question, analysis_scope=analysis_scope, provider=parameter_provider)
         emit(
@@ -16077,7 +16107,10 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             step_detail=f'命中明确 PromQL：{promql[:80]}',
             step_text='正在通过平台后端执行 PromQL',
         )
-    if _is_direct_event_list_question(question):
+    if (
+        _is_direct_event_list_question(question)
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='direct_events_fastpath')
+    ):
         event_arguments = _direct_event_query_arguments(question, scoped_question)
         return _direct_tool_fastpath(
             session,
@@ -16099,7 +16132,10 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             step_text='正在直接查询事件中心',
             selected_action=_action_registry_item_by_code('change.correlation', user=user),
         )
-    if _is_trace_focused_question(question):
+    if (
+        _is_trace_focused_question(question)
+        and not should_defer_direct_route_to_llm(question, provider_ready=provider_ready, route_name='trace_fastpath')
+    ):
         trace_arguments = {
             'query': _extract_quoted_trace_query(scoped_question),
             'errors_only': any(keyword in question for keyword in ['异常', '错误', '失败']),
