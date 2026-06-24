@@ -231,11 +231,21 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 ANSWER_FORMATTER_SKILL_SLUG = 'answer-formatter'
+RUNTIME_SKILL_PROMPT_LIMIT = 6
+RUNTIME_SKILL_PROMPT_CHAR_LIMIT = 7000
+FORMATTER_SKILL_PROMPT_LIMIT = 5
+FORMATTER_SKILL_PROMPT_CHAR_LIMIT = 5200
 
 STOPWORDS = {
     '帮我', '一下', '当前', '最近', '平台', '资源', '信息', '告警', '分析', '排查', '问题',
     '哪些', '多少', '怎么', '情况', '查看', '查询', '生成', '执行', '触发', '自动', '任务', '中心',
     '的', '了', '吗', '呢', '和', '与', '及',
+}
+SKILL_TRIGGER_NOISE_TOKENS = STOPWORDS | {
+    '是否', '有没有', '有几个', '几个', '多少个', '列表', '清单', '状态', '正常', '异常',
+    '集群', '节点', '服务', '系统', '环境', '命名空间', '对象', '工作负载',
+    '影响', '范围', '风险', '建议', '原因', '证据', '关联', '时间', '最近',
+    '怎么排', '怎么排查', '排查', '查看', '查询', '分析', '继续', '返回', '结果',
 }
 
 CMDB_QUERY_NOISE_PATTERNS = [
@@ -2413,13 +2423,258 @@ def _skills_for_action(active_skills, action):
     return selected or active_skills
 
 
-def _serialize_skill_trace_item(skill, *, status='available', hit_reason='runtime_enabled', action_code='', tool_calls=None):
-    tool_calls = [str(item or '').strip() for item in (tool_calls or []) if str(item or '').strip()]
-    declared_tools = list(dict.fromkeys([
+def _skill_declared_tools(skill):
+    return list(dict.fromkeys([
         *[str(item or '').strip() for item in (getattr(skill, 'builtin_tools', None) or []) if str(item or '').strip()],
         *[str(item or '').strip() for item in (getattr(skill, 'recommended_tools', None) or []) if str(item or '').strip()],
     ]))
-    used_tools = [name for name in tool_calls if name in declared_tools]
+
+
+def _normalize_match_tokens(*values):
+    return _collect_match_tokens(values, include_chinese_ngrams=True)
+
+
+def _normalize_skill_trigger_tokens(*values):
+    return _collect_match_tokens(values, include_chinese_ngrams=False)
+
+
+def _collect_match_tokens(values, *, include_chinese_ngrams=True):
+    tokens = []
+    for value in values:
+        if isinstance(value, (list, tuple, set)):
+            candidates = value
+        else:
+            candidates = [value]
+        for candidate in candidates:
+            text = str(candidate or '').lower().strip()
+            if not text:
+                continue
+            for token in re.findall(r'[a-zA-Z0-9_.:-]+|[\u4e00-\u9fff]{2,}', text):
+                token = token.strip().lower()
+                if len(token) < 2 or token in STOPWORDS:
+                    continue
+                tokens.append(token)
+            if include_chinese_ngrams:
+                for chunk in re.findall(r'[\u4e00-\u9fff]{2,}', text):
+                    chunk = chunk.strip()
+                    for size in (2, 3, 4):
+                        if len(chunk) < size:
+                            continue
+                        for index in range(0, len(chunk) - size + 1):
+                            token = chunk[index:index + size]
+                            if token and token not in STOPWORDS:
+                                tokens.append(token)
+    return list(dict.fromkeys(tokens))
+
+
+def _tool_match_names(tool_names):
+    names = set()
+    for tool_name in tool_names or []:
+        raw = str(tool_name or '').lower().strip()
+        if not raw:
+            continue
+        normalized = re.sub(r'[^a-zA-Z0-9]+', '_', raw).strip('_')
+        if normalized:
+            names.add(normalized)
+        names.update(_normalize_match_tokens(raw))
+        parts = [part for part in re.split(r'[^a-zA-Z0-9]+', raw) if len(part) >= 2]
+        for size in (2, 3):
+            if len(parts) < size:
+                continue
+            for index in range(0, len(parts) - size + 1):
+                names.add('_'.join(parts[index:index + size]))
+        if len(parts) > 3:
+            names.add('_'.join(parts[-2:]))
+            names.add('_'.join(parts[-3:]))
+    return names
+
+
+def _skill_trigger_tokens(skill):
+    output_contract = getattr(skill, 'output_contract', None) or {}
+    explicit_tokens = []
+    if isinstance(output_contract, dict):
+        explicit_tokens = output_contract.get('trigger_keywords') or output_contract.get('keywords') or []
+    return _normalize_skill_trigger_tokens(
+        getattr(skill, 'name', ''),
+        getattr(skill, 'slug', ''),
+        getattr(skill, 'category', ''),
+        getattr(skill, 'description', ''),
+        getattr(skill, 'examples', None) or [],
+        explicit_tokens,
+    )
+
+
+def _filter_skill_trigger_matches(tokens):
+    return [
+        token
+        for token in tokens or []
+        if token not in SKILL_TRIGGER_NOISE_TOKENS
+    ]
+
+
+def _match_skill_trigger_keywords(trigger_tokens, question_tokens, question=''):
+    trigger_tokens = _filter_skill_trigger_matches(trigger_tokens)
+    question_tokens = set(_filter_skill_trigger_matches(question_tokens))
+    question_text = str(question or '').lower()
+    matches = set(trigger_tokens).intersection(question_tokens)
+    for token in trigger_tokens:
+        if re.fullmatch(r'[\u4e00-\u9fff]{2,8}', token) and token in question_text:
+            matches.add(token)
+    return sorted(matches)
+
+
+def _truncate_skill_content(content, limit=1200):
+    text = str(content or '').strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 1, 0)].rstrip() + '…'
+
+
+def _format_skill_prompt_block(skill, *, include_content=True):
+    declared_tools = _skill_declared_tools(skill)
+    lines = [
+        f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}",
+        f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}",
+        f"  工具依赖：{'、'.join(declared_tools) or '未声明工具依赖'}；用于提示优先取证，真实可用工具由 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。",
+    ]
+    if include_content:
+        content = _truncate_skill_content(getattr(skill, 'content', ''), 1400)
+        if content:
+            lines.append(f"  内容：{content}")
+    return '\n'.join(lines)
+
+
+def _limit_skill_prompt_blocks(skills, *, max_count, max_chars):
+    selected = []
+    total_chars = 0
+    for skill in skills or []:
+        block = _format_skill_prompt_block(skill)
+        projected = total_chars + len(block)
+        if selected and (len(selected) >= max_count or projected > max_chars):
+            break
+        if not selected and projected > max_chars:
+            selected.append(skill)
+            break
+        selected.append(skill)
+        total_chars = projected
+    return selected
+
+
+def _select_runtime_skills(active_skills, *, question='', selected_action=None, tool_calls=None, max_count=RUNTIME_SKILL_PROMPT_LIMIT, max_chars=RUNTIME_SKILL_PROMPT_CHAR_LIMIT, include_formatter=True):
+    active_skills = list(active_skills or [])
+    selected_action = selected_action or {}
+    action_code = selected_action.get('code') or ''
+    action_skill_slugs = set(selected_action.get('skills') or [])
+    question_tokens = set(_normalize_skill_trigger_tokens(question))
+    tool_call_names = _tool_match_names(tool_calls or [])
+    scored = []
+    formatter_skill = None
+
+    for index, skill in enumerate(active_skills):
+        skill_slug = getattr(skill, 'slug', '')
+        if skill_slug == ANSWER_FORMATTER_SKILL_SLUG:
+            formatter_skill = skill
+            continue
+        applicable_actions = set(getattr(skill, 'applicable_actions', None) or [])
+        declared_tools = _skill_declared_tools(skill)
+        declared_tool_set = set(declared_tools)
+        trigger_tokens = set(_skill_trigger_tokens(skill))
+        reasons = []
+        score = 0
+        action_matched = (
+            skill_slug in action_skill_slugs
+            or (not action_skill_slugs and action_code and action_code in applicable_actions)
+        )
+        if action_matched:
+            score += 100
+            reasons.append('action_router')
+        matched_tools = sorted(declared_tool_set.intersection(tool_call_names))
+        if not matched_tools and tool_call_names and _tool_match_names(declared_tools).intersection(tool_call_names):
+            matched_tools = declared_tools
+        can_use_tool_match = not action_code or action_matched or not action_skill_slugs
+        if matched_tools and can_use_tool_match:
+            score += 60 + len(matched_tools)
+            reasons.append('tool_dependency')
+        matched_keywords = _match_skill_trigger_keywords(trigger_tokens, question_tokens, question)
+        can_use_keyword_match = not action_code or action_matched
+        if matched_keywords and can_use_keyword_match:
+            score += min(30, 8 + len(matched_keywords) * 3)
+            reasons.append('keyword')
+        if score <= 0:
+            continue
+        scored.append({
+            'skill': skill,
+            'score': score,
+            'index': index,
+            'reasons': list(dict.fromkeys(reasons)),
+            'matched_keywords': matched_keywords[:8],
+            'matched_tools': matched_tools,
+        })
+
+    if not action_code and any('keyword' in item['reasons'] for item in scored):
+        scored = [item for item in scored if 'keyword' in item['reasons']]
+
+    scored.sort(key=lambda item: (-item['score'], item['index']))
+    if include_formatter and formatter_skill:
+        selected = [formatter_skill, *[item['skill'] for item in scored]]
+    else:
+        selected = [item['skill'] for item in scored]
+    selected = list(dict.fromkeys(selected))
+    limited = _limit_skill_prompt_blocks(selected, max_count=max_count, max_chars=max_chars)
+    selected_slugs = {getattr(skill, 'slug', '') for skill in limited}
+    selected_by_slug = {
+        getattr(item['skill'], 'slug', ''): item
+        for item in scored
+    }
+    trace_items = []
+    for skill in active_skills:
+        slug = getattr(skill, 'slug', '')
+        score_item = selected_by_slug.get(slug) or {}
+        status = 'matched' if slug in selected_slugs else 'omitted'
+        hit_reason = 'skill_prompt_selected' if status == 'matched' else 'not_triggered'
+        if slug == ANSWER_FORMATTER_SKILL_SLUG:
+            status = 'matched' if slug in selected_slugs else 'omitted'
+            hit_reason = 'formatter_available' if status == 'matched' else 'formatter_limited'
+        elif score_item.get('reasons'):
+            hit_reason = ','.join(score_item['reasons'])
+        trace_items.append({
+            **_serialize_skill_trace_item(
+                skill,
+                status=status,
+                hit_reason=hit_reason,
+                action_code=action_code if 'action_router' in (score_item.get('reasons') or []) else '',
+                tool_calls=tool_calls,
+            ),
+            'score': score_item.get('score', 0),
+            'matched_keywords': score_item.get('matched_keywords', []),
+            'matched_tools': score_item.get('matched_tools', []),
+            'prompt_included': slug in selected_slugs,
+        })
+    return {
+        'skills': limited,
+        'trace': {
+            'enabled_count': len(active_skills),
+            'prompt_skill_count': len(limited),
+            'prompt_skill_limit': max_count,
+            'prompt_char_limit': max_chars,
+            'matched_count': _skill_trace_hit_count(trace_items),
+            'called_count': sum(1 for item in trace_items if item.get('status') == 'called'),
+            'tool_matched_count': sum(1 for item in trace_items if item.get('used_tools')),
+            'items': trace_items[:16],
+            'selected_slugs': [getattr(skill, 'slug', '') for skill in limited],
+        },
+    }
+
+
+def _serialize_skill_trace_item(skill, *, status='available', hit_reason='runtime_enabled', action_code='', tool_calls=None):
+    tool_calls = [str(item or '').strip() for item in (tool_calls or []) if str(item or '').strip()]
+    declared_tools = _skill_declared_tools(skill)
+    tool_call_names = _tool_match_names(tool_calls)
+    used_tools = [
+        name
+        for name in declared_tools
+        if _tool_match_names([name]).intersection(tool_call_names)
+    ]
     if used_tools and status == 'available':
         status = 'matched'
         hit_reason = 'tool_dependency'
@@ -2447,7 +2702,28 @@ def _skill_trace_hit_count(items):
     )
 
 
-def _build_skill_trace(active_skills=None, *, selected_action=None, formatter_result=None, tool_calls=None):
+def _build_skill_trace(active_skills=None, *, selected_action=None, formatter_result=None, tool_calls=None, runtime_trace=None):
+    if isinstance(runtime_trace, dict) and runtime_trace.get('items') is not None:
+        formatter_used = bool((formatter_result or {}).get('used'))
+        formatter_fell_back = bool((formatter_result or {}).get('fell_back'))
+        items = []
+        for item in runtime_trace.get('items') or []:
+            next_item = dict(item or {})
+            if next_item.get('slug') == ANSWER_FORMATTER_SKILL_SLUG:
+                if formatter_used and formatter_fell_back:
+                    next_item['status'] = 'fallback'
+                    next_item['hit_reason'] = 'formatter_fallback'
+                elif formatter_used:
+                    next_item['status'] = 'called'
+                    next_item['hit_reason'] = 'answer_formatter'
+            items.append(next_item)
+        return {
+            **runtime_trace,
+            'matched_count': _skill_trace_hit_count(items),
+            'called_count': sum(1 for item in items if item.get('status') == 'called'),
+            'tool_matched_count': sum(1 for item in items if item.get('used_tools')),
+            'items': items[:16],
+        }
     active_skills = list(active_skills or [])
     selected_action = selected_action or {}
     action_code = selected_action.get('code') or ''
@@ -11402,16 +11678,14 @@ def _build_formatter_fact_digest(collected_tool_outputs, citations=None, pending
     return '\n'.join(lines) if lines else '- 当前没有额外摘要，请严格依据事实对象输出。'
 
 
-def _build_answer_formatter_messages(question, draft_content, sections, citations, tool_calls, pending_action_draft, message_type, formatter_skill, active_skills, collected_tool_outputs=None, attempt=1, previous_issue='', reference_answer=''):
-    skill_lines = [
-        (
-            f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}\n"
-            f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}\n"
-            f"  工具依赖：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '未声明工具依赖'}；最终可用工具还要经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。\n"
-            f"  内容：{skill.content}"
+def _build_answer_formatter_messages(question, draft_content, sections, citations, tool_calls, pending_action_draft, message_type, formatter_skill, active_skills, collected_tool_outputs=None, attempt=1, previous_issue='', reference_answer='', skill_prompt_trace=None):
+    skill_lines = [_format_skill_prompt_block(skill) for skill in active_skills or []]
+    skill_trace_line = ''
+    if isinstance(skill_prompt_trace, dict):
+        skill_trace_line = (
+            f"本轮按需注入 Skill：{skill_prompt_trace.get('prompt_skill_count') or len(active_skills or [])}/"
+            f"{skill_prompt_trace.get('enabled_count') or len(active_skills or [])}。"
         )
-        for skill in active_skills or []
-    ]
     profile = _detect_formatter_profile(question, pending_action_draft, message_type, collected_tool_outputs=collected_tool_outputs)
     facts = {
         'question': question or '',
@@ -11447,7 +11721,8 @@ def _build_answer_formatter_messages(question, draft_content, sections, citation
         _formatter_template_for_profile(profile),
         _formatter_example_for_profile(profile),
         f"回答整形 Skill：{formatter_skill.content if formatter_skill else '未配置'}",
-        '当前启用 Skill：',
+        skill_trace_line,
+        '当前按需注入 Skill：',
         '\n'.join(skill_lines) if skill_lines else '- 无',
     ])
     user_prompt = '\n'.join([
@@ -11705,7 +11980,16 @@ def _formatter_repair_issue(content, *, fallback_content='', collected_tool_outp
 
 
 def _run_answer_formatter(provider, *, question, draft_content, sections, citations, tool_calls, pending_action_draft, message_type, active_skills, collected_tool_outputs=None):
-    formatter_skill = _find_skill_by_slug(active_skills, ANSWER_FORMATTER_SKILL_SLUG)
+    formatter_selection = _select_runtime_skills(
+        active_skills,
+        question=question,
+        tool_calls=tool_calls,
+        max_count=FORMATTER_SKILL_PROMPT_LIMIT,
+        max_chars=FORMATTER_SKILL_PROMPT_CHAR_LIMIT,
+        include_formatter=True,
+    )
+    formatter_skills = formatter_selection['skills']
+    formatter_skill = _find_skill_by_slug(formatter_skills, ANSWER_FORMATTER_SKILL_SLUG)
     fallback_content = _build_fallback_answer(
         sections,
         citations,
@@ -11719,6 +12003,7 @@ def _run_answer_formatter(provider, *, question, draft_content, sections, citati
             'content': draft_content or fallback_content,
             'fallback_content': fallback_content,
             'reason': 'formatter_skill_disabled',
+            'skill_trace': formatter_selection['trace'],
         }
 
     profile = _detect_formatter_profile(question, pending_action_draft, message_type, collected_tool_outputs=collected_tool_outputs)
@@ -11735,11 +12020,12 @@ def _run_answer_formatter(provider, *, question, draft_content, sections, citati
             pending_action_draft=pending_action_draft,
             message_type=message_type,
             formatter_skill=formatter_skill,
-            active_skills=active_skills,
+            active_skills=formatter_skills,
             collected_tool_outputs=collected_tool_outputs,
             attempt=attempt,
             previous_issue=previous_issue,
             reference_answer=fallback_content if attempt >= 2 else '',
+            skill_prompt_trace=formatter_selection['trace'],
         )
         completion = _request_model_completion(
             provider,
@@ -11771,6 +12057,7 @@ def _run_answer_formatter(provider, *, question, draft_content, sections, citati
             'fell_back': False,
             'reason': 'formatted',
             'attempts': attempt,
+            'skill_trace': formatter_selection['trace'],
         }
 
     return {
@@ -11780,6 +12067,7 @@ def _run_answer_formatter(provider, *, question, draft_content, sections, citati
         'fell_back': True,
         'reason': 'invalid_formatter_output',
         'attempts': max_attempts,
+        'skill_trace': formatter_selection['trace'],
     }
 
 
@@ -15283,7 +15571,7 @@ def list_mcp_server_tools(server):
             pass
 
 
-def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_diagnostics=None, agent=None):
+def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_diagnostics=None, agent=None, skill_prompt_trace=None):
     mcp_lines = [
         f"- {server.name}：{server.description}；工具：{'、'.join(server.tool_whitelist or [])}"
         for server in active_mcp_servers
@@ -15294,15 +15582,14 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
             diagnostic_lines.append(f"- {item.get('name')}：不可用，原因：{item.get('message') or '连接失败'}")
         elif item.get('status') == 'connected' and item.get('server_type') != AIOpsMCPServer.SERVER_PLATFORM_BUILTIN:
             diagnostic_lines.append(f"- {item.get('name')}：已连接，发现 {item.get('tool_count') or 0} 个外部工具")
-    skill_lines = [
-        (
-            f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}\n"
-            f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}\n"
-            f"  工具依赖：{'、'.join((skill.recommended_tools or []) + (skill.builtin_tools or [])) or '未声明工具依赖'}；最终可用工具还要经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。\n"
-            f"  内容：{skill.content}"
+    skill_lines = [_format_skill_prompt_block(skill) for skill in active_skills]
+    skill_trace_line = ''
+    if isinstance(skill_prompt_trace, dict):
+        skill_trace_line = (
+            f"- 按需注入 Skill：{skill_prompt_trace.get('prompt_skill_count') or len(active_skills)}/"
+            f"{skill_prompt_trace.get('enabled_count') or len(active_skills)}；"
+            f"上限 {skill_prompt_trace.get('prompt_skill_limit') or RUNTIME_SKILL_PROMPT_LIMIT} 个。"
         )
-        for skill in active_skills
-    ]
     action_lines = [
         (
             f"- {action['code']}（{action['display_name']}）：{action['description']}；"
@@ -15340,8 +15627,9 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '- Action 是任务入口和流程策略，决定 agent 模式、上下文、预检、风险、确认流、结构化输出和默认 Skill。',
         '- Skill 是能力包，声明工具依赖，并提供 SOP、证据清单、查询规范、风险判断和回答格式。',
         '- 最终可调用工具必须同时满足选中 Skill 工具依赖、MCP 可用、用户 RBAC 和 Action 安全策略。',
-        '启用 Skill：',
-        '\n'.join(skill_lines) if skill_lines else '- 当前无启用 Skill',
+        '按需注入 Skill：',
+        skill_trace_line,
+        '\n'.join(skill_lines) if skill_lines else '- 当前无按需注入 Skill',
         '可用 Action Registry：',
         '\n'.join(action_lines) if action_lines else '- 当前无可用 action',
         '当前用户权限：',
@@ -16896,6 +17184,22 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         )
 
     failed_mcp_count = len([item for item in mcp_diagnostics if item.get('status') == 'failed'])
+    planner_tool_candidates = []
+    if action_tool_filter.get('enforced'):
+        planner_tool_candidates = list(action_tool_filter.get('exposed_tools') or [])
+    elif selected_action:
+        planner_tool_candidates = list(selected_action.get('allowed_tools') or [])
+    planner_skill_selection = _select_runtime_skills(
+        active_skills,
+        question=question,
+        selected_action=selected_action,
+        tool_calls=planner_tool_candidates,
+        max_count=RUNTIME_SKILL_PROMPT_LIMIT,
+        max_chars=RUNTIME_SKILL_PROMPT_CHAR_LIMIT,
+        include_formatter=True,
+    )
+    prompt_skills = planner_skill_selection['skills']
+    skill_prompt_trace = planner_skill_selection['trace']
     external_tool_count = len([name for name, item in registry.items() if item.get('kind') == 'external'])
     action_filter_detail = ''
     if action_tool_filter.get('enforced'):
@@ -16906,7 +17210,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     emit(
         step={
             'title': '\u52a0\u8f7d MCP \u4e0e Skill',
-            'detail': f'\u5df2\u542f\u7528 {len(active_mcp_servers)} \u4e2a MCP\uff0c{len(active_skills)} \u4e2a Skill\uff0c外部工具 {external_tool_count} 个，失败 {failed_mcp_count} 个{action_filter_detail}。',
+            'detail': f'\u5df2\u542f\u7528 {len(active_mcp_servers)} \u4e2a MCP\uff0c{len(active_skills)} \u4e2a Skill，本轮注入 {len(prompt_skills)} 个，外部工具 {external_tool_count} 个，失败 {failed_mcp_count} 个{action_filter_detail}。',
             'status': PROCESSING_STATUS_COMPLETED,
         },
         text='\u6b63\u5728\u89c4\u5212\u5de5\u5177\u8c03\u7528',
@@ -16921,7 +17225,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     collected_tool_outputs = []
 
     messages = [
-        {'role': 'system', 'content': _build_runtime_prompt(runtime_config, active_mcp_servers, active_skills, user, mcp_diagnostics=mcp_diagnostics, agent=agent)},
+        {'role': 'system', 'content': _build_runtime_prompt(runtime_config, active_mcp_servers, prompt_skills, user, mcp_diagnostics=mcp_diagnostics, agent=agent, skill_prompt_trace=skill_prompt_trace)},
         *_build_history_messages(session, runtime_config, before_message=user_message),
     ]
     session_memory = _build_session_memory_snapshot(session)
@@ -17087,10 +17391,12 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                     'fallback_reason': str(exc)[:300],
                     'mcp_diagnostics': mcp_diagnostics,
                     'action_tool_filter': action_tool_filter,
+                    'planning_skill_trace': skill_prompt_trace,
                     'skill_trace': _build_skill_trace(
                         active_skills,
                         formatter_result={'fell_back': True},
                         tool_calls=executed_tool_names,
+                        runtime_trace=skill_prompt_trace,
                     ),
                 },
             }
@@ -17233,10 +17539,13 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             'mcp_diagnostics': mcp_diagnostics,
             'action_tool_filter': action_tool_filter,
             'incident_context': session_memory.get('incident_context') or {},
+            'planning_skill_trace': skill_prompt_trace,
+            'formatter_skill_trace': (formatter_result or {}).get('skill_trace') or {},
             'skill_trace': _build_skill_trace(
                 active_skills,
                 formatter_result=formatter_result,
                 tool_calls=executed_tool_names,
+                runtime_trace=(formatter_result or {}).get('skill_trace') or skill_prompt_trace,
             ),
         },
     }
