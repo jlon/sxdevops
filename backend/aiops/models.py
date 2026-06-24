@@ -369,8 +369,10 @@ class AIOpsChatMessage(models.Model):
 
 class AIOpsPendingAction(models.Model):
     ACTION_EXECUTE_HOST_TASK = 'execute_host_task'
+    ACTION_CREATE_AIOPS_SKILL = 'create_aiops_skill'
     ACTION_CHOICES = [
         (ACTION_EXECUTE_HOST_TASK, '执行主机任务'),
+        (ACTION_CREATE_AIOPS_SKILL, '创建 AIOps Skill'),
     ]
 
     RISK_LOW = 'low'

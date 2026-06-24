@@ -25,6 +25,7 @@ PLATFORM_TOOL_EXECUTORS = {
     'query_recent_changes',
     'query_host_tasks',
     'generate_host_task',
+    'draft_aiops_skill',
 }
 
 
@@ -52,6 +53,7 @@ TOOL_PERMISSION_MAP = {
     'query_recent_changes': ('any', ['ops.deployment.view']),
     'query_host_tasks': ('any', ['ops.host.execute']),
     'generate_host_task': ('any', ['aiops.task.generate']),
+    'draft_aiops_skill': ('any', ['aiops.config.manage']),
 }
 
 
@@ -105,3 +107,11 @@ def validate_platform_tool_registry(active_mcp_servers, platform_server_type, us
         'executor_not_whitelisted': sorted((catalog_tool_names & executable) - whitelisted),
         'feature_disabled': sorted(disabled),
     }
+
+
+def filter_registered_platform_tools(tool_names):
+    return [
+        tool_name
+        for tool_name in filter_feature_tools(tool_names or [])
+        if tool_name in PLATFORM_TOOL_EXECUTORS
+    ]

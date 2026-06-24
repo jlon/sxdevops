@@ -87,6 +87,7 @@ from .routing_policy import (
     should_use_task_resource_fallback,
 )
 from .tool_registry import (
+    filter_registered_platform_tools,
     platform_tool_allowed,
     validate_platform_tool_registry,
     whitelisted_platform_tool_names,
@@ -345,6 +346,12 @@ BUILTIN_MCP_SERVERS = [
         'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
         'description': '查询任务记录并生成任务中心草稿。',
         'tool_whitelist': ['query_task_resources', 'query_host_tasks', 'query_task_center', 'generate_host_task'],
+    },
+    {
+        'name': '协同沉淀 MCP',
+        'server_type': AIOpsMCPServer.SERVER_PLATFORM_BUILTIN,
+        'description': '生成需要用户确认的团队 Skill 草案，确认后沉淀到智能体配置。',
+        'tool_whitelist': ['draft_aiops_skill'],
     },
     {
         'name': '时间中心 MCP',
@@ -863,6 +870,45 @@ BUILTIN_SKILLS = [
 - 高风险回滚必须走审批、dry-run 或演练确认。""",
         'allowed_role_codes': [],
     },
+    {
+        'name': 'skill-creator',
+        'slug': 'skill-creator',
+        'category': 'Skill 工程',
+        'description': '把用户提供的排障流程、查询规范或运维经验沉淀为 SxDevOps 可保存的团队 Skill 草案。',
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'applicable_actions': ['skill.create'],
+        'examples': [
+            '把这套 HBase 集群巡检流程沉淀成 Skill',
+            '创建一个用于分析 Redis 慢查询的 Skill',
+            '根据刚才的排障过程生成团队 Skill',
+        ],
+        'builtin_tools': ['draft_aiops_skill'],
+        'recommended_tools': [],
+        'max_iterations': 2,
+        'risk_level': AIOpsSkill.RISK_DRAFT,
+        'output_contract': {
+            'sections': ['Skill 草案', '触发场景', '工具依赖', '确认项'],
+            'blocks': ['approval_form', 'risk_notice'],
+            'trigger_keywords': ['skill', '技能', '能力包', '沉淀', '创建 skill', '新增 skill'],
+        },
+        'content': """职责：
+- 将用户的流程、SOP、查询规范或领域经验整理成 SxDevOps Skill 草案。
+- 只生成草案，必须调用 draft_aiops_skill，等待用户确认后才会写入平台。
+
+草案要求：
+1. name 和 slug 要短、稳定、可读；slug 使用小写字母、数字和短横线。
+2. description 写清适用场景和触发意图，避免空泛描述。
+3. content 只放 LLM 执行任务时真正需要的步骤、约束、证据口径和输出要求。
+4. applicable_actions 绑定最相关的 Action；不确定时绑定 skill.create 或留空，不要乱绑定执行类 Action。
+5. builtin_tools 只声明现有平台工具，例如 query_task_resources、query_logs、query_traces、query_alerts、query_knowledge_graph、query_k8s_resources。
+6. output_contract 可包含 sections、blocks、trigger_keywords；trigger_keywords 要能覆盖用户常用叫法。
+7. 不要在 Skill 中写死客户私密数据、临时 URL、账号、密码、Token 或不可复用的一次性命令。
+
+输出要求：
+- 说明将创建的 Skill 名称、用途、触发方式和工具依赖。
+- 明确这是待确认草案，确认后保存为团队 Skill。""",
+        'allowed_role_codes': [],
+    },
 ]
 
 BUILTIN_ACTION_REGISTRY = [
@@ -1071,6 +1117,35 @@ BUILTIN_ACTION_REGISTRY = [
             '帮我在电商测试环境安装 Redis',
             '直接生成修改 monitoring 命名空间 kube-prome Service type 为 NodePort 的任务',
             '在电商测试环境生成一份服务器健康检查任务',
+        ],
+    },
+    {
+        'code': 'skill.create',
+        'display_name': 'Skill 创建',
+        'category': '协同沉淀',
+        'description': '把排障流程、查询规范或团队经验整理为待确认的 AIOps Skill 草案。',
+        'risk_level': 'draft',
+        'agent_mode': 'direct',
+        'required_context': [],
+        'allowed_tools': [
+            'draft_aiops_skill',
+        ],
+        'skills': [
+            'skill-creator',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'skill_name', 'label': 'Skill 名称', 'required': False},
+            {'name': 'usage_scene', 'label': '适用场景', 'required': False},
+            {'name': 'source_process', 'label': '流程内容', 'required': False},
+        ],
+        'output_blocks': ['approval_form', 'risk_notice'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze', 'aiops.config.manage'],
+        'suggested_questions': [
+            '把刚才的 HBase 巡检流程沉淀成 Skill',
+            '创建一个 Redis 慢查询分析 Skill',
+            '新增一个用于日志异常聚合的 Skill',
         ],
     },
     {
@@ -1794,6 +1869,165 @@ def _unique_aiops_slug(model, source, prefix='item'):
     return slug
 
 
+def _normalize_aiops_skill_slug(value, fallback='skill'):
+    base = re.sub(r'[^a-zA-Z0-9_-]+', '-', str(value or '').lower()).strip('-_')[:120]
+    if not base:
+        base = f'{fallback}-{uuid.uuid4().hex[:8]}'
+    return base
+
+
+def _unique_aiops_skill_name(source):
+    base_name = str(source or '').strip()[:128] or f'Skill {uuid.uuid4().hex[:8]}'
+    candidate = base_name
+    suffix = 2
+    while AIOpsSkill.objects.filter(name=candidate).exists():
+        suffix_text = f' {suffix}'
+        candidate = f'{base_name[:128 - len(suffix_text)]}{suffix_text}'
+        suffix += 1
+    return candidate
+
+
+def _normalize_text_list(value, *, limit=20):
+    if value in (None, ''):
+        return []
+    values = value if isinstance(value, list) else [value]
+    normalized = []
+    for item in values:
+        text = str(item or '').strip()
+        if text and text not in normalized:
+            normalized.append(text)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _normalize_skill_risk_level(value):
+    allowed = {choice[0] for choice in AIOpsSkill.RISK_CHOICES}
+    normalized = str(value or AIOpsSkill.RISK_DRAFT).strip()
+    return normalized if normalized in allowed else AIOpsSkill.RISK_DRAFT
+
+
+def _safe_skill_max_iterations(value):
+    try:
+        return max(0, min(int(value or 0), 8))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _build_skill_draft_from_arguments(user, question='', draft_request=None):
+    draft_request = draft_request if isinstance(draft_request, dict) else {}
+    raw_name = str(draft_request.get('name') or draft_request.get('title') or '').strip()
+    description = str(draft_request.get('description') or '').strip()
+    content = str(draft_request.get('content') or draft_request.get('instructions') or '').strip()
+    if not raw_name:
+        return {'error': 'Skill 名称不能为空。'}
+    if not description:
+        return {'error': 'Skill 描述不能为空。'}
+    if not content:
+        return {'error': 'Skill 内容不能为空。'}
+
+    slug_source = draft_request.get('slug') or raw_name
+    slug = _unique_aiops_slug(AIOpsSkill, _normalize_aiops_skill_slug(slug_source), prefix='skill')
+    output_contract = draft_request.get('output_contract')
+    if not isinstance(output_contract, dict):
+        output_contract = {}
+    if not output_contract.get('trigger_keywords'):
+        trigger_keywords = _normalize_text_list(
+            draft_request.get('trigger_keywords') or draft_request.get('keywords') or draft_request.get('examples'),
+            limit=12,
+        )
+        if trigger_keywords:
+            output_contract = {**output_contract, 'trigger_keywords': trigger_keywords}
+
+    return {
+        'action_type': AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL,
+        'name': raw_name[:128],
+        'slug': slug,
+        'description': description[:255],
+        'category': str(draft_request.get('category') or '团队 Skill').strip()[:64],
+        'applicable_actions': _normalize_text_list(draft_request.get('applicable_actions'), limit=12),
+        'examples': _normalize_text_list(draft_request.get('examples'), limit=12),
+        'builtin_tools': filter_registered_platform_tools(_normalize_text_list(draft_request.get('builtin_tools'), limit=20)),
+        'recommended_tools': filter_registered_platform_tools(_normalize_text_list(draft_request.get('recommended_tools'), limit=20)),
+        'max_iterations': _safe_skill_max_iterations(draft_request.get('max_iterations')),
+        'skill_risk_level': _normalize_skill_risk_level(draft_request.get('risk_level')),
+        'risk_level': AIOpsPendingAction.RISK_MEDIUM,
+        'output_contract': output_contract,
+        'source_type': AIOpsSkill.SOURCE_INLINE,
+        'content': content,
+        'allowed_role_codes': _normalize_text_list(draft_request.get('allowed_role_codes'), limit=20),
+        'is_enabled': bool(draft_request.get('is_enabled', True)),
+        'request_summary': str(draft_request.get('request_summary') or question or '').strip(),
+        'created_by': getattr(user, 'username', ''),
+    }
+
+
+def create_pending_skill_action_from_draft(session, assistant_message, draft):
+    return AIOpsPendingAction.objects.create(
+        session=session,
+        message=assistant_message,
+        action_type=AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL,
+        title=draft.get('name') or 'AIOps Skill 草案',
+        risk_level=draft.get('risk_level') or AIOpsPendingAction.RISK_MEDIUM,
+        action_payload=draft,
+    )
+
+
+def create_pending_action_from_draft(session, assistant_message, draft):
+    if (draft or {}).get('action_type') == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
+        return create_pending_skill_action_from_draft(session, assistant_message, draft)
+    return create_pending_task_action_from_draft(session, assistant_message, draft)
+
+
+def _create_aiops_skill_from_draft(action, user, request=None):
+    payload = action.action_payload if isinstance(action.action_payload, dict) else {}
+    if payload.get('action_type') != AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
+        raise ValueError('动作参数不是 Skill 草案。')
+    if not user_has_permissions(user, ['aiops.config.manage']):
+        raise ValueError('当前账号无权创建 AIOps Skill。')
+
+    name = _unique_aiops_skill_name(payload.get('name'))
+    slug = _unique_aiops_slug(AIOpsSkill, _normalize_aiops_skill_slug(payload.get('slug') or name), prefix='skill')
+    skill = AIOpsSkill.objects.create(
+        name=name,
+        slug=slug,
+        description=str(payload.get('description') or '')[:255],
+        category=str(payload.get('category') or '团队 Skill')[:64],
+        applicable_actions=_normalize_text_list(payload.get('applicable_actions'), limit=12),
+        examples=_normalize_text_list(payload.get('examples'), limit=12),
+        builtin_tools=filter_registered_platform_tools(_normalize_text_list(payload.get('builtin_tools'), limit=20)),
+        recommended_tools=filter_registered_platform_tools(_normalize_text_list(payload.get('recommended_tools'), limit=20)),
+        max_iterations=_safe_skill_max_iterations(payload.get('max_iterations')),
+        risk_level=_normalize_skill_risk_level(payload.get('skill_risk_level') or payload.get('risk_level')),
+        output_contract=payload.get('output_contract') if isinstance(payload.get('output_contract'), dict) else {},
+        source_type=AIOpsSkill.SOURCE_INLINE,
+        content=str(payload.get('content') or ''),
+        allowed_role_codes=_normalize_text_list(payload.get('allowed_role_codes'), limit=20),
+        is_builtin=False,
+        is_enabled=bool(payload.get('is_enabled', True)),
+    )
+    record_event(
+        request=request,
+        module='aiops',
+        category='configuration',
+        action='create_skill_from_aiops',
+        title='AIOps 创建团队 Skill',
+        summary=f'已确认并创建 Skill《{skill.name}》',
+        result=EventRecord.RESULT_SUCCESS,
+        resource_type='aiops_skill',
+        resource_id=skill.id,
+        resource_name=skill.name,
+        correlation_id=f'aiops-skill:{skill.id}',
+        metadata={
+            'pending_action_id': action.id,
+            'session_id': action.session_id,
+            'slug': skill.slug,
+            'confirmed_by': user.username,
+        },
+    )
+    return skill
+
+
 def _runbook_source_refs(payload=None, source_task=None, source_session=None):
     payload = payload if isinstance(payload, dict) else {}
     refs = payload.get('source_refs') if isinstance(payload.get('source_refs'), list) else []
@@ -2010,6 +2244,7 @@ def build_runbook_draft_from_payload(payload, user=None, source_task=None, sourc
 
 
 ACTION_ROUTE_PRIORITY = [
+    'skill.create',
     'host_task.generate',
     'self_heal.recommend',
     'log.query_generate',
@@ -2033,11 +2268,25 @@ def _question_contains_any(question, keywords):
     return any(keyword in text for keyword in keywords if keyword)
 
 
+def _is_skill_creation_question(question):
+    lowered = str(question or '').lower()
+    has_skill_scope = _question_contains_any(lowered, [
+        'skill', 'skills', '技能', '能力包', '能力', 'sop', 'runbook', '规范', '经验',
+    ])
+    has_create_or_persist_intent = _question_contains_any(lowered, [
+        '创建', '新增', '新建', '生成', '沉淀', '保存', '固化', '注册', '内置', '转成',
+        'create', 'add', 'save', 'persist',
+    ])
+    return has_skill_scope and has_create_or_persist_intent
+
+
 def _action_question_matches(action_code, question, analysis_scope=None):
     text = str(question or '').strip()
     lowered = text.lower()
     if not text:
         return False
+    if action_code == 'skill.create':
+        return _is_skill_creation_question(question)
     if action_code == 'alert.root_cause':
         has_root_cause_intent = _question_contains_any(lowered, ['根因', '原因', '为什么', '可能原因', '定位', '最新', '最近一条', '最后一条', '这条'])
         has_alert_scope = _question_contains_any(lowered, ['告警', 'alert'])
@@ -2113,6 +2362,8 @@ def _action_question_matches(action_code, question, analysis_scope=None):
             and _question_contains_any(lowered, ['推荐', '方案', '脚本', '处置', '建议', '确认', '可以', '能不能', '是否', '恢复'])
         )
     if action_code == 'host_task.generate':
+        if _is_skill_creation_question(question):
+            return False
         if _looks_like_k8s_task_request(text, {}):
             return True
         has_create_intent = _question_contains_any(lowered, [
@@ -2147,6 +2398,10 @@ def _select_action_for_question(question, user=None, analysis_scope=None):
         if action and _action_question_matches(action_code, question, analysis_scope=analysis_scope):
             return action
     return None
+
+
+def _action_allows_missing_environment(action):
+    return (action or {}).get('code') in {'skill.create'}
 
 
 def _build_action_approval_block(action, *, summary, items=None, metrics=None, actions=None, status='preflight', status_display='待补充', block_id_suffix='preflight'):
@@ -2357,7 +2612,10 @@ def _missing_action_context_fields(action, question, knowledge_environment=None,
     missing = []
     page_context = normalize_page_context(page_context)
 
-    if not _action_context_present('environment', question, knowledge_environment, analysis_scope, page_context):
+    if (
+        not _action_allows_missing_environment(action)
+        and not _action_context_present('environment', question, knowledge_environment, analysis_scope, page_context)
+    ):
         missing.append(_build_action_missing_context_field('environment', '需要先确认唯一知识图谱环境。'))
 
     if action_code == 'log.query_generate' and not _action_context_present('service', question, knowledge_environment, analysis_scope, page_context):
@@ -2565,6 +2823,7 @@ def _select_runtime_skills(active_skills, *, question='', selected_action=None, 
     selected_action = selected_action or {}
     action_code = selected_action.get('code') or ''
     action_skill_slugs = set(selected_action.get('skills') or [])
+    is_skill_creation = _is_skill_creation_question(question)
     question_tokens = set(_normalize_skill_trigger_tokens(question))
     tool_call_names = _tool_match_names(tool_calls or [])
     scored = []
@@ -2574,6 +2833,8 @@ def _select_runtime_skills(active_skills, *, question='', selected_action=None, 
         skill_slug = getattr(skill, 'slug', '')
         if skill_slug == ANSWER_FORMATTER_SKILL_SLUG:
             formatter_skill = skill
+            continue
+        if skill_slug == 'skill-creator' and not (is_skill_creation or action_code == 'skill.create' or 'draft_aiops_skill' in tool_call_names):
             continue
         applicable_actions = set(getattr(skill, 'applicable_actions', None) or [])
         declared_tools = _skill_declared_tools(skill)
@@ -2821,14 +3082,24 @@ def _upsert_action_decision_trace(metadata, *, draft=None, pending_action=None, 
         existing=metadata.get('action_trace') or {},
     )
     if draft:
+        draft_action_type = draft.get('action_type') or AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK
         action_trace['draft_generated'] = True
         action_trace['draft'] = {
             'title': draft.get('name') or draft.get('title') or '',
-            'action_type': AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK,
+            'action_type': draft_action_type,
             'risk_level': draft.get('risk_level') or '',
-            'host_count': draft.get('host_count') or len(draft.get('target_hosts') or []),
-            'task_type': draft.get('task_type') or '',
         }
+        if draft_action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
+            action_trace['draft'].update({
+                'slug': draft.get('slug') or '',
+                'category': draft.get('category') or '',
+                'applicable_actions': draft.get('applicable_actions') or [],
+            })
+        else:
+            action_trace['draft'].update({
+                'host_count': draft.get('host_count') or len(draft.get('target_hosts') or []),
+                'task_type': draft.get('task_type') or '',
+            })
     if pending_action:
         action_trace['pending_action'] = {
             'id': pending_action.id,
@@ -3274,6 +3545,15 @@ def runtime_config_for_agent(config, agent):
         runtime.enabled_skill_ids = agent.enabled_skill_ids
     elif default_agent and default_agent.enabled_skill_ids:
         runtime.enabled_skill_ids = default_agent.enabled_skill_ids
+    if agent.is_default and agent.is_builtin:
+        runtime.enabled_mcp_server_ids = list(dict.fromkeys([
+            *_normalize_json_id_list(config.enabled_mcp_server_ids),
+            *_normalize_json_id_list(runtime.enabled_mcp_server_ids),
+        ]))
+        runtime.enabled_skill_ids = list(dict.fromkeys([
+            *_normalize_json_id_list(config.enabled_skill_ids),
+            *_normalize_json_id_list(runtime.enabled_skill_ids),
+        ]))
     if agent.execution_policy == AIOpsAgentProfile.EXECUTION_READ_ONLY:
         runtime.allow_action_execution = False
     return runtime
@@ -7752,6 +8032,8 @@ def _is_task_generation_question(question):
         return False
     if _is_contextual_failure_followup(question):
         return False
+    if _is_skill_creation_question(question):
+        return False
     if _looks_like_k8s_task_request(question, {}):
         return True
     if _looks_like_install_task_request(question, {}):
@@ -10940,27 +11222,39 @@ def _build_tool_trace_response_block(tool_names, collected_tool_outputs):
 def _build_pending_action_response_block(draft, pending_action=None, disabled=False, disabled_reason='policy'):
     if not draft:
         return None
-    if not draft.get('error'):
+    action_type = draft.get('action_type') or (pending_action.action_type if pending_action else AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK)
+    is_skill_action = action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL
+    if not draft.get('error') and not is_skill_action:
         draft = _ensure_task_draft_title(draft)
     disabled_by_analysis_only = disabled and disabled_reason == 'analysis_only'
     status = pending_action.status if pending_action else ('disabled' if disabled else 'draft')
     status_display = pending_action.get_status_display() if pending_action else ('只分析' if disabled_by_analysis_only else ('已关闭' if disabled else '待确认'))
     disabled_summary = '当前仅分析，不会生成待执行动作。' if disabled_by_analysis_only else '管理员已关闭动作执行，当前只保留分析和任务草稿能力。'
-    is_k8s_task = draft.get('target_type') == HostTask.TARGET_K8S or str(draft.get('task_type') or '').startswith('k8s_')
-    target_label = 'K8s 目标' if is_k8s_task else '目标主机'
-    target_unit = '个' if is_k8s_task else '台'
-    metrics = [
-        {'label': target_label, 'value': f"{draft.get('host_count') or 0} {target_unit}"},
-        {'label': '执行方式', 'value': draft.get('execution_mode') or '--'},
-        {'label': '执行策略', 'value': draft.get('execution_strategy') or '--'},
-        {'label': '超时', 'value': f"{draft.get('timeout_seconds') or '--'}s"},
-    ]
+    if is_skill_action:
+        metrics = [
+            {'label': 'Skill 标识', 'value': draft.get('slug') or '--'},
+            {'label': '适用 Action', 'value': '、'.join(draft.get('applicable_actions') or []) or '未指定'},
+            {'label': '工具依赖', 'value': '、'.join(draft.get('builtin_tools') or []) or '未声明'},
+            {'label': '启用状态', 'value': '确认后启用' if draft.get('is_enabled', True) else '确认后保存为停用'},
+        ]
+    else:
+        is_k8s_task = draft.get('target_type') == HostTask.TARGET_K8S or str(draft.get('task_type') or '').startswith('k8s_')
+        target_label = 'K8s 目标' if is_k8s_task else '目标主机'
+        target_unit = '个' if is_k8s_task else '台'
+        metrics = [
+            {'label': target_label, 'value': f"{draft.get('host_count') or 0} {target_unit}"},
+            {'label': '执行方式', 'value': draft.get('execution_mode') or '--'},
+            {'label': '执行策略', 'value': draft.get('execution_strategy') or '--'},
+            {'label': '超时', 'value': f"{draft.get('timeout_seconds') or '--'}s"},
+        ]
     actions = []
     if pending_action and pending_action.status == AIOpsPendingAction.STATUS_PENDING:
         actions = [
-            {'type': 'confirm', 'label': '确认载入', 'pending_action_id': pending_action.id},
+            {'type': 'confirm', 'label': '确认保存' if is_skill_action else '确认载入并执行', 'pending_action_id': pending_action.id},
             {'type': 'cancel', 'label': '取消', 'pending_action_id': pending_action.id},
         ]
+    elif pending_action and (pending_action.result_payload or {}).get('skill_id'):
+        actions = [{'type': 'open', 'label': '查看 Skill 配置', 'path': '/aiops/config'}]
     elif pending_action and (pending_action.result_payload or {}).get('task_id'):
         actions = [{'type': 'open_task_center', 'label': '查看任务中心'}]
     elif pending_action and (pending_action.result_payload or {}).get('draft_ready'):
@@ -10969,7 +11263,7 @@ def _build_pending_action_response_block(draft, pending_action=None, disabled=Fa
         'id': 'pending-action',
         'type': 'approval_form',
         'title': pending_action.title if pending_action else draft.get('name') or '待确认动作',
-        'summary': '确认后将载入任务中心草稿，可编辑后再执行。' if not disabled else disabled_summary,
+        'summary': ('确认后将保存为团队 Skill。' if is_skill_action else '确认后将录入任务中心并立即执行。') if not disabled else disabled_summary,
         'status': status,
         'status_display': status_display,
         'risk_level': pending_action.risk_level if pending_action else draft.get('risk_level') or AIOpsPendingAction.RISK_LOW,
@@ -11484,13 +11778,18 @@ def _build_fallback_answer(sections, citations, pending_action_draft=None, quest
         return structured_alert_answer
     intro = '已通过已启用的 MCP 与 Skills 获取平台内能力结果。'
     if pending_action_draft:
-        intro = '已生成任务草稿，确认后将在任务中心创建或执行对应任务。'
+        if pending_action_draft.get('action_type') == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
+            intro = '已生成 Skill 草案，确认后将保存为团队 Skill。'
+        else:
+            intro = '已生成任务草稿，确认后将在任务中心创建或执行对应任务。'
     return build_markdown_answer('智能助手回复', sections, citations, intro=intro)
 
 
 def _detect_formatter_profile(question, pending_action_draft, message_type, collected_tool_outputs=None):
     text = (question or '').strip()
     alert_context = _collect_alert_context(collected_tool_outputs or [], [])
+    if (pending_action_draft or {}).get('action_type') == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
+        return 'general'
     if pending_action_draft or message_type == AIOpsChatMessage.TYPE_ACTION:
         return 'task'
     if alert_context.get('entries'):
@@ -11945,7 +12244,13 @@ def _is_formatted_answer_valid(content, *, pending_action_draft=None, message_ty
     if any(not _has_any_heading(text, marker_aliases) for marker_aliases in required_markers):
         return False
     if pending_action_draft or message_type == AIOpsChatMessage.TYPE_ACTION:
-        if not any(keyword in text for keyword in ['任务', '草稿', '确认', '待执行', '任务中心']):
+        action_type = (pending_action_draft or {}).get('action_type')
+        required_keywords = (
+            ['Skill', '技能', '草案', '确认', '团队']
+            if action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL
+            else ['任务', '草稿', '确认', '待执行', '任务中心']
+        )
+        if not any(keyword in text for keyword in required_keywords):
             return False
     elif _count_present_headings(text, [['结论：'], ['依据：'], ['建议操作：'], ['关键点：'], ['可继续查看：']]) < 2:
         return False
@@ -11969,8 +12274,15 @@ def _formatter_repair_issue(content, *, fallback_content='', collected_tool_outp
             details.append('缺少标题：' + '、'.join(missing))
         if text and not any(token in text for token in ['- ', '1.', '2.']):
             details.append('缺少列表化事实或建议项')
-        if pending_action_draft and text and not any(keyword in text for keyword in ['任务', '草稿', '确认', '待执行', '任务中心']):
-            details.append('缺少任务状态说明')
+        if pending_action_draft and text:
+            action_type = pending_action_draft.get('action_type')
+            required_keywords = (
+                ['Skill', '技能', '草案', '确认', '团队']
+                if action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL
+                else ['任务', '草稿', '确认', '待执行', '任务中心']
+            )
+            if not any(keyword in text for keyword in required_keywords):
+                details.append('缺少 Skill 草案状态说明' if action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL else '缺少任务状态说明')
         if not details:
             details.append('结构不完整或信息过少')
         return '输出不够结构化，请重写并修复：' + '；'.join(details) + '。'
@@ -12109,6 +12421,35 @@ def _build_task_sections(draft):
         sections.append({'title': 'K8s Patch', 'items': [json.dumps(payload['patch'], ensure_ascii=False, default=_json_default)]})
     if payload.get('playbook_content'):
         sections.append({'title': 'Playbook 摘要', 'items': ['已生成内联 Playbook 草稿']})
+    return sections
+
+
+def _build_skill_draft_sections(draft):
+    output_contract = draft.get('output_contract') if isinstance(draft.get('output_contract'), dict) else {}
+    trigger_keywords = _normalize_text_list(output_contract.get('trigger_keywords'), limit=12)
+    tool_names = list(dict.fromkeys((draft.get('builtin_tools') or []) + (draft.get('recommended_tools') or [])))
+    sections = [{
+        'title': 'Skill 草案',
+        'items': [
+            f"名称：{draft.get('name') or '-'}",
+            f"标识：{draft.get('slug') or '-'}",
+            f"分类：{draft.get('category') or '-'}",
+            f"风险：{draft.get('skill_risk_level') or AIOpsSkill.RISK_DRAFT}",
+        ],
+    }]
+    sections.append({
+        'title': '触发与绑定',
+        'items': [
+            f"适用 Action：{'、'.join(draft.get('applicable_actions') or []) or '未指定'}",
+            f"触发关键词：{'、'.join(trigger_keywords) or '未指定'}",
+            f"工具依赖：{'、'.join(tool_names) or '未声明'}",
+        ],
+    })
+    if draft.get('description'):
+        sections.append({'title': '用途说明', 'items': [draft['description']]})
+    if draft.get('content'):
+        sections.append({'title': '正文预览', 'items': [_truncate_text(draft['content'], 1000)]})
+    sections.append({'title': '确认项', 'items': ['确认后将保存为团队 Skill，并按草案中的启用状态生效。']})
     return sections
 
 
@@ -14088,15 +14429,64 @@ def confirm_action(action, user, request=None):
         raise ValueError('管理员已关闭机器人动作执行。')
     if action.session.user_id != user.id:
         raise ValueError('只能确认自己的动作。')
+    if action.status != AIOpsPendingAction.STATUS_PENDING:
+        result_payload = action.result_payload if isinstance(action.result_payload, dict) else {}
+        if result_payload.get('skill_id') and isinstance(result_payload.get('skill_draft'), dict):
+            return result_payload['skill_draft']
+        if result_payload.get('draft_ready') and isinstance(result_payload.get('task_draft'), dict):
+            return result_payload['task_draft']
+        raise ValueError('当前动作状态不可确认。')
+
+    if action.action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
+        if not user_has_permissions(user, ['aiops.config.manage']):
+            raise ValueError('当前账号无权创建 AIOps Skill。')
+        action.status = AIOpsPendingAction.STATUS_CONFIRMED
+        action.confirmed_by = user.username
+        action.confirmed_at = timezone.now()
+        action.save(update_fields=['status', 'confirmed_by', 'confirmed_at', 'updated_at'])
+        skill = _create_aiops_skill_from_draft(action, user, request=request)
+        skill_draft = action.action_payload if isinstance(action.action_payload, dict) else {}
+        action.status = AIOpsPendingAction.STATUS_EXECUTED
+        action.result_payload = {
+            'skill_id': skill.id,
+            'skill_name': skill.name,
+            'skill_slug': skill.slug,
+            'skill_draft': skill_draft,
+            'materialized_as_skill': True,
+            'authorization': {
+                'mode': 'manual_confirm',
+                'confirmed_by': user.username,
+                'confirmed_at': timezone.now().isoformat(),
+                'permissions_checked': ['aiops.config.manage'],
+            },
+        }
+        action.save(update_fields=['status', 'result_payload', 'updated_at'])
+        record_event(
+            request=request,
+            module='aiops',
+            category='configuration',
+            action='confirm_create_aiops_skill',
+            title='AIOps 确认创建 Skill',
+            summary=f'已确认并创建 Skill {skill.name}',
+            result=EventRecord.RESULT_SUCCESS,
+            resource_type='aiops_action',
+            resource_id=action.id,
+            resource_name=action.title,
+            correlation_id=f'aiops-action:{action.id}',
+            metadata={
+                'session_id': action.session_id,
+                'pending_action_id': action.id,
+                'skill_id': skill.id,
+                'skill_slug': skill.slug,
+                'confirmed_by': user.username,
+            },
+        )
+        return skill_draft
+
     if action.action_type != AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK:
         raise ValueError('不支持的动作类型。')
     if not user_has_permissions(user, ['aiops.task.execute', 'ops.task.execute', 'ops.host.execute']):
         raise ValueError('当前账号无权执行机器人任务。')
-    if action.status != AIOpsPendingAction.STATUS_PENDING:
-        result_payload = action.result_payload if isinstance(action.result_payload, dict) else {}
-        if result_payload.get('draft_ready') and isinstance(result_payload.get('task_draft'), dict):
-            return result_payload['task_draft']
-        raise ValueError('当前动作状态不可确认。')
 
     normalized_payload = _ensure_task_draft_title(_convert_service_status_draft_to_shell(action.action_payload or {}))
     action.action_payload = normalized_payload
@@ -15855,6 +16245,30 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
                 },
             },
         },
+        'draft_aiops_skill': {
+            'description': '生成 AIOps Skill 待确认草案。用户要求创建、注册、沉淀、保存 Skill/技能/能力包/SOP/排障经验时必须调用。本工具不会直接写入数据库，只返回待确认动作；用户确认后后端才保存为团队 Skill。',
+            'parameters': {
+                'type': 'object',
+                'required': ['name', 'description', 'content'],
+                'properties': {
+                    'name': {'type': 'string', 'description': 'Skill 名称，短且可读，例如 hbase-cluster-inspector。'},
+                    'slug': {'type': 'string', 'description': '可选标识；使用小写字母、数字和短横线。为空时后端按 name 生成。'},
+                    'description': {'type': 'string', 'description': '触发场景和用途说明。'},
+                    'category': {'type': 'string', 'description': '分类，例如 HBase 运维、日志分析、告警排障。'},
+                    'content': {'type': 'string', 'description': 'Skill 正文，写执行步骤、证据口径、边界和输出要求。'},
+                    'applicable_actions': {'type': 'array', 'items': {'type': 'string'}, 'description': '适用 Action code，例如 alert.root_cause、log.query_generate、k8s.diagnose、host_task.generate、skill.create。'},
+                    'examples': {'type': 'array', 'items': {'type': 'string'}, 'description': '用户可能说出的触发示例。'},
+                    'builtin_tools': {'type': 'array', 'items': {'type': 'string'}, 'description': '必需平台工具，例如 query_task_resources、query_logs、query_traces、query_alerts、query_knowledge_graph。'},
+                    'recommended_tools': {'type': 'array', 'items': {'type': 'string'}, 'description': '可选推荐工具。'},
+                    'max_iterations': {'type': 'integer', 'minimum': 0, 'maximum': 8},
+                    'risk_level': {'type': 'string', 'enum': ['read_only', 'draft', 'write', 'execute']},
+                    'output_contract': {'type': 'object', 'description': '结构约束，可包含 sections、blocks、trigger_keywords。'},
+                    'allowed_role_codes': {'type': 'array', 'items': {'type': 'string'}, 'description': '允许角色 code，通常留空表示跟随 Agent/RBAC。'},
+                    'is_enabled': {'type': 'boolean', 'description': '确认保存后是否启用，默认 true。'},
+                    'request_summary': {'type': 'string', 'description': '用户原始诉求摘要。'},
+                },
+            },
+        },
     }
 
     catalog['query_dashboard_metadata'] = {
@@ -16543,6 +16957,42 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
             'message_type': AIOpsChatMessage.TYPE_ACTION,
             'pending_action_draft': draft,
         }
+    if tool_name == 'draft_aiops_skill':
+        started_at = time.time()
+        original_question = getattr(user_message, 'content', '') or ''
+        invocation = _create_tool_invocation(session, user_message, 'draft_aiops_skill', arguments)
+        draft = _build_skill_draft_from_arguments(
+            user,
+            arguments.get('request_summary') or original_question,
+            draft_request=arguments,
+        )
+        if draft.get('error'):
+            _finish_tool_invocation(invocation, {'detail': draft['error']}, started_at, success=False)
+            return {
+                'tool_output': draft,
+                'sections': [{
+                    'title': 'Skill 草案生成限制',
+                    'items': [draft['error'], '请补充 Skill 名称、描述和正文内容后再生成草案。'],
+                }],
+                'citations': [{'title': '智能体配置 / Skill', 'path': '/aiops/config'}],
+                'message_type': AIOpsChatMessage.TYPE_ACTION,
+            }
+        summary = {
+            'name': draft['name'],
+            'slug': draft['slug'],
+            'category': draft.get('category') or '',
+            'applicable_actions': draft.get('applicable_actions') or [],
+            'builtin_tools': draft.get('builtin_tools') or [],
+            'risk_level': draft.get('skill_risk_level') or AIOpsSkill.RISK_DRAFT,
+        }
+        _finish_tool_invocation(invocation, summary, started_at, success=True)
+        return {
+            'tool_output': {'draft': summary, 'requires_confirmation': True, 'action_type': AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL},
+            'sections': _build_skill_draft_sections(draft),
+            'citations': [{'title': '智能体配置 / Skill', 'path': '/aiops/config'}],
+            'message_type': AIOpsChatMessage.TYPE_ACTION,
+            'pending_action_draft': draft,
+        }
     raise ValueError(f'Unsupported tool: {tool_name}')
 
 
@@ -16662,24 +17112,39 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     provider = runtime_context.provider
     active_mcp_servers = runtime_context.active_mcp_servers
     active_skills = runtime_context.active_skills
-    environment_resolution = _resolve_chat_environment(session, question)
-    if environment_resolution.get('status') != 'resolved':
-        emit(
-            step={
-                'title': '环境前置检查',
-                'detail': '未确认唯一知识图谱环境，已停止分析。',
-                'status': PROCESSING_STATUS_FAILED,
-            },
-            text='必须先指定环境',
-        )
-        return _build_environment_required_result(environment_resolution)
-    knowledge_environment = environment_resolution['environment']
-    try:
-        analysis_scope = _build_analysis_scope(knowledge_environment)
-    except Exception as exc:
-        analysis_scope = {'environment': knowledge_environment.get('name'), 'error': str(exc)[:200]}
     session_context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
     page_context = normalize_page_context(session_context.get('page_context'))
+    provider_ready = _provider_is_ready(provider)
+    formatter_provider = provider if provider_ready else None
+    contextual_failure_followup = _is_contextual_failure_followup(question)
+    selected_action = None if contextual_failure_followup else _select_action_for_question(question, user=user, analysis_scope={})
+    if not contextual_failure_followup:
+        selected_action = select_action_by_handler(
+            question,
+            _action_registry_definition_map(user=user, include_unavailable=False),
+            page_context=page_context,
+            current_code=selected_action.get('code') if selected_action else '',
+        ) or selected_action
+    environment_resolution = _resolve_chat_environment(session, question)
+    if environment_resolution.get('status') != 'resolved':
+        if not _action_allows_missing_environment(selected_action):
+            emit(
+                step={
+                    'title': '环境前置检查',
+                    'detail': '未确认唯一知识图谱环境，已停止分析。',
+                    'status': PROCESSING_STATUS_FAILED,
+                },
+                text='必须先指定环境',
+            )
+            return _build_environment_required_result(environment_resolution)
+        knowledge_environment = {}
+        analysis_scope = {}
+    else:
+        knowledge_environment = environment_resolution['environment']
+        try:
+            analysis_scope = _build_analysis_scope(knowledge_environment)
+        except Exception as exc:
+            analysis_scope = {'environment': knowledge_environment.get('name'), 'error': str(exc)[:200]}
     _persist_session_context(
         session,
         agent_slug=agent.slug,
@@ -16693,30 +17158,31 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             'allow_action_execution': runtime_config.allow_action_execution,
             'require_confirmation': runtime_config.require_confirmation,
         },
-        current_environment={'name': knowledge_environment.get('name'), 'aliases': knowledge_environment.get('aliases') or []},
+        current_environment={'name': knowledge_environment.get('name'), 'aliases': knowledge_environment.get('aliases') or []} if knowledge_environment else None,
         analysis_scope=analysis_scope,
         page_context=page_context if page_context else None,
     )
-    emit(
-        step={
-            'title': '环境与知识图谱',
-            'detail': f"已使用环境 {knowledge_environment.get('name')}，图谱节点 {analysis_scope.get('summary', {}).get('node_count', 0)} 个。",
-            'status': PROCESSING_STATUS_COMPLETED,
-        },
-        text='已确认环境并读取知识图谱',
-    )
-    scoped_question = f"{knowledge_environment.get('name')} {question}".strip()
-    provider_ready = _provider_is_ready(provider)
-    formatter_provider = provider if provider_ready else None
-    contextual_failure_followup = _is_contextual_failure_followup(question)
-    selected_action = None if contextual_failure_followup else _select_action_for_question(question, user=user, analysis_scope=analysis_scope)
-    if not contextual_failure_followup:
-        selected_action = select_action_by_handler(
-            question,
-            _action_registry_definition_map(user=user, include_unavailable=False),
-            page_context=page_context,
-            current_code=selected_action.get('code') if selected_action else '',
-        ) or selected_action
+    if knowledge_environment:
+        emit(
+            step={
+                'title': '环境与知识图谱',
+                'detail': f"已使用环境 {knowledge_environment.get('name')}，图谱节点 {analysis_scope.get('summary', {}).get('node_count', 0)} 个。",
+                'status': PROCESSING_STATUS_COMPLETED,
+            },
+            text='已确认环境并读取知识图谱',
+        )
+    else:
+        emit(
+            step={
+                'title': '配置型动作',
+                'detail': '当前动作不依赖知识图谱环境，已跳过环境前置检查。',
+                'status': PROCESSING_STATUS_COMPLETED,
+            },
+            text='已进入配置型动作',
+        )
+    scoped_question = f"{knowledge_environment.get('name')} {question}".strip() if knowledge_environment.get('name') else str(question or '').strip()
+    if selected_action and knowledge_environment:
+        selected_action = _select_action_for_question(question, user=user, analysis_scope=analysis_scope) or selected_action
     if should_use_task_resource_fallback(
         question,
         provider_ready=provider_ready,
@@ -17662,7 +18128,10 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
     action_decision = None
 
     if draft and not draft.get('error'):
-        draft = _ensure_task_draft_title(draft)
+        draft_action_type = draft.get('action_type') or AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK
+        is_skill_draft = draft_action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL
+        if not is_skill_draft:
+            draft = _ensure_task_draft_title(draft)
         action_block_reason = 'policy' if not runtime_config.allow_action_execution else ('analysis_only' if analysis_only else '')
         if action_block_reason:
             if action_block_reason == 'policy':
@@ -17670,6 +18139,14 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
             if analysis_only:
                 merged_metadata['analysis_only_enforced'] = True
             action_decision = {'status': 'blocked', 'reason': action_block_reason}
+        elif is_skill_draft:
+            pending_action = create_pending_action_from_draft(session, assistant_message, draft)
+            merged_metadata['pending_action_id'] = pending_action.id
+            action_decision = {
+                'status': 'pending_confirmation',
+                'reason': 'requires_skill_confirmation',
+                'pending_action_id': pending_action.id,
+            }
         elif _can_full_auto_execute_task(user, agent, draft):
             pending_action = create_pending_task_action_from_draft(session, assistant_message, draft)
             pending_action.status = AIOpsPendingAction.STATUS_CONFIRMED
@@ -17755,7 +18232,7 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
                 action_decision = {'status': 'failed', 'reason': 'task_materialization_error', 'error': str(exc)[:200]}
                 final_content = f"{final_content}\n\n任务中心创建失败：{exc}"
         else:
-            pending_action = create_pending_task_action_from_draft(session, assistant_message, draft)
+            pending_action = create_pending_action_from_draft(session, assistant_message, draft)
             merged_metadata['pending_action_id'] = pending_action.id
             action_decision = {
                 'status': 'pending_confirmation',

@@ -2124,16 +2124,34 @@ def audit_cost_overview(request):
     ))
 
 
+def _pending_action_confirm_permissions(action):
+    if action.action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
+        return ['aiops.config.manage']
+    return ['aiops.task.execute']
+
+
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, build_rbac_permission('aiops.task.execute')])
+@permission_classes([IsAuthenticated])
 def confirm_pending_action(request, pk):
     action = AIOpsPendingAction.objects.select_related('session', 'message').filter(pk=pk).first()
     if not action:
         return Response({'detail': '动作不存在'}, status=status.HTTP_404_NOT_FOUND)
+    required_permissions = _pending_action_confirm_permissions(action)
+    if not user_has_permissions(request.user, required_permissions):
+        return Response({'detail': f"缺少权限：{', '.join(required_permissions)}"}, status=status.HTTP_403_FORBIDDEN)
     try:
-        task_draft = confirm_action(action, request.user, request=request)
+        confirmed_payload = confirm_action(action, request.user, request=request)
         action.refresh_from_db()
         result_payload = action.result_payload if isinstance(action.result_payload, dict) else {}
+        if action.action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
+            return Response({
+                'success': True,
+                'skill_id': result_payload.get('skill_id'),
+                'skill_name': result_payload.get('skill_name'),
+                'skill_slug': result_payload.get('skill_slug'),
+                'skill_draft': confirmed_payload,
+                'materialized_as_skill': bool(result_payload.get('materialized_as_skill')),
+            })
         task = HostTask.objects.filter(pk=result_payload.get('task_id')).first()
         task_summary = None
         if task:
@@ -2146,11 +2164,11 @@ def confirm_pending_action(request, pk):
             }
         return Response({
             'success': True,
-            'task_name': result_payload.get('task_name') or task_draft['name'],
+            'task_name': result_payload.get('task_name') or confirmed_payload['name'],
             'task_id': result_payload.get('task_id'),
             'execution_started': bool(result_payload.get('execution_started')),
             'task': task_summary,
-            'task_draft': task_draft,
+            'task_draft': confirmed_payload,
         })
     except ValueError as exc:
         action.status = AIOpsPendingAction.STATUS_FAILED

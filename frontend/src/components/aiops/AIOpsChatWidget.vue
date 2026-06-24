@@ -1091,6 +1091,12 @@ function isK8sActionPayload(payload) {
 }
 
 function getActionTargetMetric(payload) {
+  if (payload?.action_type === 'create_aiops_skill') {
+    return {
+      label: 'Skill 标识',
+      value: payload?.slug || '--',
+    }
+  }
   const isK8s = isK8sActionPayload(payload)
   return {
     label: isK8s ? 'K8s 目标' : '目标主机',
@@ -1100,17 +1106,25 @@ function getActionTargetMetric(payload) {
 
 function buildApprovalFormBlock(pendingAction) {
   const payload = pendingAction?.action_payload || {}
-  const metrics = [
-    getActionTargetMetric(payload),
-    { label: '执行方式', value: payload.execution_mode || '--' },
-    { label: '执行策略', value: payload.execution_strategy || '--' },
-    { label: '超时', value: `${payload.timeout_seconds || '--'}s` },
-  ]
+  const isSkillAction = pendingAction?.action_type === 'create_aiops_skill' || payload.action_type === 'create_aiops_skill'
+  const metrics = isSkillAction
+    ? [
+        getActionTargetMetric(payload),
+        { label: '适用 Action', value: (payload.applicable_actions || []).join('、') || '未指定' },
+        { label: '工具依赖', value: (payload.builtin_tools || []).join('、') || '未声明' },
+        { label: '启用状态', value: payload.is_enabled === false ? '确认后保存为停用' : '确认后启用' },
+      ]
+    : [
+        getActionTargetMetric(payload),
+        { label: '执行方式', value: payload.execution_mode || '--' },
+        { label: '执行策略', value: payload.execution_strategy || '--' },
+        { label: '超时', value: `${payload.timeout_seconds || '--'}s` },
+      ]
   return {
     type: 'approval_form',
     title: pendingAction?.title || '待确认动作',
     summary: pendingAction?.status === 'pending'
-      ? '确认后将录入任务中心并立即执行。'
+      ? (isSkillAction ? '确认后将保存为团队 Skill。' : '确认后将录入任务中心并立即执行。')
       : '动作已进入下一步处理。',
     status: pendingAction?.status || 'pending',
     status_display: pendingAction?.status_display || '待确认',
@@ -1257,6 +1271,8 @@ function getBlockActions(block, message) {
     if (message?.pending_action?.status === 'pending') {
       if (!actionTypes.has('confirm')) actions.unshift({ type: 'confirm', label: getPendingActionConfirmLabel(message.pending_action) })
       if (!actionTypes.has('cancel')) actions.push({ type: 'cancel', label: '取消' })
+    } else if (message?.pending_action?.result_payload?.skill_id) {
+      if (!actionTypes.has('open')) actions.unshift({ type: 'open', label: '查看 Skill 配置', path: '/aiops/config' })
     } else if (message?.pending_action?.result_payload?.task_id) {
       if (!actionTypes.has('open_task_center')) actions.unshift({ type: 'open_task_center', label: '查看任务中心' })
     } else if (message?.pending_action?.result_payload?.draft_ready) {
@@ -1270,6 +1286,9 @@ function getBlockActions(block, message) {
 }
 
 function getPendingActionConfirmLabel(pendingAction) {
+  if (pendingAction?.action_type === 'create_aiops_skill' || pendingAction?.action_payload?.action_type === 'create_aiops_skill') {
+    return pendingAction?.status === 'pending' ? '确认保存 Skill' : '查看 Skill 配置'
+  }
   return pendingAction?.status === 'pending' ? '确认载入并执行' : '查看任务中心'
 }
 
@@ -1922,6 +1941,11 @@ async function handleAgentChange(value) {
 async function handleConfirmAction(action) {
   try {
     const result = await confirmAIOpsAction(action.id)
+    if (result?.skill_id) {
+      ElMessage.success(`已保存 Skill ${result.skill_name || result.skill_slug}`)
+      await selectSession(currentSessionId.value)
+      return
+    }
     if (result?.task_draft) {
       sessionStorage.setItem('sxdevops.task-center.prefill-draft', JSON.stringify(result.task_draft))
       ElMessage.success(`已载入任务草稿 ${result.task_name}`)
