@@ -334,7 +334,7 @@ class AIOpsChatMessage(models.Model):
     TYPE_CHOICES = [
         (TYPE_TEXT, '文本'),
         (TYPE_ANALYSIS, '分析'),
-        (TYPE_ACTION, '动作'),
+        (TYPE_ACTION, '执行事项'),
         (TYPE_ERROR, '错误'),
     ]
 

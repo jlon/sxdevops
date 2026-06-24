@@ -137,12 +137,12 @@
                 <div class="agent-insight-card">
                   <span>模型来源</span>
                   <strong>{{ selectedAgent.default_provider?.name || agentFallbackLabel(selectedAgent, '模型') }}</strong>
-                  <small>{{ selectedAgent.default_provider?.default_model || '未指定模型时使用默认 Agent 或平台兼容回退' }}</small>
+                  <small>{{ selectedAgent.default_provider?.default_model || '未指定模型时运行时跟随默认 Agent 或平台兼容回退' }}</small>
                 </div>
                 <div class="agent-insight-card">
                   <span>能力覆盖</span>
                   <strong>{{ agentCapabilitySummary(selectedAgent) }}</strong>
-                  <small>MCP / Skill 为空表示跟随默认 Agent 或平台兼容回退</small>
+                  <small>MCP / Skill 为空表示运行时跟随默认 Agent；新建时会先带入当前默认 Agent 能力</small>
                 </div>
               </div>
 
@@ -983,7 +983,7 @@
         </el-form-item>
         <div class="dialog-grid">
           <el-form-item label="默认模型">
-            <el-select v-model="agentForm.default_provider_id" clearable filterable style="width:100%" placeholder="未设置则使用默认 Agent 或平台兼容回退">
+            <el-select v-model="agentForm.default_provider_id" clearable filterable style="width:100%" placeholder="新建时默认带入；清空后运行时跟随默认 Agent">
               <el-option
                 v-for="provider in providers"
                 :key="provider.id"
@@ -1007,23 +1007,23 @@
           </el-select>
         </el-form-item>
         <el-form-item label="启用 MCP">
-          <el-select v-model="agentForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%" placeholder="空表示跟随默认 Agent 或平台兼容回退">
+          <el-select v-model="agentForm.enabled_mcp_server_ids" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%" placeholder="新建时默认带入；清空后运行时跟随默认 Agent">
             <el-option v-for="item in mcpServers" :key="item.id" :label="item.name" :value="item.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="启用 Skill">
-          <el-select v-model="agentForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%" placeholder="空表示跟随默认 Agent 或平台兼容回退">
+          <el-select v-model="agentForm.enabled_skill_ids" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%" placeholder="新建时默认带入；清空后运行时跟随默认 Agent">
             <el-option v-for="item in skills" :key="item.id" :label="item.name" :value="item.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="建议问题">
-          <el-select v-model="agentForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" placeholder="空表示跟随默认 Agent 建议问题" />
+          <el-select v-model="agentForm.suggested_questions" multiple filterable allow-create default-first-option style="width:100%" placeholder="新建时默认带入；清空后运行时跟随默认 Agent" />
         </el-form-item>
         <el-form-item label="欢迎语">
           <el-input v-model="agentForm.welcome_message" />
         </el-form-item>
         <el-form-item label="系统提示语">
-          <el-input v-model="agentForm.system_prompt" type="textarea" :rows="6" placeholder="空表示跟随默认 Agent Prompt" />
+          <el-input v-model="agentForm.system_prompt" type="textarea" :rows="6" placeholder="新建时默认带入；清空后运行时跟随默认 Agent Prompt" />
         </el-form-item>
         <el-form-item label="工具策略">
           <el-input v-model="agentForm.tool_policy_text" type="textarea" :rows="7" />
