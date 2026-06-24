@@ -614,7 +614,7 @@ def _audit_invocation_distribution(request):
             hidden_action_ids = _audit_hidden_trace_ids(message, 'action')
             if _audit_trace_item_id(message, 0, action_trace, 'action') not in hidden_action_ids:
                 code = str(action_trace.get('code') or 'unknown').strip()
-                label = str(action_display_map.get(code) or action_trace.get('display_name') or action_trace.get('code') or '未命名 Action').strip()
+                label = str(action_display_map.get(code) or action_trace.get('display_name') or action_trace.get('code') or '未命名运行策略').strip()
                 if code not in action_counts:
                     action_counts[code] = {'key': code, 'label': label, 'count': 0}
                 action_counts[code]['count'] += 1
@@ -1439,8 +1439,8 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             module='aiops',
             category='audit',
             action='delete_pending_action',
-            title='删除 AIOps 动作审计',
-            summary=f'已删除动作《{action_title}》',
+            title='删除 AIOps 执行审批审计',
+            summary=f'已删除审批事项《{action_title}》',
             resource_type='aiops_pending_action',
             resource_id=action_id,
             resource_name=action_title,
@@ -1455,12 +1455,12 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             return Response({'detail': 'action_ids 必须为数组'}, status=status.HTTP_400_BAD_REQUEST)
         normalized_ids = [int(item) for item in action_ids if str(item).isdigit()]
         if not normalized_ids:
-            return Response({'detail': '请至少选择一个动作'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': '请至少选择一个审批事项'}, status=status.HTTP_400_BAD_REQUEST)
 
         queryset = self.get_queryset().filter(id__in=normalized_ids)
         actions = list(queryset)
         if not actions:
-            return Response({'detail': '未找到可删除的动作'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'detail': '未找到可删除的审批事项'}, status=status.HTTP_404_NOT_FOUND)
 
         deleted_count = len(actions)
         deleted_titles = [item.title for item in actions[:5]]
@@ -1474,8 +1474,8 @@ class AIOpsPendingActionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             module='aiops',
             category='audit',
             action='bulk_delete_pending_actions',
-            title='批量删除 AIOps 动作审计',
-            summary=f'已批量删除 {deleted_count} 个动作',
+            title='批量删除 AIOps 执行审批审计',
+            summary=f'已批量删除 {deleted_count} 个审批事项',
             resource_type='aiops_pending_action',
             resource_id=deleted_count,
             resource_name='、'.join(deleted_titles),
@@ -2135,7 +2135,7 @@ def _pending_action_confirm_permissions(action):
 def confirm_pending_action(request, pk):
     action = AIOpsPendingAction.objects.select_related('session', 'message').filter(pk=pk).first()
     if not action:
-        return Response({'detail': '动作不存在'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'detail': '审批事项不存在'}, status=status.HTTP_404_NOT_FOUND)
     required_permissions = _pending_action_confirm_permissions(action)
     if not user_has_permissions(request.user, required_permissions):
         return Response({'detail': f"缺少权限：{', '.join(required_permissions)}"}, status=status.HTTP_403_FORBIDDEN)
@@ -2182,7 +2182,7 @@ def confirm_pending_action(request, pk):
 def cancel_pending_action(request, pk):
     action = AIOpsPendingAction.objects.select_related('session', 'message').filter(pk=pk).first()
     if not action:
-        return Response({'detail': '动作不存在'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'detail': '审批事项不存在'}, status=status.HTTP_404_NOT_FOUND)
     try:
         cancel_action(action, request.user)
         return Response({'success': True})

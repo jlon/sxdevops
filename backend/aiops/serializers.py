@@ -348,7 +348,7 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
             attrs.get(field, getattr(instance, field, [])) for field in association_fields
         )
         if not has_association:
-            raise serializers.ValidationError('??????????????????????????K8s ???Docker ???????????')
+            raise serializers.ValidationError('请至少绑定一个资源范围，例如环境、系统、服务、主机、K8s 集群或 Docker 主机。')
         is_default = attrs.get('is_default', getattr(instance, 'is_default', False))
         is_enabled = attrs.get('is_enabled', getattr(instance, 'is_enabled', True))
         if is_default and not is_enabled:

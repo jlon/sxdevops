@@ -234,7 +234,7 @@ def build_page_context_summary_block(page_context: Dict[str, Any], action: Optio
         if value:
             metrics.append({'label': label, 'value': value})
     if action:
-        metrics.append({'label': 'Action', 'value': action.get('display_name') or action.get('code') or '--'})
+        metrics.append({'label': '运行策略', 'value': action.get('display_name') or action.get('code') or '--'})
 
     items = []
     hint_labels = {

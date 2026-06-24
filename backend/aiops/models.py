@@ -223,7 +223,7 @@ class AIOpsSkill(models.Model):
     slug = models.SlugField('标识', max_length=128, unique=True)
     description = models.CharField('描述', max_length=255, blank=True, default='')
     category = models.CharField('分类', max_length=64, blank=True, default='')
-    applicable_actions = models.JSONField('适用 Action', default=list, blank=True)
+    applicable_actions = models.JSONField('推荐场景', default=list, blank=True)
     examples = models.JSONField('示例问题', default=list, blank=True)
     builtin_tools = models.JSONField('内置工具', default=list, blank=True)
     recommended_tools = models.JSONField('推荐工具', default=list, blank=True)
@@ -416,11 +416,11 @@ class AIOpsPendingAction(models.Model):
         null=True,
         blank=True,
     )
-    action_type = models.CharField('动作类型', max_length=32, choices=ACTION_CHOICES)
-    title = models.CharField('动作标题', max_length=128, default='')
+    action_type = models.CharField('事项类型', max_length=32, choices=ACTION_CHOICES)
+    title = models.CharField('事项标题', max_length=128, default='')
     risk_level = models.CharField('风险等级', max_length=16, choices=RISK_CHOICES, default=RISK_LOW)
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
-    action_payload = models.JSONField('动作参数', default=dict, blank=True)
+    action_payload = models.JSONField('事项参数', default=dict, blank=True)
     result_payload = models.JSONField('执行结果', default=dict, blank=True)
     confirmed_by = models.CharField('确认人', max_length=64, blank=True, default='')
     confirmed_at = models.DateTimeField('确认时间', null=True, blank=True)
@@ -432,8 +432,8 @@ class AIOpsPendingAction(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['session', 'mirror_source'], name='aiops_action_session_mirror_source_uniq'),
         ]
-        verbose_name = 'AIOps 待确认动作'
-        verbose_name_plural = 'AIOps 待确认动作'
+        verbose_name = 'AIOps 执行审批'
+        verbose_name_plural = 'AIOps 执行审批'
 
     def __str__(self):
         return f'{self.session_id} / {self.action_type}'
@@ -560,7 +560,7 @@ class AIOpsExternalTask(models.Model):
     public_id = models.UUIDField('外部任务 ID', default=uuid.uuid4, unique=True, editable=False)
     source_agent = models.CharField('来源 Agent', max_length=128, blank=True, default='')
     title = models.CharField('任务标题', max_length=128, default='AIOps 外部任务')
-    action_code = models.CharField('Action', max_length=64, blank=True, default='')
+    action_code = models.CharField('运行策略', max_length=64, blank=True, default='')
     agent_mode = models.CharField('Agent 模式', max_length=32, blank=True, default='')
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_QUEUED)
     input_payload = models.JSONField('输入参数', default=dict, blank=True)

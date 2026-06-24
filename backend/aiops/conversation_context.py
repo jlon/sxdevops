@@ -102,7 +102,7 @@ def build_incident_context(memory):
     if failed_tasks:
         next_step = '先用 query_host_tasks 核对上次失败任务，再决定是否需要新的只读排查或任务草稿。'
     elif open_actions:
-        next_step = '先说明待确认动作状态，只有用户明确确认后才能继续执行类动作。'
+        next_step = '先说明待确认事项状态，只有用户明确确认后才能继续执行类任务或变更。'
     elif resource_scope.get('task_resource_environment_ids'):
         next_step = '涉及主机、机器、节点、中间件或非 K8s 集群清单时，优先用 query_task_resources 查资源底座事实。'
     else:

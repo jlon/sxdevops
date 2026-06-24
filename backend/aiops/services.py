@@ -228,7 +228,7 @@ def _normalize_suggested_questions(questions):
 DEFAULT_SYSTEM_PROMPT = (
     '你是 SxDevOps 平台内的 AIOps 智能助手。'
     '必须优先通过可用的 MCP 工具获取平台内结构化数据，严禁编造不存在的资源、告警、日志、链路和执行结果。'
-    '回答时区分事实、推断和建议；涉及执行类动作时，未确认前只能生成草稿。'
+    '回答时区分事实、推断和建议；涉及执行类任务或变更时，未确认前只能生成草稿。'
 )
 
 ANSWER_FORMATTER_SKILL_SLUG = 'answer-formatter'
@@ -547,7 +547,7 @@ BUILTIN_SKILLS = [
 
 输出要求：
 - 明确异常对象、命名空间、状态、关键事件和推荐排查顺序。
-- 高风险建议必须以“待确认动作”表达，不允许直接执行。""",
+- 高风险建议必须以“待确认任务或审批事项”表达，不允许直接执行。""",
         'allowed_role_codes': [],
     },
     {
@@ -557,7 +557,7 @@ BUILTIN_SKILLS = [
         'description': '基于工具事实重组最终回答，输出更稳定的结构化结果。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
         'applicable_actions': ['alert.root_cause', 'change.correlation', 'log.query_generate', 'k8s.diagnose', 'self_heal.recommend', 'host_task.generate'],
-        'examples': ['把工具结果整理成结论、证据、建议', '将任务草稿说明成待确认动作'],
+        'examples': ['把工具结果整理成结论、证据、建议', '将任务草稿说明成待确认任务'],
         'builtin_tools': [],
         'recommended_tools': [],
         'max_iterations': 0,
@@ -572,7 +572,7 @@ BUILTIN_SKILLS = [
 - 不能脱离工具事实自由发挥。
 - 如果工具没有返回证据，要明确说明证据不足。
 - 如果涉及生成任务，要明确当前是任务草稿、待确认创建，还是已经在任务中心创建真实任务。
-- 回答必须包含可执行的下一步，但不能声称未确认动作已经执行。
+- 回答必须包含可执行的下一步，但不能声称未确认事项已经执行。
 - 对告警和故障类问题，要优先保留关键事实：对象、环境、时间窗口、状态、数量、证据来源。""",
         'allowed_role_codes': [],
     },
@@ -735,7 +735,7 @@ BUILTIN_SKILLS = [
 边界：
 - 只读取平台接口返回的集群与日志事实。
 - 不直接执行扩缩容、删除 Pod、重启工作负载、修改配置等写操作。
-- 写操作只能形成建议或待确认动作。""",
+- 写操作只能形成建议、待确认任务或审批事项。""",
         'allowed_role_codes': [],
     },
     {
@@ -757,7 +757,7 @@ BUILTIN_SKILLS = [
         'content': """安全边界：
 - assistant 不能直连集群、Docker daemon 或主机执行命令。
 - 查询类问题只能调用平台后端只读工具。
-- 重启、扩缩容、删除、修改配置、执行脚本都属于高风险动作，必须生成待确认动作。
+- 重启、扩缩容、删除、修改配置、执行脚本都属于高风险操作，必须生成待确认任务。
 
 输出要求：
 - 对用户提出的写操作，先说明风险和需要确认的目标范围。
@@ -795,7 +795,7 @@ BUILTIN_SKILLS = [
         'name': '自愈风险护栏',
         'slug': 'sx-self-heal-risk-guard',
         'category': '自愈安全',
-        'description': '约束自愈推荐必须先评估风险、生成 dry-run 和待确认动作。',
+        'description': '约束自愈推荐必须先评估风险、生成 dry-run 和待确认任务。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
         'applicable_actions': ['self_heal.recommend'],
         'examples': ['推荐一个自愈方案', '这个故障适合自动恢复吗', '是否可以执行巡检脚本'],
@@ -844,7 +844,7 @@ BUILTIN_SKILLS = [
 - K8s Service 修改、Pod 重启、工作负载伸缩等写操作不需要先查实时 K8s 资源列表；即使 query_k8s_resources 未查到对象，也不能据此拒绝生成任务草稿。
 - K8s 写操作必须明确 namespace；无法从用户输入或参数判断时，先提醒用户补充命名空间，不能默认使用 default。
 - 输出要包含任务名称、目标资源数量、执行方式、执行策略、风险和确认项。
-- 未确认前只能是草稿或待确认动作。""",
+- 未确认前只能是草稿或待确认任务。""",
         'allowed_role_codes': [],
     },
     {
@@ -1982,7 +1982,7 @@ def create_pending_action_from_draft(session, assistant_message, draft):
 def _create_aiops_skill_from_draft(action, user, request=None):
     payload = action.action_payload if isinstance(action.action_payload, dict) else {}
     if payload.get('action_type') != AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
-        raise ValueError('动作参数不是 Skill 草案。')
+        raise ValueError('事项参数不是 Skill 草案。')
     if not user_has_permissions(user, ['aiops.config.manage']):
         raise ValueError('当前账号无权创建 AIOps Skill。')
 
@@ -2408,7 +2408,7 @@ def _build_action_approval_block(action, *, summary, items=None, metrics=None, a
     block = {
         'id': f"action-{action.get('code')}-{block_id_suffix}",
         'type': 'approval_form',
-        'title': f"{action.get('display_name') or action.get('code') or '动作'}",
+        'title': f"{action.get('display_name') or action.get('code') or '运行策略'}",
         'summary': summary,
         'status': status,
         'status_display': status_display,
@@ -9592,7 +9592,7 @@ def _run_self_heal_recommendation_evidence(session, user_message, user, question
         'title': '风险提示',
         'items': [
             '自愈只给推荐，不直接执行高风险动作。',
-            '任何执行类动作都应先补充范围与审批信息。',
+            '任何执行类任务或变更都应先补充范围与审批信息。',
         ],
     })
     result = _build_evidence_bundle_result(
@@ -9708,7 +9708,7 @@ def _run_action_log_query(session, user_message, user, question, scoped_question
     emit(
         step={
             'title': '日志查询生成',
-            'detail': '动作路由已选择日志查询生成，直接调用平台日志接口并整理查询语句。',
+            'detail': '运行策略已选择日志查询生成，直接调用平台日志接口并整理查询语句。',
             'status': PROCESSING_STATUS_COMPLETED,
         },
         text='正在生成日志查询',
@@ -11229,7 +11229,7 @@ def _build_pending_action_response_block(draft, pending_action=None, disabled=Fa
     disabled_by_analysis_only = disabled and disabled_reason == 'analysis_only'
     status = pending_action.status if pending_action else ('disabled' if disabled else 'draft')
     status_display = pending_action.get_status_display() if pending_action else ('只分析' if disabled_by_analysis_only else ('已关闭' if disabled else '待确认'))
-    disabled_summary = '当前仅分析，不会生成待执行动作。' if disabled_by_analysis_only else '管理员已关闭动作执行，当前只保留分析和任务草稿能力。'
+    disabled_summary = '当前仅分析，不会生成待执行任务。' if disabled_by_analysis_only else '管理员已关闭任务执行，当前只保留分析和任务草稿能力。'
     if is_skill_action:
         metrics = [
             {'label': 'Skill 标识', 'value': draft.get('slug') or '--'},
@@ -11262,7 +11262,7 @@ def _build_pending_action_response_block(draft, pending_action=None, disabled=Fa
     return {
         'id': 'pending-action',
         'type': 'approval_form',
-        'title': pending_action.title if pending_action else draft.get('name') or '待确认动作',
+        'title': pending_action.title if pending_action else draft.get('name') or ('待确认 Skill' if is_skill_action else '待确认任务'),
         'summary': ('确认后将保存为团队 Skill。' if is_skill_action else '确认后将录入任务中心并立即执行。') if not disabled else disabled_summary,
         'status': status,
         'status_display': status_display,
@@ -14426,16 +14426,16 @@ def _should_materialize_host_task(question, result, draft):
 def confirm_action(action, user, request=None):
     config = get_agent_config()
     if not config.allow_action_execution:
-        raise ValueError('管理员已关闭机器人动作执行。')
+        raise ValueError('管理员已关闭任务执行。')
     if action.session.user_id != user.id:
-        raise ValueError('只能确认自己的动作。')
+        raise ValueError('只能确认自己的审批事项。')
     if action.status != AIOpsPendingAction.STATUS_PENDING:
         result_payload = action.result_payload if isinstance(action.result_payload, dict) else {}
         if result_payload.get('skill_id') and isinstance(result_payload.get('skill_draft'), dict):
             return result_payload['skill_draft']
         if result_payload.get('draft_ready') and isinstance(result_payload.get('task_draft'), dict):
             return result_payload['task_draft']
-        raise ValueError('当前动作状态不可确认。')
+        raise ValueError('当前审批状态不可确认。')
 
     if action.action_type == AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL:
         if not user_has_permissions(user, ['aiops.config.manage']):
@@ -14484,7 +14484,7 @@ def confirm_action(action, user, request=None):
         return skill_draft
 
     if action.action_type != AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK:
-        raise ValueError('不支持的动作类型。')
+        raise ValueError('不支持的审批事项类型。')
     if not user_has_permissions(user, ['aiops.task.execute', 'ops.task.execute', 'ops.host.execute']):
         raise ValueError('当前账号无权执行机器人任务。')
 
@@ -14536,9 +14536,9 @@ def confirm_action(action, user, request=None):
 
 def cancel_action(action, user):
     if action.status != AIOpsPendingAction.STATUS_PENDING:
-        raise ValueError('当前动作状态不可取消。')
+        raise ValueError('当前审批状态不可取消。')
     if action.session.user_id != user.id:
-        raise ValueError('只能取消自己的动作。')
+        raise ValueError('只能取消自己的审批事项。')
     action.status = AIOpsPendingAction.STATUS_CANCELED
     action.confirmed_by = user.username
     action.confirmed_at = timezone.now()
@@ -16248,7 +16248,7 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
             },
         },
         'draft_aiops_skill': {
-            'description': '生成 AIOps Skill 待确认草案。用户要求创建、注册、沉淀、保存 Skill/技能/能力包/SOP/排障经验时必须调用。本工具不会直接写入数据库，只返回待确认动作；用户确认后后端才保存为团队 Skill。',
+            'description': '生成 AIOps Skill 待确认草案。用户要求创建、注册、沉淀、保存 Skill/技能/能力包/SOP/排障经验时必须调用。本工具不会直接写入数据库，只返回待确认草案；用户确认后后端才保存为团队 Skill。',
             'parameters': {
                 'type': 'object',
                 'required': ['name', 'description', 'content'],

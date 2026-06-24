@@ -5,7 +5,7 @@
         <div class="release-hero-title-row">
           <span class="audit-header-icon"><el-icon><Tickets /></el-icon></span>
           <h2>智能体审计</h2>
-          <p class="page-inline-desc">集中查看会话、工具调用、模型成本与待执行动作记录。</p>
+          <p class="page-inline-desc">集中查看会话、工具调用、模型成本与执行审批记录。</p>
         </div>
       </div>
     </section>
@@ -267,7 +267,7 @@
             <el-date-picker v-model="auditFilters.models.timeRange" class="audit-filter-time" size="small" type="datetimerange" format="YYYY-MM-DD HH:mm" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable @change="applyAuditFilters" />
           </template>
           <template v-else-if="activeTab === 'actions'">
-            <el-input v-model="auditFilters.actions.q" class="audit-filter-search" size="small" clearable placeholder="搜索动作 / 会话" @keyup.enter="applyAuditFilters" />
+            <el-input v-model="auditFilters.actions.q" class="audit-filter-search" size="small" clearable placeholder="搜索审批事项 / 会话" @keyup.enter="applyAuditFilters" />
             <el-input v-model="auditFilters.actions.username" class="audit-filter-user" size="small" clearable placeholder="用户" @keyup.enter="applyAuditFilters" />
             <el-select v-model="auditFilters.actions.status" size="small" clearable placeholder="状态" @change="applyAuditFilters">
               <el-option v-for="item in actionFilterStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
@@ -646,7 +646,7 @@
         @selection-change="handleAuditActionSelectionChange"
       >
         <el-table-column v-if="canManageAudit" type="selection" width="34" />
-        <el-table-column prop="title" label="动作标题" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="title" label="事项标题" min-width="180" show-overflow-tooltip />
         <el-table-column prop="environment_display" label="环境" width="112" show-overflow-tooltip />
         <el-table-column label="风险" width="84">
           <template #default="{ row }">
@@ -825,7 +825,7 @@ const auditTabs = [
   { name: 'sessions', label: '会话历史', icon: ChatDotSquare, title: '会话历史', desc: '查看智能助手会话、用户与消息数量。' },
   { name: 'tools', label: '调用审计', icon: Connection, title: '调用审计', desc: '分层查看运行策略命中、Skill 命中与 MCP 工具调用。' },
   { name: 'models', label: '模型调用', icon: Cpu, title: '模型调用', desc: '查看模型用途、Token、耗时与预估费用。' },
-  { name: 'actions', label: '待执行动作', icon: Promotion, title: '待执行动作', desc: '审计待确认、已执行、失败和被策略拦截的动作。' },
+  { name: 'actions', label: '执行审批', icon: Promotion, title: '执行审批', desc: '审计待确认、已执行、失败和被策略拦截的执行事项。' },
 ]
 const validTabs = auditTabs.map(item => item.name)
 const invocationAuditTabs = [
@@ -1370,9 +1370,9 @@ function actionTraceDetail(row) {
   const trace = row?.action_trace || {}
   const decision = trace.decision || {}
   if (decision.task_name) return `任务中心：${decision.task_name}`
-  if (decision.pending_action_id) return `待执行动作 #${decision.pending_action_id}`
-  if (decision.reason === 'analysis_only') return '仅分析模式已拦截执行动作'
-  if (decision.reason === 'policy') return '策略已拦截执行动作'
+  if (decision.pending_action_id) return `审批事项 #${decision.pending_action_id}`
+  if (decision.reason === 'analysis_only') return '仅分析模式已拦截执行事项'
+  if (decision.reason === 'policy') return '策略已拦截执行事项'
   if (decision.reason === 'missing_context') return '缺少必要上下文'
   if (trace.route) return `路由：${trace.route}`
   if (Array.isArray(trace.allowed_tools) && trace.allowed_tools.length) return `允许工具 ${trace.allowed_tools.length} 个`
@@ -1416,9 +1416,9 @@ function formatTraceCount(values, label) {
 function actionTraceRecordDetail(row) {
   const decision = row?.decision || {}
   if (decision.task_name) return `任务中心：${decision.task_name}`
-  if (decision.pending_action_id) return `待执行动作 #${decision.pending_action_id}`
-  if (decision.reason === 'analysis_only') return '仅分析模式已拦截执行动作'
-  if (decision.reason === 'policy') return '策略已拦截执行动作'
+  if (decision.pending_action_id) return `审批事项 #${decision.pending_action_id}`
+  if (decision.reason === 'analysis_only') return '仅分析模式已拦截执行事项'
+  if (decision.reason === 'policy') return '策略已拦截执行事项'
   if (decision.reason === 'missing_context') return '缺少必要上下文'
   if (row?.route) return `路由：${row.route}`
   if (Array.isArray(row?.allowed_tools) && row.allowed_tools.length) return `允许工具 ${row.allowed_tools.length} 个`
@@ -1686,10 +1686,10 @@ async function handleDeleteAuditModel(row) {
 }
 
 async function handleDeleteAuditAction(row) {
-  await ElMessageBox.confirm(`确认删除动作《${row.title}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除审批事项《${row.title}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
   const shouldFallbackPage = auditActions.value.length === 1 && auditActionPagination.page > 1
   await deleteAIOpsAuditAction(row.id)
-  ElMessage.success('动作已删除')
+  ElMessage.success('审批事项已删除')
   await Promise.all([loadOverview(), loadAuditActions(shouldFallbackPage ? auditActionPagination.page - 1 : auditActionPagination.page)])
 }
 
@@ -1697,9 +1697,9 @@ async function handleBatchDeleteAuditActions() {
   if (!selectedAuditActionIds.value.length) return
   const shouldFallbackPage = selectedAuditActionIds.value.length === auditActions.value.length && auditActionPagination.page > 1
   const deletedCount = selectedAuditActionIds.value.length
-  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个动作吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个审批事项吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
   await bulkDeleteAIOpsAuditActions(selectedAuditActionIds.value)
-  ElMessage.success(`已删除 ${deletedCount} 个动作`)
+  ElMessage.success(`已删除 ${deletedCount} 个审批事项`)
   await Promise.all([loadOverview(), loadAuditActions(shouldFallbackPage ? auditActionPagination.page - 1 : auditActionPagination.page)])
 }
 

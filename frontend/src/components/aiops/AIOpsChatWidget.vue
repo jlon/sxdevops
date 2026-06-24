@@ -16,7 +16,7 @@
                   {{ runtimeLabel }}
                 </span>
                 <span class="aiops-subtitle">
-                  {{ effectiveAnalysisOnly ? '当前仅分析，不会生成待执行动作。' : currentWelcomeMessage }}
+                  {{ effectiveAnalysisOnly ? '当前仅分析，不会生成待执行任务。' : currentWelcomeMessage }}
                 </span>
               </div>
             </div>
@@ -456,7 +456,7 @@
                       </div>
 
                       <div v-else-if="message.metadata?.action_execution_disabled && !hasApprovalBlock(message)" class="message-state-card">
-                        管理员已关闭机器人动作执行，当前只保留分析和任务草稿能力。
+                        管理员已关闭任务执行，当前只保留分析和任务草稿能力。
                       </div>
 
 
@@ -679,7 +679,7 @@ const analysisSwitchValue = computed({
 })
 const analysisHintText = computed(() => {
   if (forcedAnalysisOnly.value) return '平台已关闭待执行任务生成'
-  return effectiveAnalysisOnly.value ? '本轮会强制只分析，不生成待执行任务' : '具备权限时可生成待执行动作'
+  return effectiveAnalysisOnly.value ? '本轮会强制只分析，不生成待执行任务' : '具备权限时可生成待执行任务'
 })
 const currentEnvironmentName = computed(() => {
   const value = currentSession.value?.context?.current_environment
@@ -1122,10 +1122,10 @@ function buildApprovalFormBlock(pendingAction) {
       ]
   return {
     type: 'approval_form',
-    title: pendingAction?.title || '待确认动作',
+    title: pendingAction?.title || (isSkillAction ? '待确认 Skill' : '待确认任务'),
     summary: pendingAction?.status === 'pending'
       ? (isSkillAction ? '确认后将保存为团队 Skill。' : '确认后将录入任务中心并立即执行。')
-      : '动作已进入下一步处理。',
+      : '事项已进入下一步处理。',
     status: pendingAction?.status || 'pending',
     status_display: pendingAction?.status_display || '待确认',
     risk_level: pendingAction?.risk_level || 'low',
@@ -2006,10 +2006,10 @@ async function handleDeleteSession(session) {
 async function handleCancelAction(action) {
   try {
     await cancelAIOpsAction(action.id)
-    ElMessage.success('已取消待执行动作')
+    ElMessage.success('已取消待执行任务')
     await selectSession(currentSessionId.value)
   } catch (error) {
-    ElMessage.error(error?.response?.data?.detail || '取消动作失败')
+    ElMessage.error(error?.response?.data?.detail || '取消失败')
   }
 }
 
