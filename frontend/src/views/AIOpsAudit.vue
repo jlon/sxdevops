@@ -318,7 +318,7 @@
               </div>
               <div class="trace-panel">
                 <div class="trace-panel-head">
-                  <span>Action 命中</span>
+                  <span>运行策略命中</span>
                   <small>{{ actionTraceTitle(row) }}</small>
                 </div>
                 <div v-if="hasActionTrace(row)" class="trace-action-main">
@@ -328,7 +328,7 @@
                   <strong>{{ actionTraceTitle(row) }}</strong>
                   <span>{{ actionTraceDetail(row) }}</span>
                 </div>
-                <div v-else class="trace-empty">暂无 Action 命中记录</div>
+                <div v-else class="trace-empty">暂无运行策略命中记录</div>
               </div>
             </div>
           </template>
@@ -346,7 +346,7 @@
             <el-tag size="small" :type="skillTraceTone(row)" effect="plain">{{ formatSkillTraceSummary(row) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="Action 命中" width="112" show-overflow-tooltip>
+        <el-table-column label="运行策略" width="112" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="hasActionTrace(row)" class="audit-action-hit">{{ actionTraceTitle(row) }}</span>
             <span v-else class="muted-text">-</span>
@@ -451,13 +451,13 @@
               </div>
               <div class="trace-panel">
                 <div class="trace-panel-head">
-                  <span>Action 关联</span>
+                  <span>运行策略关联</span>
                   <small>{{ row.action_display_name || row.action_code || '-' }}</small>
                 </div>
                 <div v-if="traceDisplayItems(row.applicable_action_names, row.applicable_actions).length" class="trace-detail-tags">
                   <el-tag v-for="action in traceDisplayItems(row.applicable_action_names, row.applicable_actions)" :key="action" size="small" effect="plain">{{ action }}</el-tag>
                 </div>
-                <div v-else class="trace-empty">暂无关联 Action</div>
+                <div v-else class="trace-empty">暂无关联运行策略</div>
               </div>
             </div>
           </template>
@@ -476,7 +476,7 @@
             {{ traceHitReasonLabel(row.hit_reason) }}
           </template>
         </el-table-column>
-        <el-table-column label="Action" width="104" show-overflow-tooltip>
+        <el-table-column label="运行策略" width="104" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="row.action_display_name || row.action_code" class="audit-action-hit">{{ row.action_display_name || row.action_code }}</span>
             <span v-else class="muted-text">-</span>
@@ -516,7 +516,7 @@
             <div class="trace-detail-grid">
               <div class="trace-panel">
                 <div class="trace-panel-head">
-                  <span>Action 详情</span>
+                  <span>运行策略详情</span>
                   <small>{{ row.code || '-' }}</small>
                 </div>
                 <div class="trace-detail-list">
@@ -548,7 +548,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="Action" min-width="112" show-overflow-tooltip>
+        <el-table-column label="运行策略" min-width="112" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="trace-name-cell">
               <strong>{{ row.display_name || row.code || '-' }}</strong>
@@ -823,13 +823,13 @@ const overviewTimeShortcuts = [
 const auditTabs = [
   { name: 'overview', label: '运行概览', icon: Tickets, title: '运行概览', desc: '汇总今日使用与所选时间范围成本。' },
   { name: 'sessions', label: '会话历史', icon: ChatDotSquare, title: '会话历史', desc: '查看智能助手会话、用户与消息数量。' },
-  { name: 'tools', label: '调用审计', icon: Connection, title: '调用审计', desc: '分层查看 Action 命中、Skill 命中与 MCP 工具调用。' },
+  { name: 'tools', label: '调用审计', icon: Connection, title: '调用审计', desc: '分层查看运行策略命中、Skill 命中与 MCP 工具调用。' },
   { name: 'models', label: '模型调用', icon: Cpu, title: '模型调用', desc: '查看模型用途、Token、耗时与预估费用。' },
   { name: 'actions', label: '待执行动作', icon: Promotion, title: '待执行动作', desc: '审计待确认、已执行、失败和被策略拦截的动作。' },
 ]
 const validTabs = auditTabs.map(item => item.name)
 const invocationAuditTabs = [
-  { name: 'actionHits', label: 'Action 命中' },
+  { name: 'actionHits', label: '运行策略命中' },
   { name: 'skills', label: 'Skill 命中' },
   { name: 'mcp', label: 'MCP 工具' },
 ]
@@ -876,17 +876,17 @@ const overviewInvocationCharts = computed(() => {
     }),
     buildInvocationPieChart({
       key: 'actions',
-      title: 'Action 命中',
+      title: '运行策略命中',
       items: Array.isArray(distribution.actions) ? distribution.actions : [],
       palette: invocationPiePalettes.actions,
-      emptyText: '暂无 Action 命中记录',
+      emptyText: '暂无运行策略命中记录',
     }),
   ]
 })
 const activeTabMeta = computed(() => auditTabs.find(item => item.name === activeTab.value) || auditTabs[0])
 const invocationSearchPlaceholder = computed(() => {
-  if (invocationAuditTab.value === 'skills') return '搜索 Skill / Action / 会话'
-  if (invocationAuditTab.value === 'actionHits') return '搜索 Action / Skill / 会话'
+  if (invocationAuditTab.value === 'skills') return '搜索 Skill / 运行策略 / 会话'
+  if (invocationAuditTab.value === 'actionHits') return '搜索运行策略 / Skill / 会话'
   return '搜索 MCP 工具 / 会话'
 })
 const activeLoading = computed(() => {
@@ -1382,9 +1382,9 @@ function actionTraceDetail(row) {
 function traceHitReasonLabel(reason) {
   const labels = {
     runtime_enabled: '运行时启用',
-    action_matched: 'Action 命中',
-    action_called: 'Action 调用',
-    legacy_action_router: '历史 Action 推断',
+    action_matched: '运行策略命中',
+    action_called: '运行策略调用',
+    legacy_action_router: '历史策略推断',
     legacy_tool_dependency: '历史工具推断',
   }
   return labels[reason] || reason || '-'
@@ -1660,10 +1660,10 @@ async function handleBatchDeleteAuditSkillTraces() {
 }
 
 async function handleDeleteAuditActionTrace(row) {
-  await ElMessageBox.confirm(`确认删除 Action 命中《${row.display_name || row.code || '-'}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除运行策略命中《${row.display_name || row.code || '-'}》吗？该操作不可恢复。`, '删除确认', { type: 'warning' })
   const shouldFallbackPage = auditActionTraces.value.length === 1 && auditActionTracePagination.page > 1
   await bulkDeleteAIOpsAuditActionTraces([row.id])
-  ElMessage.success('Action 命中记录已删除')
+  ElMessage.success('运行策略命中记录已删除')
   await loadAuditActionTraces(shouldFallbackPage ? auditActionTracePagination.page - 1 : auditActionTracePagination.page)
 }
 
@@ -1671,9 +1671,9 @@ async function handleBatchDeleteAuditActionTraces() {
   if (!selectedAuditActionTraceIds.value.length) return
   const shouldFallbackPage = selectedAuditActionTraceIds.value.length === auditActionTraces.value.length && auditActionTracePagination.page > 1
   const deletedCount = selectedAuditActionTraceIds.value.length
-  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个 Action 命中记录吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认批量删除已选中的 ${deletedCount} 个运行策略命中记录吗？该操作不可恢复。`, '批量删除确认', { type: 'warning' })
   await bulkDeleteAIOpsAuditActionTraces(selectedAuditActionTraceIds.value)
-  ElMessage.success(`已删除 ${deletedCount} 个 Action 命中记录`)
+  ElMessage.success(`已删除 ${deletedCount} 个运行策略命中记录`)
   await loadAuditActionTraces(shouldFallbackPage ? auditActionTracePagination.page - 1 : auditActionTracePagination.page)
 }
 

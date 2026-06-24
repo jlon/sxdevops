@@ -173,10 +173,10 @@ const overviewInvocationCharts = computed(() => {
     }),
     buildInvocationPieChart({
       key: 'actions',
-      title: 'Action 命中',
+      title: '运行策略命中',
       items: Array.isArray(distribution.actions) ? distribution.actions : [],
       palette: invocationPiePalettes.actions,
-      emptyText: '暂无 Action 命中记录',
+      emptyText: '暂无运行策略命中记录',
     }),
   ]
 })

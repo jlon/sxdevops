@@ -887,7 +887,7 @@ BUILTIN_SKILLS = [
         'max_iterations': 2,
         'risk_level': AIOpsSkill.RISK_DRAFT,
         'output_contract': {
-            'sections': ['Skill 草案', '触发场景', '工具依赖', '确认项'],
+            'sections': ['Skill 草案', '触发场景', '能力依赖', '确认项'],
             'blocks': ['approval_form', 'risk_notice'],
             'trigger_keywords': ['skill', '技能', '能力包', '沉淀', '创建 skill', '新增 skill'],
         },
@@ -899,13 +899,13 @@ BUILTIN_SKILLS = [
 1. name 和 slug 要短、稳定、可读；slug 使用小写字母、数字和短横线。
 2. description 写清适用场景和触发意图，避免空泛描述。
 3. content 只放 LLM 执行任务时真正需要的步骤、约束、证据口径和输出要求。
-4. applicable_actions 绑定最相关的 Action；不确定时绑定 skill.create 或留空，不要乱绑定执行类 Action。
-5. builtin_tools 只声明现有平台工具，例如 query_task_resources、query_logs、query_traces、query_alerts、query_knowledge_graph、query_k8s_resources。
+4. applicable_actions 是可选的内部运行策略提示；不确定时绑定 skill.create 或留空，不能为了凑字段乱绑定执行类策略。
+5. builtin_tools 只声明现有平台工具，例如 query_task_resources、query_logs、query_traces、query_alerts、query_knowledge_graph、query_k8s_resources；工具依赖表达能力来源，不等于权限放行。
 6. output_contract 可包含 sections、blocks、trigger_keywords；trigger_keywords 要能覆盖用户常用叫法。
 7. 不要在 Skill 中写死客户私密数据、临时 URL、账号、密码、Token 或不可复用的一次性命令。
 
 输出要求：
-- 说明将创建的 Skill 名称、用途、触发方式和工具依赖。
+- 说明将创建的 Skill 名称、用途、触发方式和能力依赖。
 - 明确这是待确认草案，确认后保存为团队 Skill。""",
         'allowed_role_codes': [],
     },
@@ -1517,9 +1517,9 @@ def build_action_preflight_contract(action_code, payload=None, user=None):
     page_context = normalize_page_context(payload.get('page_context'))
     action = _action_registry_item_by_code(action_code, user=user, include_unavailable=True)
     if not action:
-        raise ValueError('Action 不存在')
+        raise ValueError('运行策略不存在')
     if user and not action.get('available'):
-        raise ValueError(action.get('available_reason') or '缺少 Action 权限')
+        raise ValueError(action.get('available_reason') or '缺少运行策略权限')
 
     knowledge_environment = None
     analysis_scope = {}
@@ -1708,7 +1708,7 @@ def _build_plan_react_trace(action, payload=None, interrupted=False):
         {
             'phase': 'plan',
             'status': 'completed',
-            'thought': '根据 Action 合同拆解计划、Agent 分工、权限和停止条件。',
+            'thought': '根据运行策略合同拆解计划、Agent 分工、权限和停止条件。',
             'input_keys': sorted(payload.keys()),
         },
         {
@@ -1741,9 +1741,9 @@ def create_external_task(payload, user):
     action_code = str(payload.get('action_code') or '').strip()
     action = _action_registry_item_by_code(action_code, user=user, include_unavailable=True)
     if not action:
-        raise ValueError('Action 不存在')
+        raise ValueError('运行策略不存在')
     if not action.get('available'):
-        raise ValueError(action.get('available_reason') or '缺少 Action 权限')
+        raise ValueError(action.get('available_reason') or '缺少运行策略权限')
     input_payload = payload.get('input_payload') if isinstance(payload.get('input_payload'), dict) else {}
     task = AIOpsExternalTask.objects.create(
         source_agent=str(payload.get('source_agent') or '').strip(),
@@ -1789,9 +1789,9 @@ def run_external_task_orchestration(task, user=None):
         raise ValueError('任务已结束，不能再次运行')
     action = _action_registry_item_by_code(task.action_code, user=user, include_unavailable=True)
     if not action:
-        raise ValueError('Action 不存在')
+        raise ValueError('运行策略不存在')
     if not action.get('available'):
-        raise ValueError(action.get('available_reason') or '缺少 Action 权限')
+        raise ValueError(action.get('available_reason') or '缺少运行策略权限')
     payload = task.input_payload if isinstance(task.input_payload, dict) else {}
     now = timezone.now()
     task.status = AIOpsExternalTask.STATUS_COMPLETED
@@ -2460,7 +2460,7 @@ def _build_action_preflight_result(action, knowledge_environment=None, analysis_
         summary = '请先补充所需上下文后再继续。'
     metrics = [
         {'label': '缺失项', 'value': f'{len(missing_fields)} 项' if missing_fields else '0 项'},
-        {'label': '动作模式', 'value': action.get('agent_mode_display') or action.get('agent_mode') or '--'},
+        {'label': '策略模式', 'value': action.get('agent_mode_display') or action.get('agent_mode') or '--'},
         {'label': '风险等级', 'value': action.get('risk_level_display') or action.get('risk_level') or '--'},
     ]
     items = []
@@ -2792,8 +2792,8 @@ def _format_skill_prompt_block(skill, *, include_content=True):
     declared_tools = _skill_declared_tools(skill)
     lines = [
         f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}",
-        f"  适用 Action：{'、'.join(skill.applicable_actions or []) or '通用'}",
-        f"  工具依赖：{'、'.join(declared_tools) or '未声明工具依赖'}；用于提示优先取证，真实可用工具由 MCP 可用性、用户 RBAC 和 Action 安全策略过滤。",
+        f"  推荐场景/运行策略：{'、'.join(skill.applicable_actions or []) or '通用，按问题和触发词匹配'}",
+        f"  能力依赖：{'、'.join(declared_tools) or '未声明工具依赖'}；用于提示优先取证，真实可用工具由 MCP 可用性、用户 RBAC 和运行策略过滤。",
     ]
     if include_content:
         content = _truncate_skill_content(getattr(skill, 'content', ''), 1400)
@@ -9619,7 +9619,7 @@ def _run_self_heal_recommendation_evidence(session, user_message, user, question
         ],
         metrics=[
             {'label': '推荐项', 'value': f'{len(sections[0]["items"]) if sections else 0} 条'},
-            {'label': '动作模式', 'value': action.get('agent_mode_display') or action.get('agent_mode') or '--'},
+            {'label': '策略模式', 'value': action.get('agent_mode_display') or action.get('agent_mode') or '--'},
             {'label': '风险等级', 'value': action.get('risk_level_display') or action.get('risk_level') or '--'},
         ],
         actions=[
@@ -11233,8 +11233,8 @@ def _build_pending_action_response_block(draft, pending_action=None, disabled=Fa
     if is_skill_action:
         metrics = [
             {'label': 'Skill 标识', 'value': draft.get('slug') or '--'},
-            {'label': '适用 Action', 'value': '、'.join(draft.get('applicable_actions') or []) or '未指定'},
-            {'label': '工具依赖', 'value': '、'.join(draft.get('builtin_tools') or []) or '未声明'},
+            {'label': '推荐场景', 'value': '、'.join(draft.get('applicable_actions') or []) or '未指定'},
+            {'label': '能力依赖', 'value': '、'.join(draft.get('builtin_tools') or []) or '未声明'},
             {'label': '启用状态', 'value': '确认后启用' if draft.get('is_enabled', True) else '确认后保存为停用'},
         ]
     else:
@@ -12440,9 +12440,9 @@ def _build_skill_draft_sections(draft):
     sections.append({
         'title': '触发与绑定',
         'items': [
-            f"适用 Action：{'、'.join(draft.get('applicable_actions') or []) or '未指定'}",
+            f"推荐场景：{'、'.join(draft.get('applicable_actions') or []) or '未指定'}",
             f"触发关键词：{'、'.join(trigger_keywords) or '未指定'}",
-            f"工具依赖：{'、'.join(tool_names) or '未声明'}",
+            f"能力依赖：{'、'.join(tool_names) or '未声明'}",
         ],
     })
     if draft.get('description'):
@@ -16013,15 +16013,17 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '\n'.join(mcp_lines) if mcp_lines else '- 当前无可用 MCP',
         '外部 MCP 运行状态：',
         '\n'.join(diagnostic_lines) if diagnostic_lines else '- 当前无外部 MCP 诊断信息',
-        'Action 与 Skill 边界：',
-        '- Action 是任务入口和流程策略，决定 agent 模式、上下文、预检、风险、确认流、结构化输出和默认 Skill。',
-        '- Skill 是能力包，声明工具依赖，并提供 SOP、证据清单、查询规范、风险判断和回答格式。',
-        '- 最终可调用工具必须同时满足选中 Skill 工具依赖、MCP 可用、用户 RBAC 和 Action 安全策略。',
+        'Agent / Skill / MCP / 运行策略边界：',
+        '- Agent 是本轮会话的身份、模型、MCP、Skill 和执行策略边界。',
+        '- Skill 是能力包，提供 SOP、证据清单、查询规范、风险判断和回答格式；它指导怎么做，不直接执行。',
+        '- MCP/Tool 是真实可执行能力；优先通过工具获取事实，再基于证据回答。',
+        '- 运行策略是平台内部安全与路由约束，用于场景预检、风险、确认流、结构化输出和工具边界；不要把它当成业务用户必须理解的操作对象。',
+        '- 最终可调用工具必须同时满足 MCP 可用、用户 RBAC、Agent 执行策略和运行策略约束；Skill 的工具依赖只是优先取证提示。',
         '按需注入 Skill：',
         skill_trace_line,
         '\n'.join(skill_lines) if skill_lines else '- 当前无按需注入 Skill',
-        '可用 Action Registry：',
-        '\n'.join(action_lines) if action_lines else '- 当前无可用 action',
+        '内部运行策略：',
+        '\n'.join(action_lines) if action_lines else '- 当前无可用运行策略',
         '当前用户权限：',
         '\n'.join(permission_lines),
         '运行约束：',
@@ -16256,7 +16258,7 @@ def _tool_specs_for_runtime(active_mcp_servers, user):
                     'description': {'type': 'string', 'description': '触发场景和用途说明。'},
                     'category': {'type': 'string', 'description': '分类，例如 HBase 运维、日志分析、告警排障。'},
                     'content': {'type': 'string', 'description': 'Skill 正文，写执行步骤、证据口径、边界和输出要求。'},
-                    'applicable_actions': {'type': 'array', 'items': {'type': 'string'}, 'description': '适用 Action code，例如 alert.root_cause、log.query_generate、k8s.diagnose、host_task.generate、skill.create。'},
+                    'applicable_actions': {'type': 'array', 'items': {'type': 'string'}, 'description': '可选推荐场景/内部运行策略 code，例如 alert.root_cause、log.query_generate、k8s.diagnose、host_task.generate、skill.create；不确定时留空。'},
                     'examples': {'type': 'array', 'items': {'type': 'string'}, 'description': '用户可能说出的触发示例。'},
                     'builtin_tools': {'type': 'array', 'items': {'type': 'string'}, 'description': '必需平台工具，例如 query_task_resources、query_logs、query_traces、query_alerts、query_knowledge_graph。'},
                     'recommended_tools': {'type': 'array', 'items': {'type': 'string'}, 'description': '可选推荐工具。'},
@@ -17174,11 +17176,11 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     else:
         emit(
             step={
-                'title': '配置型动作',
-                'detail': '当前动作不依赖知识图谱环境，已跳过环境前置检查。',
+                'title': '配置型策略',
+                'detail': '当前运行策略不依赖知识图谱环境，已跳过环境前置检查。',
                 'status': PROCESSING_STATUS_COMPLETED,
             },
-            text='已进入配置型动作',
+            text='已进入配置型策略',
         )
     scoped_question = f"{knowledge_environment.get('name')} {question}".strip() if knowledge_environment.get('name') else str(question or '').strip()
     if selected_action and knowledge_environment:
@@ -17350,11 +17352,11 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     ):
         emit(
             step={
-                'title': 'Action Router',
-                'detail': f"已命中动作 {selected_action.get('display_name') or selected_action.get('code')}。",
+                'title': '运行策略路由',
+                'detail': f"已命中运行策略 {selected_action.get('display_name') or selected_action.get('code')}。",
                 'status': PROCESSING_STATUS_COMPLETED,
             },
-            text=f"已识别动作：{selected_action.get('code')}",
+            text=f"已识别运行策略：{selected_action.get('code')}",
         )
         missing_fields = _missing_action_context_fields(
             selected_action,
@@ -17632,7 +17634,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             failure_detail = '；'.join(f"{item.get('name')}: {item.get('message')}" for item in failed_external_mcp[:3])
         elif action_tool_filter.get('enforced'):
             failure_detail = (
-                f"动作 {action_tool_filter.get('action_code') or '-'} 的 allowed_tools "
+                f"运行策略 {action_tool_filter.get('action_code') or '-'} 的 allowed_tools "
                 '与当前 MCP/RBAC 暴露工具没有交集。'
             )
         emit(
@@ -17670,7 +17672,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     action_filter_detail = ''
     if action_tool_filter.get('enforced'):
         action_filter_detail = (
-            f"；Action 工具约束 {len(action_tool_filter.get('exposed_tools') or [])}/"
+            f"；运行策略工具约束 {len(action_tool_filter.get('exposed_tools') or [])}/"
             f"{len(action_tool_filter.get('available_tools') or [])} 个可用"
         )
     emit(

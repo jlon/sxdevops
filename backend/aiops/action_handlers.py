@@ -307,14 +307,14 @@ def build_context_form_block(
     return {
         'id': f"context-form-{action.get('code') or 'action'}",
         'type': 'context_form',
-        'title': f"{action.get('display_name') or action.get('code') or 'Action'} 预检",
+        'title': f"{action.get('display_name') or action.get('code') or '运行策略'} 预检",
         'summary': '请确认或补充必要上下文后继续，页面上下文只作为候选线索。',
         'status': 'needs_info',
         'status_display': '待补充',
         'risk_level': action.get('risk_level') or 'read_only',
         'metrics': [
             {'label': '缺失项', 'value': f'{len(fields)} 项'},
-            {'label': '动作模式', 'value': action.get('agent_mode_display') or action.get('agent_mode') or '--'},
+            {'label': '策略模式', 'value': action.get('agent_mode_display') or action.get('agent_mode') or '--'},
             {'label': '风险等级', 'value': action.get('risk_level_display') or action.get('risk_level') or '--'},
         ],
         'fields': fields,

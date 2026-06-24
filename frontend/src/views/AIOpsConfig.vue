@@ -5,7 +5,7 @@
         <div class="hero-title-row">
           <span class="hero-icon"><el-icon><ChatDotSquare /></el-icon></span>
           <h2>智能体配置</h2>
-          <p class="page-inline-desc">以 Agent 为中心管理模型、MCP、Skill、Action 与协同沉淀。</p>
+          <p class="page-inline-desc">以 Agent 为中心管理模型、MCP、Skill、运行策略与协同沉淀。</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -37,7 +37,7 @@
         </el-tab-pane>
         <el-tab-pane name="actions">
           <template #label>
-            <span class="tab-label"><el-icon><Promotion /></el-icon>Action</span>
+            <span class="tab-label"><el-icon><Promotion /></el-icon>运行策略</span>
           </template>
         </el-tab-pane>
         <el-tab-pane name="orchestration">
@@ -311,7 +311,7 @@
             </el-table-column>
             <el-table-column prop="title" label="任务标题" min-width="180" show-overflow-tooltip />
             <el-table-column prop="source_agent" label="来源" width="130" />
-            <el-table-column prop="action_code" label="Action" min-width="160" />
+            <el-table-column prop="action_code" label="运行策略" min-width="160" />
             <el-table-column prop="agent_mode" label="模式" width="110" />
             <el-table-column prop="status_display" label="状态" width="110" />
             <el-table-column prop="created_at" label="创建时间" min-width="170" />
@@ -504,7 +504,7 @@
         <div class="section-toolbar">
           <div class="toolbar-head">
             <span class="toolbar-title">Skill 能力包</span>
-            <span class="toolbar-desc">Skill = 能力包，用于声明专业方法和工具依赖，最终可用工具仍会经过 MCP 可用性、用户 RBAC 和 Action 安全策略过滤</span>
+            <span class="toolbar-desc">Skill = 能力包，用于声明专业方法、触发场景和推荐能力；实际工具调用仍受 MCP 可用性、用户 RBAC 和运行策略约束</span>
           </div>
           <div class="toolbar-actions">
             <el-button size="small" @click="openSkillMarketDialog">Skill 市场</el-button>
@@ -555,14 +555,14 @@
                   <div class="skill-package-desc">{{ skill.description || '暂无描述' }}</div>
                   <div class="skill-package-tags">
                     <el-tag v-for="action in skill.applicable_actions || []" :key="`${skill.slug}-${action}`" size="small" effect="plain">
-                      适用：{{ formatActionName(action) }}
+                      场景：{{ formatActionName(action) }}
                     </el-tag>
-                    <span v-if="!(skill.applicable_actions || []).length" class="muted-text">未绑定 Action</span>
+                    <span v-if="!(skill.applicable_actions || []).length" class="muted-text">未限定场景，按问题和关键词触发</span>
                   </div>
                 </div>
                 <div class="skill-package-side">
                   <button type="button" class="skill-package-stat stat-detail-button" @click="openSkillStatDetail(skill, 'tools')">
-                    <span>工具依赖</span>
+                    <span>能力依赖</span>
                     <strong>{{ skillRecommendedToolCount(skill) }}</strong>
                   </button>
                   <button type="button" class="skill-package-stat stat-detail-button" @click="openSkillStatDetail(skill, 'scenes')">
@@ -583,18 +583,18 @@
       <template v-else-if="activeTab === 'actions'">
         <div class="section-toolbar">
           <div class="toolbar-head">
-            <span class="toolbar-title">Action Registry</span>
-            <span class="toolbar-desc">Action = 任务入口，用于把用户问题路由到任务类型，并决定上下文、预检、风险、输出结构和默认加载的 Skill</span>
+            <span class="toolbar-title">运行策略</span>
+            <span class="toolbar-desc">运行策略是平台内部编排层，用来约束任务场景、上下文预检、风险等级、工具边界和默认 Skill；业务配置优先从 Agent、Skill 和 MCP 入手</span>
           </div>
-          <span class="audit-hint">已内置 {{ actionOverview.total }} 个 P0 action</span>
+          <span class="audit-hint">已内置 {{ actionOverview.total }} 个高频策略</span>
         </div>
         <div class="action-summary-row">
           <div class="action-summary-item">
-            <span>动作总数</span>
+            <span>策略总数</span>
             <strong>{{ actionOverview.total }}</strong>
           </div>
           <div class="action-summary-item">
-            <span>可用动作</span>
+            <span>当前可用</span>
             <strong>{{ actionOverview.available }}</strong>
           </div>
           <div class="action-summary-item">
@@ -611,7 +611,7 @@
             <div class="action-group-head">
               <div class="toolbar-head">
                 <span class="action-group-title">{{ group.category }}</span>
-                <span class="toolbar-desc">{{ group.items.length }} 个 Action</span>
+                <span class="toolbar-desc">{{ group.items.length }} 个策略</span>
               </div>
             </div>
             <div class="action-package-list">
@@ -629,7 +629,7 @@
                     <el-tag size="small" effect="plain" :type="action.preflight_required ? 'warning' : 'success'">
                       {{ action.preflight_required ? '需预检' : '免预检' }}
                     </el-tag>
-                    <el-tooltip :content="action.available_reason || 'action 可用'" placement="top" :disabled="action.available !== false">
+                    <el-tooltip :content="action.available_reason || '运行策略可用'" placement="top" :disabled="action.available !== false">
                       <el-tag size="small" effect="plain" :type="actionAvailabilityTagType(action.available)">
                         {{ actionAvailabilityLabel(action.available) }}
                       </el-tag>
@@ -845,9 +845,9 @@
         <div class="skill-form-section">
           <div class="skill-form-section-head">
             <strong>触发与方法</strong>
-            <span>业务用户只需要维护场景、动作和处理方法</span>
+            <span>业务用户维护触发场景和处理方法；运行策略只是可选的内部路由提示</span>
           </div>
-          <el-form-item label="适用 Action">
+          <el-form-item label="推荐场景">
             <el-select v-model="skillForm.applicable_actions" multiple filterable collapse-tags collapse-tags-tooltip style="width:100%" @change="handleSkillActionChange">
               <el-option
                 v-for="action in actionRegistry"
@@ -873,7 +873,7 @@
             </template>
             <div class="skill-tool-recommendation">
               <div>
-                <strong>工具依赖由适用 Action 自动推荐</strong>
+                <strong>能力依赖可由推荐场景自动带出</strong>
                 <span>{{ skillToolRecommendationText }}</span>
               </div>
               <el-button size="small" @click="applySkillToolRecommendations({ manual: true })">重新应用推荐</el-button>
@@ -891,12 +891,12 @@
                 <el-input-number v-model="skillForm.max_iterations" :min="0" :max="20" style="width:100%" />
               </el-form-item>
             </div>
-            <el-form-item label="核心工具依赖">
-              <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="默认按适用 Action 推荐" @change="markSkillToolsTouched">
+            <el-form-item label="核心能力依赖">
+              <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="默认按推荐场景带出，也可手动选择" @change="markSkillToolsTouched">
                 <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool" />
               </el-select>
             </el-form-item>
-            <el-form-item label="补充工具依赖">
+            <el-form-item label="补充能力依赖">
               <el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="可选补充工具" @change="markSkillToolsTouched">
                 <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool" />
               </el-select>
@@ -954,7 +954,7 @@
         <el-table-column prop="category" label="分类" width="120" />
         <el-table-column prop="source_display" label="来源" width="110" />
         <el-table-column prop="description" label="描述" min-width="240" show-overflow-tooltip />
-        <el-table-column label="Action" min-width="180" show-overflow-tooltip>
+        <el-table-column label="推荐场景" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">{{ formatActionList(row.applicable_actions) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="110" fixed="right">
@@ -1055,8 +1055,8 @@
     <el-dialog v-model="a2aDialogVisible" title="创建协同任务草案" width="720px" destroy-on-close append-to-body>
       <el-form :model="a2aForm" label-width="104px">
         <el-form-item label="来源系统"><el-input v-model="a2aForm.source_agent" /></el-form-item>
-        <el-form-item label="任务标题"><el-input v-model="a2aForm.title" placeholder="留空则使用 Action 名称" /></el-form-item>
-        <el-form-item label="Action">
+        <el-form-item label="任务标题"><el-input v-model="a2aForm.title" placeholder="留空则使用运行策略名称" /></el-form-item>
+        <el-form-item label="运行策略">
           <el-select v-model="a2aForm.action_code" filterable style="width:100%">
             <el-option v-for="action in actionRegistry" :key="action.code" :label="`${action.display_name || action.code}（${action.code}）`" :value="action.code" />
           </el-select>
@@ -1475,14 +1475,14 @@ const skillRuntimeSummary = computed(() => {
   const extraCount = (skillForm.recommended_tools || []).filter(Boolean).length
   const actionCount = (skillForm.applicable_actions || []).filter(Boolean).length
   if (!coreCount && !extraCount) {
-    return actionCount ? '保存时将按适用 Action 自动推荐工具' : '可选配置工具、权限和输出约束'
+    return actionCount ? '保存时按推荐场景带出能力依赖' : '可选配置工具、权限和输出约束'
   }
   return `核心工具 ${coreCount} 个 / 补充工具 ${extraCount} 个`
 })
 const skillToolRecommendationText = computed(() => {
   const recommended = skillActionToolRecommendations.value
   const labels = recommended.core.slice(0, 4).map(formatSkillToolOptionLabel)
-  if (!labels.length) return '当前 Action 未声明工具约束，可按需在高级配置中手动选择。'
+  if (!labels.length) return '当前推荐场景未声明能力依赖，可按需在高级配置中手动选择。'
   return `推荐核心工具：${labels.join('、')}${recommended.core.length > labels.length ? '…' : ''}`
 })
 const skillToolSourceOptions = computed(() => {
@@ -1624,13 +1624,13 @@ function hasSkillToolDependencies() {
 function applySkillToolRecommendations({ silent = false, manual = false } = {}) {
   const recommended = skillActionToolRecommendations.value
   if (!recommended.core.length && !recommended.extra.length) {
-    if (!silent) ElMessage.info('当前适用 Action 没有可推荐的工具依赖')
+    if (!silent) ElMessage.info('当前推荐场景没有可带出的能力依赖')
     return false
   }
   skillForm.builtin_tools = [...recommended.core]
   skillForm.recommended_tools = [...recommended.extra]
   skillToolsManuallyEdited.value = Boolean(manual)
-  if (!silent) ElMessage.success('已按适用 Action 填入工具依赖')
+  if (!silent) ElMessage.success('已按推荐场景填入能力依赖')
   return true
 }
 
@@ -1791,7 +1791,7 @@ function agentPolicyItems(agent = {}) {
   return [
     { label: '允许只读工具', value: boolPolicyLabel(policy.allow_read_only) },
     { label: '允许生成任务', value: boolPolicyLabel(policy.allow_generate_task) },
-    { label: '允许执行动作', value: boolPolicyLabel(policy.allow_execute) },
+    { label: '允许执行变更', value: boolPolicyLabel(policy.allow_execute) },
     { label: '最大风险', value: policy.max_risk_level || '继承 high' },
     { label: 'Critical 自动执行', value: policy.critical_full_auto ? '允许' : '默认禁止' },
   ]
@@ -1838,10 +1838,10 @@ function openSkillStatDetail(skill = {}, type) {
       ].filter(Boolean).join('；'),
     }))
     openStatDetail({
-      title: '工具依赖详情',
+      title: '能力依赖详情',
       subtitle: `Skill：${skillName}`,
       items,
-      emptyText: '当前 Skill 未声明工具依赖',
+      emptyText: '当前 Skill 未声明能力依赖',
     })
     return
   }
@@ -1866,9 +1866,9 @@ function openActionStatDetail(action = {}, type) {
     }))
     openStatDetail({
       title: '示例入口详情',
-      subtitle: `Action：${actionName}`,
+      subtitle: `运行策略：${actionName}`,
       items,
-      emptyText: '当前 Action 未配置示例入口',
+      emptyText: '当前运行策略未配置示例入口',
     })
     return
   }
@@ -1884,9 +1884,9 @@ function openActionStatDetail(action = {}, type) {
     })
     openStatDetail({
       title: '默认 Skill 详情',
-      subtitle: `Action：${actionName}`,
+      subtitle: `运行策略：${actionName}`,
       items,
-      emptyText: '当前 Action 未绑定默认 Skill',
+      emptyText: '当前运行策略未绑定默认 Skill',
     })
     return
   }
@@ -1896,9 +1896,9 @@ function openActionStatDetail(action = {}, type) {
   }))
   openStatDetail({
     title: '结构化输出详情',
-    subtitle: `Action：${actionName}`,
+    subtitle: `运行策略：${actionName}`,
     items,
-    emptyText: '当前 Action 未配置结构化输出块',
+    emptyText: '当前运行策略未配置结构化输出块',
   })
 }
 

@@ -1110,8 +1110,8 @@ function buildApprovalFormBlock(pendingAction) {
   const metrics = isSkillAction
     ? [
         getActionTargetMetric(payload),
-        { label: '适用 Action', value: (payload.applicable_actions || []).join('、') || '未指定' },
-        { label: '工具依赖', value: (payload.builtin_tools || []).join('、') || '未声明' },
+        { label: '推荐场景', value: (payload.applicable_actions || []).join('、') || '未指定' },
+        { label: '能力依赖', value: (payload.builtin_tools || []).join('、') || '未声明' },
         { label: '启用状态', value: payload.is_enabled === false ? '确认后保存为停用' : '确认后启用' },
       ]
     : [

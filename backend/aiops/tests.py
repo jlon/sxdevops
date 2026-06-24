@@ -302,8 +302,9 @@ class AIOpsApiTests(TestCase):
             'self_heal.recommend',
             'host_task.generate',
             'slo.analysis',
+            'skill.create',
         }.issubset(action_codes))
-        self.assertEqual(response.data['action_registry_summary']['total'], 7)
+        self.assertEqual(response.data['action_registry_summary']['total'], len(response.data['action_registry']))
         self.assertIn('read_only', response.data['action_registry_summary'])
         self.assertTrue({
             '知识图谱 MCP',
@@ -378,8 +379,9 @@ class AIOpsApiTests(TestCase):
             'self_heal.recommend',
             'host_task.generate',
             'slo.analysis',
+            'skill.create',
         }.issubset(action_codes))
-        self.assertEqual(response.data['summary']['total'], 7)
+        self.assertEqual(response.data['summary']['total'], len(response.data['actions']))
         alert_action = next(item for item in response.data['actions'] if item['code'] == 'alert.root_cause')
         self.assertTrue(alert_action['available'])
         self.assertIn('query_alerts', alert_action['allowed_tools'])

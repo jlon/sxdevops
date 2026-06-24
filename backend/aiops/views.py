@@ -2100,7 +2100,7 @@ def audit_skill_traces_bulk_delete(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, build_rbac_permission('aiops.audit.manage')])
 def audit_action_traces_bulk_delete(request):
-    return _hide_audit_trace_rows(request, 'action', 'Action 命中')
+    return _hide_audit_trace_rows(request, 'action', '运行策略命中')
 
 
 @api_view(['GET'])
