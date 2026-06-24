@@ -817,81 +817,112 @@
         <div class="skill-detail-desc">{{ skillForm.description || '暂无描述' }}</div>
       </div>
       <el-form :model="skillForm" label-width="102px">
-        <div class="dialog-grid">
-          <el-form-item label="名称"><el-input v-model="skillForm.name" /></el-form-item>
-          <el-form-item label="标识"><el-input v-model="skillForm.slug" :disabled="skillForm.is_builtin" /></el-form-item>
+        <div class="skill-form-section">
+          <div class="skill-form-section-head">
+            <strong>基础信息</strong>
+            <span>定义这个能力包解决什么运维问题</span>
+          </div>
+          <div class="dialog-grid">
+            <el-form-item label="名称"><el-input v-model="skillForm.name" /></el-form-item>
+            <el-form-item label="标识"><el-input v-model="skillForm.slug" :disabled="skillForm.is_builtin" /></el-form-item>
+          </div>
+          <div class="dialog-grid">
+            <el-form-item label="来源">
+              <el-select v-model="skillForm.source_type" :disabled="skillForm.is_builtin" style="width:100%">
+                <el-option label="平台内置" value="inline" />
+                <el-option label="本地文件" value="local" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="分类">
+              <el-select v-model="skillForm.category" filterable allow-create default-first-option style="width:100%">
+                <el-option v-for="item in skillCategoryOptions" :key="item" :label="item" :value="item" />
+              </el-select>
+            </el-form-item>
+          </div>
+          <el-form-item label="描述"><el-input v-model="skillForm.description" /></el-form-item>
         </div>
-        <div class="dialog-grid">
-          <el-form-item label="来源">
-            <el-select v-model="skillForm.source_type" :disabled="skillForm.is_builtin" style="width:100%">
-              <el-option label="平台内置" value="inline" />
-              <el-option label="本地文件" value="local" />
+
+        <div class="skill-form-section">
+          <div class="skill-form-section-head">
+            <strong>触发与方法</strong>
+            <span>业务用户只需要维护场景、动作和处理方法</span>
+          </div>
+          <el-form-item label="适用 Action">
+            <el-select v-model="skillForm.applicable_actions" multiple filterable collapse-tags collapse-tags-tooltip style="width:100%" @change="handleSkillActionChange">
+              <el-option
+                v-for="action in actionRegistry"
+                :key="action.code"
+                :label="`${action.display_name || action.code}（${action.code}）`"
+                :value="action.code"
+              />
             </el-select>
           </el-form-item>
-          <el-form-item label="分类">
-            <el-select v-model="skillForm.category" filterable allow-create default-first-option style="width:100%">
-              <el-option v-for="item in skillCategoryOptions" :key="item" :label="item" :value="item" />
-            </el-select>
+          <el-form-item label="适用场景">
+            <el-select v-model="skillForm.examples" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" />
           </el-form-item>
+          <el-form-item label="方法内容"><el-input v-model="skillForm.content" type="textarea" :rows="10" /></el-form-item>
         </div>
-        <el-form-item label="描述"><el-input v-model="skillForm.description" /></el-form-item>
-        <el-form-item label="适用 Action">
-          <el-select v-model="skillForm.applicable_actions" multiple filterable collapse-tags collapse-tags-tooltip style="width:100%">
-            <el-option
-              v-for="action in actionRegistry"
-              :key="action.code"
-              :label="`${action.display_name || action.code}（${action.code}）`"
-              :value="action.code"
-            />
-          </el-select>
-        </el-form-item>
-        <div class="dialog-grid">
-          <el-form-item label="风险提示">
-            <el-select v-model="skillForm.risk_level" style="width:100%">
-              <el-option label="只读" value="read_only" />
-              <el-option label="草稿" value="draft" />
-              <el-option label="写入" value="write" />
-              <el-option label="执行" value="execute" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="建议轮次">
-            <el-input-number v-model="skillForm.max_iterations" :min="0" :max="20" style="width:100%" />
-          </el-form-item>
-        </div>
-        <el-form-item label="适用场景">
-          <el-select v-model="skillForm.examples" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" />
-        </el-form-item>
-        <el-form-item label="核心工具依赖">
-          <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="选择必需工具，保存值为工具 code">
-            <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="补充工具依赖">
-          <el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="选择可选工具，保存值为工具 code">
-            <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="适用角色"><el-select v-model="skillForm.allowed_role_codes" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
-        <el-form-item label="输出指导">
-          <el-input v-model="skillForm.output_contract_text" type="textarea" :rows="4" placeholder='例如：{"sections":["结论","依据"],"blocks":["risk_notice"]}' />
-        </el-form-item>
-        <el-form-item label="方法内容"><el-input v-model="skillForm.content" type="textarea" :rows="10" /></el-form-item>
-        <el-form-item label="启用"><el-switch v-model="skillForm.is_enabled" /></el-form-item>
-        <el-form-item label="绑定 Agent">
-          <el-select
-            v-model="skillForm.bind_agent_ids"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            filterable
-            :disabled="!canManageAgents"
-            style="width:100%"
-            placeholder="保存后加入所选 Agent 的 Skill 能力"
-          >
-            <el-option v-for="agent in agentBindOptions" :key="agent.id" :label="agentBindLabel(agent)" :value="agent.id" />
-          </el-select>
-          <div class="runtime-field-tip">{{ agentBindTip('Skill') }}</div>
-        </el-form-item>
+
+        <el-collapse v-model="skillAdvancedPanels" class="skill-advanced-collapse">
+          <el-collapse-item name="runtime">
+            <template #title>
+              <div class="skill-advanced-title">
+                <span>高级运行时</span>
+                <small>{{ skillRuntimeSummary }}</small>
+              </div>
+            </template>
+            <div class="skill-tool-recommendation">
+              <div>
+                <strong>工具依赖由适用 Action 自动推荐</strong>
+                <span>{{ skillToolRecommendationText }}</span>
+              </div>
+              <el-button size="small" @click="applySkillToolRecommendations({ manual: true })">重新应用推荐</el-button>
+            </div>
+            <div class="dialog-grid">
+              <el-form-item label="风险提示">
+                <el-select v-model="skillForm.risk_level" style="width:100%">
+                  <el-option label="只读" value="read_only" />
+                  <el-option label="草稿" value="draft" />
+                  <el-option label="写入" value="write" />
+                  <el-option label="执行" value="execute" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="建议轮次">
+                <el-input-number v-model="skillForm.max_iterations" :min="0" :max="20" style="width:100%" />
+              </el-form-item>
+            </div>
+            <el-form-item label="核心工具依赖">
+              <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="默认按适用 Action 推荐" @change="markSkillToolsTouched">
+                <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="补充工具依赖">
+              <el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="可选补充工具" @change="markSkillToolsTouched">
+                <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="适用角色"><el-select v-model="skillForm.allowed_role_codes" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
+            <el-form-item label="输出指导">
+              <el-input v-model="skillForm.output_contract_text" type="textarea" :rows="4" placeholder='例如：{"sections":["结论","依据"],"blocks":["risk_notice"]}' />
+            </el-form-item>
+            <el-form-item label="启用"><el-switch v-model="skillForm.is_enabled" /></el-form-item>
+            <el-form-item label="绑定 Agent">
+              <el-select
+                v-model="skillForm.bind_agent_ids"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                filterable
+                :disabled="!canManageAgents"
+                style="width:100%"
+                placeholder="保存后加入所选 Agent 的 Skill 能力"
+              >
+                <el-option v-for="agent in agentBindOptions" :key="agent.id" :label="agentBindLabel(agent)" :value="agent.id" />
+              </el-select>
+              <div class="runtime-field-tip">{{ agentBindTip('Skill') }}</div>
+            </el-form-item>
+          </el-collapse-item>
+        </el-collapse>
       </el-form>
       <template #footer>
         <el-button @click="skillDialogVisible = false">取消</el-button>
@@ -1187,6 +1218,7 @@ const saving = reactive({ config: false, agent: false, provider: false, models: 
 const agents = ref([])
 const selectedAgentId = ref(null)
 const agentBaselinePanels = ref([])
+const skillAdvancedPanels = ref([])
 const agentRoles = ref([])
 const providers = ref([])
 const providerPresets = ref([])
@@ -1252,6 +1284,7 @@ const statDetail = reactive({
 
 const providerForm = reactive({})
 const agentForm = reactive({})
+const skillToolsManuallyEdited = ref(false)
 const providerModels = ref([])
 const providerModelRecommendation = ref(null)
 const selectedProviderPreset = computed({
@@ -1436,6 +1469,22 @@ const skillCategoryOptions = computed(() => {
 const skillToolOptions = computed(() => {
   return skillToolSourceOptions.value
 })
+const skillActionToolRecommendations = computed(() => recommendedToolsForActions(skillForm.applicable_actions))
+const skillRuntimeSummary = computed(() => {
+  const coreCount = (skillForm.builtin_tools || []).filter(Boolean).length
+  const extraCount = (skillForm.recommended_tools || []).filter(Boolean).length
+  const actionCount = (skillForm.applicable_actions || []).filter(Boolean).length
+  if (!coreCount && !extraCount) {
+    return actionCount ? '保存时将按适用 Action 自动推荐工具' : '可选配置工具、权限和输出约束'
+  }
+  return `核心工具 ${coreCount} 个 / 补充工具 ${extraCount} 个`
+})
+const skillToolRecommendationText = computed(() => {
+  const recommended = skillActionToolRecommendations.value
+  const labels = recommended.core.slice(0, 4).map(formatSkillToolOptionLabel)
+  if (!labels.length) return '当前 Action 未声明工具约束，可按需在高级配置中手动选择。'
+  return `推荐核心工具：${labels.join('、')}${recommended.core.length > labels.length ? '…' : ''}`
+})
 const skillToolSourceOptions = computed(() => {
   const tools = new Set()
   mcpServers.value.forEach(server => (server.tool_whitelist || []).forEach(tool => tools.add(String(tool || '').trim())))
@@ -1551,6 +1600,55 @@ function actionSkillCount(action = {}) {
 function formatActionName(code) {
   const action = actionRegistry.value.find(item => item.code === code)
   return action?.display_name || code
+}
+
+function uniqueList(items) {
+  return Array.from(new Set((items || []).map(item => String(item || '').trim()).filter(Boolean)))
+}
+
+function recommendedToolsForActions(actionCodes = []) {
+  const actionCodeSet = new Set(uniqueList(actionCodes))
+  if (!actionCodeSet.size) return { core: [], extra: [] }
+  const tools = []
+  actionRegistry.value.forEach((action) => {
+    if (!actionCodeSet.has(action.code)) return
+    tools.push(...(action.allowed_tools || []))
+  })
+  return { core: uniqueList(tools), extra: [] }
+}
+
+function hasSkillToolDependencies() {
+  return Boolean((skillForm.builtin_tools || []).length || (skillForm.recommended_tools || []).length)
+}
+
+function applySkillToolRecommendations({ silent = false, manual = false } = {}) {
+  const recommended = skillActionToolRecommendations.value
+  if (!recommended.core.length && !recommended.extra.length) {
+    if (!silent) ElMessage.info('当前适用 Action 没有可推荐的工具依赖')
+    return false
+  }
+  skillForm.builtin_tools = [...recommended.core]
+  skillForm.recommended_tools = [...recommended.extra]
+  skillToolsManuallyEdited.value = Boolean(manual)
+  if (!silent) ElMessage.success('已按适用 Action 填入工具依赖')
+  return true
+}
+
+function ensureSkillToolRecommendations() {
+  if (hasSkillToolDependencies() || skillToolsManuallyEdited.value) return
+  applySkillToolRecommendations({ silent: true })
+}
+
+function handleSkillActionChange() {
+  if (skillToolsManuallyEdited.value) return
+  if (!applySkillToolRecommendations({ silent: true })) {
+    skillForm.builtin_tools = []
+    skillForm.recommended_tools = []
+  }
+}
+
+function markSkillToolsTouched() {
+  skillToolsManuallyEdited.value = true
 }
 
 function normalizeSkillToolName(toolName) {
@@ -2467,6 +2565,8 @@ async function handleDeleteMcp(row) {
 
 function openSkillDialog(row) {
   resetSkillForm()
+  skillAdvancedPanels.value = []
+  skillToolsManuallyEdited.value = false
   if (row) {
     Object.assign(skillForm, {
       ...row,
@@ -2479,6 +2579,16 @@ function openSkillDialog(row) {
       output_contract_text: JSON.stringify(row.output_contract && typeof row.output_contract === 'object' ? row.output_contract : {}, null, 2),
       bind_agent_ids: boundAgentIdsForListField('enabled_skill_ids', row.id),
     })
+    skillToolsManuallyEdited.value = hasSkillToolDependencies()
+    if (
+      (skillForm.builtin_tools || []).length
+      || (skillForm.recommended_tools || []).length
+      || (skillForm.allowed_role_codes || []).length
+      || skillForm.max_iterations
+      || JSON.stringify(skillForm.output_contract || {}) !== '{}'
+    ) {
+      skillAdvancedPanels.value = ['runtime']
+    }
   }
   skillDialogVisible.value = true
 }
@@ -2498,6 +2608,7 @@ async function saveSkill() {
       ElMessage.error('输出约束必须是 JSON 对象')
       return
     }
+    ensureSkillToolRecommendations()
     const payload = {
       ...skillForm,
       output_contract: outputContract,
@@ -4116,6 +4227,97 @@ onMounted(async () => {
   color: #64748b;
   font-size: 13px;
   line-height: 1.6;
+}
+
+.skill-form-section {
+  padding: 12px 12px 2px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.skill-form-section + .skill-form-section,
+.skill-form-section + .skill-advanced-collapse {
+  margin-top: 10px;
+}
+
+.skill-form-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.skill-form-section-head strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.skill-form-section-head span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.skill-advanced-collapse {
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.skill-advanced-collapse :deep(.el-collapse-item__header) {
+  height: auto;
+  min-height: 42px;
+  padding: 9px 12px;
+  border-bottom: 0;
+  background: #f8fafc;
+}
+
+.skill-advanced-collapse :deep(.el-collapse-item__wrap) {
+  border-bottom: 0;
+}
+
+.skill-advanced-collapse :deep(.el-collapse-item__content) {
+  padding: 12px 12px 2px;
+}
+
+.skill-advanced-title,
+.skill-tool-recommendation,
+.skill-tool-recommendation div {
+  display: flex;
+  gap: 8px;
+}
+
+.skill-advanced-title {
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.skill-advanced-title span,
+.skill-tool-recommendation strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.skill-advanced-title small,
+.skill-tool-recommendation span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.skill-tool-recommendation {
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.skill-tool-recommendation div {
+  min-width: 0;
+  flex-direction: column;
 }
 
 .type-tag {
