@@ -862,14 +862,26 @@
           <el-select v-model="skillForm.examples" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" />
         </el-form-item>
         <el-form-item label="核心工具依赖">
-          <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%">
-            <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="tool" :value="tool" />
+          <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="选择必需工具，保存值为工具 code">
+            <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool">
+              <div class="tool-option">
+                <span>{{ formatSkillToolOptionLabel(tool) }}</span>
+                <small>{{ skillToolOptionDescription(tool) }}</small>
+              </div>
+            </el-option>
           </el-select>
+          <div class="runtime-field-tip">核心工具会作为 Skill 的必需工具依赖，运行时仍会经过 MCP 可用性、Action 安全策略和 RBAC 过滤。</div>
         </el-form-item>
         <el-form-item label="补充工具依赖">
-          <el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%">
-            <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="tool" :value="tool" />
+          <el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="选择可选工具，保存值为工具 code">
+            <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool">
+              <div class="tool-option">
+                <span>{{ formatSkillToolOptionLabel(tool) }}</span>
+                <small>{{ skillToolOptionDescription(tool) }}</small>
+              </div>
+            </el-option>
           </el-select>
+          <div class="runtime-field-tip">补充工具只作为关联能力候选，用于扩展证据来源，不强制每次注入。</div>
         </el-form-item>
         <el-form-item label="适用角色"><el-select v-model="skillForm.allowed_role_codes" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
         <el-form-item label="输出指导">
@@ -1337,6 +1349,32 @@ const roleOptions = computed(() => {
     value: role.code,
   })).filter(item => item.value)
 })
+const platformToolFallbackMeta = {
+  query_knowledge_graph: { label: '查询知识图谱', description: '查询环境、系统、服务依赖和资源关系。' },
+  query_hosts: { label: '查询主机资源', description: '兼容旧主机查询工具，优先使用任务资源底座。' },
+  query_observability: { label: '查询可观测综合信息', description: '跨告警、日志、链路和变更做只读关联分析。' },
+  query_workorders: { label: '查询工单', description: '查询事务工单和发布工单。' },
+  query_task_center: { label: '查询任务中心', description: '查询任务中心任务记录。' },
+  query_task_resources: { label: '查询任务资源底座', description: '查询主机、机器、节点和任务执行资源。' },
+  query_event_wall: { label: '查询事件墙', description: '查询事件中心关键事件和动态。' },
+  query_container_assets: { label: '查询容器资产', description: '查询 Kubernetes 集群与 Docker 主机资产。' },
+  query_k8s_cluster_summary: { label: '查询 K8s 集群摘要', description: '查询 Kubernetes 集群、Pod 和异常摘要。' },
+  query_k8s_resources: { label: '查询 K8s 资源', description: '查询 Deployment、Service、Node 等 Kubernetes 资源。' },
+  query_alerts: { label: '查询告警', description: '查询告警中心的告警事实。' },
+  query_alert_root_cause: { label: '分析告警根因', description: '按告警 ID、指纹或最新告警分析根因。' },
+  query_alert_metrics: { label: '查询告警指标证据包', description: '查询告警相关 PromQL 指标趋势和异常证据。' },
+  query_dashboard_metadata: { label: '查询 Grafana 看板元数据', description: '查询已同步看板、目录、标题和环境关联。' },
+  query_grafana_promql: { label: '执行 PromQL 查询', description: '通过平台后端执行 Grafana/Prometheus 查询。' },
+  query_dashboard_panel_data: { label: '查询 Grafana 面板数据', description: '解析看板面板 PromQL 并查询面板数据。' },
+  query_observability_links: { label: '查询可观测关联', description: '查询日志、Trace、告警、看板与事件字段关联。' },
+  query_events: { label: '查询事件', description: '查询事件中心中的关键事件。' },
+  query_logs: { label: '查询日志', description: '查询日志源中的日志样本。' },
+  query_traces: { label: '查询链路追踪', description: '查询 Trace、调用链和异常链路。' },
+  query_recent_changes: { label: '查询最近变更', description: '查询最近发布、工单和事件候选变更。' },
+  query_host_tasks: { label: '查询主机任务', description: '查询任务中心中的主机任务记录。' },
+  generate_host_task: { label: '生成任务草稿', description: '生成任务中心待执行任务草稿。' },
+  draft_aiops_skill: { label: '生成 Skill 草案', description: '生成待用户确认的 AIOps Skill 草案。' },
+}
 const skillGroups = computed(() => {
   const groups = new Map()
   skills.value.forEach((skill) => {
@@ -1408,10 +1446,39 @@ const skillCategoryOptions = computed(() => {
   return Array.from(categories)
 })
 const skillToolOptions = computed(() => {
+  return skillToolSourceOptions.value
+})
+const skillToolSourceOptions = computed(() => {
   const tools = new Set()
-  mcpServers.value.forEach(server => (server.tool_whitelist || []).forEach(tool => tools.add(tool)))
-  actionRegistry.value.forEach(action => (action.allowed_tools || []).forEach(tool => tools.add(tool)))
-  return Array.from(tools).sort()
+  mcpServers.value.forEach(server => (server.tool_whitelist || []).forEach(tool => tools.add(String(tool || '').trim())))
+  actionRegistry.value.forEach(action => (action.allowed_tools || []).forEach(tool => tools.add(String(tool || '').trim())))
+  return Array.from(tools).filter(Boolean).sort()
+})
+const skillToolMetaMap = computed(() => {
+  const map = new Map()
+  const mergeToolMeta = (toolName, patch = {}) => {
+    const name = normalizeSkillToolName(toolName)
+    if (!name) return
+    const fallback = platformToolFallbackMeta[name] || {}
+    const current = map.get(name) || { label: fallback.label || name, description: fallback.description || '' }
+    map.set(name, {
+      label: patch.label || current.label || name,
+      description: patch.description || current.description || '',
+    })
+  }
+  skillToolSourceOptions.value.forEach(tool => mergeToolMeta(tool))
+  ;(platformMcpManifest.value?.tools || []).forEach((tool) => {
+    const runtimeName = normalizePlatformMcpToolName(tool.name)
+    const sourceName = map.has(runtimeName) ? runtimeName : normalizeSkillToolName(tool.name)
+    if (!map.has(sourceName)) return
+    mergeToolMeta(sourceName, {
+      label: tool.title || tool.display_name || platformToolFallbackMeta[runtimeName]?.label,
+      description: tool.description || platformToolFallbackMeta[runtimeName]?.description,
+    })
+  })
+  mcpServers.value.forEach(server => (server.tool_whitelist || []).forEach(tool => mergeToolMeta(tool)))
+  actionRegistry.value.forEach(action => (action.allowed_tools || []).forEach(tool => mergeToolMeta(tool)))
+  return map
 })
 
 function formatMcpType(serverType) {
@@ -1498,9 +1565,37 @@ function formatActionName(code) {
   return action?.display_name || code
 }
 
+function normalizeSkillToolName(toolName) {
+  return String(toolName || '').trim()
+}
+
+function normalizePlatformMcpToolName(toolName) {
+  const name = normalizeSkillToolName(toolName)
+  return name.startsWith('sxdevops.') ? name.slice('sxdevops.'.length) : name
+}
+
+function skillToolOptionMeta(toolName) {
+  const name = normalizeSkillToolName(toolName)
+  const runtimeName = normalizePlatformMcpToolName(name)
+  return skillToolMetaMap.value.get(name) || platformToolFallbackMeta[name] || platformToolFallbackMeta[runtimeName] || { label: name, description: '' }
+}
+
+function formatSkillToolOptionLabel(toolName) {
+  const name = normalizeSkillToolName(toolName)
+  const meta = skillToolOptionMeta(name)
+  const label = meta.label || name
+  return label && label !== name ? `${label}（${name}）` : name
+}
+
+function skillToolOptionDescription(toolName) {
+  const name = normalizeSkillToolName(toolName)
+  const meta = skillToolOptionMeta(name)
+  return meta.description || '外部 MCP 或自定义工具，保存值为工具 code。'
+}
+
 function formatEnabledTools(tools) {
   if (!Array.isArray(tools) || !tools.length) return '--'
-  return tools.join('、')
+  return tools.map(tool => formatSkillToolOptionLabel(tool)).join('、')
 }
 
 function formatActionList(items) {
@@ -1649,9 +1744,12 @@ function openSkillStatDetail(skill = {}, type) {
     const builtinTools = new Set((skill.builtin_tools || []).filter(Boolean))
     const recommendedTools = new Set((skill.recommended_tools || []).filter(Boolean))
     const items = skillRecommendedTools(skill).map(tool => ({
-      label: tool,
+      label: formatSkillToolOptionLabel(tool),
       tag: builtinTools.has(tool) ? '核心工具' : '补充工具',
-      desc: builtinTools.has(tool) && recommendedTools.has(tool) ? '同时声明在补充依赖中' : '',
+      desc: [
+        skillToolOptionDescription(tool),
+        builtinTools.has(tool) && recommendedTools.has(tool) ? '同时声明在补充依赖中' : '',
+      ].filter(Boolean).join('；'),
     }))
     openStatDetail({
       title: '工具依赖详情',
@@ -2889,6 +2987,22 @@ onMounted(async () => {
   color: #64748b;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.tool-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.tool-option span {
+  color: #0f172a;
+}
+
+.tool-option small {
+  color: #64748b;
+  font-size: 12px;
 }
 
 .section-toolbar {
