@@ -15780,6 +15780,84 @@ def _build_runtime_tool_registry(active_mcp_servers, user):
     return tool_specs, registry, managed_clients, diagnostics
 
 
+def _runtime_tool_name(tool_spec):
+    return str(((tool_spec or {}).get('function') or {}).get('name') or '').strip()
+
+
+def _registry_tool_names(tool_name, registry_entry):
+    names = {str(tool_name or '').strip()}
+    if not isinstance(registry_entry, dict):
+        return {item for item in names if item}
+    raw_tool_name = str(registry_entry.get('raw_tool_name') or registry_entry.get('tool_name') or '').strip()
+    if raw_tool_name:
+        names.add(raw_tool_name)
+    server = registry_entry.get('server')
+    server_name = str(getattr(server, 'name', '') or '').strip()
+    if server_name and raw_tool_name:
+        names.add(f'mcp::{server_name}::{raw_tool_name}')
+    return {item for item in names if item}
+
+
+def _filter_runtime_tools_for_action(tools, registry, action):
+    action = action or {}
+    allowed_tools = set(filter_feature_tools([
+        str(item or '').strip()
+        for item in (action.get('allowed_tools') or [])
+        if str(item or '').strip()
+    ]))
+    available_tool_names = [_runtime_tool_name(tool) for tool in tools]
+    available_tool_names = [name for name in available_tool_names if name]
+    if not allowed_tools:
+        return tools, registry, {
+            'enforced': False,
+            'action_code': action.get('code') or '',
+            'allowed_tools': [],
+            'available_tools': available_tool_names,
+            'exposed_tools': available_tool_names,
+            'blocked_tools': [],
+        }
+
+    filtered_tools = []
+    exposed_tool_names = []
+    blocked_tool_names = []
+    for tool in tools:
+        tool_name = _runtime_tool_name(tool)
+        if not tool_name:
+            continue
+        registry_entry = registry.get(tool_name)
+        if not registry_entry:
+            blocked_tool_names.append(tool_name)
+            continue
+        if allowed_tools.intersection(_registry_tool_names(tool_name, registry_entry)):
+            filtered_tools.append(tool)
+            exposed_tool_names.append(tool_name)
+        else:
+            blocked_tool_names.append(tool_name)
+
+    filtered_registry = {
+        tool_name: registry[tool_name]
+        for tool_name in exposed_tool_names
+        if tool_name in registry
+    }
+    return filtered_tools, filtered_registry, {
+        'enforced': True,
+        'action_code': action.get('code') or '',
+        'allowed_tools': sorted(allowed_tools),
+        'available_tools': available_tool_names,
+        'exposed_tools': exposed_tool_names,
+        'blocked_tools': blocked_tool_names,
+    }
+
+
+def _action_tool_filter_should_apply(action, question):
+    if not action:
+        return False
+    allowed_tools = set(action.get('allowed_tools') or [])
+    if is_non_k8s_inventory_question(question) and 'query_task_resources' not in allowed_tools:
+        return False
+    return True
+
+
 def _platform_tool_registry_entry(tool_name):
     return {'kind': 'platform_mcp', 'tool_name': tool_name}
 
@@ -16770,17 +16848,39 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             message='当前没有可用模型，无法发起问答。',
         )
     tools, registry, managed_clients, mcp_diagnostics = _build_runtime_tool_registry(active_mcp_servers, user)
+    action_tool_filter = {'enforced': False}
+    if selected_action and _action_tool_filter_should_apply(selected_action, question):
+        tools, registry, action_tool_filter = _filter_runtime_tools_for_action(tools, registry, selected_action)
+    elif selected_action:
+        action_tool_filter = {
+            'enforced': False,
+            'action_code': selected_action.get('code') or '',
+            'reason': 'routing_policy_requires_task_resources',
+        }
     if analysis_only:
         tools = [
             tool for tool in tools
             if ((tool.get('function') or {}).get('name') != 'generate_host_task')
         ]
         registry.pop('generate_host_task', None)
+        if action_tool_filter.get('enforced') and 'generate_host_task' in set(action_tool_filter.get('exposed_tools') or []):
+            action_tool_filter['exposed_tools'] = [
+                tool_name
+                for tool_name in action_tool_filter.get('exposed_tools') or []
+                if tool_name != 'generate_host_task'
+            ]
+            action_tool_filter['blocked_tools'] = list(action_tool_filter.get('blocked_tools') or []) + ['generate_host_task']
+            action_tool_filter['analysis_only_removed_tools'] = ['generate_host_task']
     if not tools:
         failed_external_mcp = [item for item in mcp_diagnostics if item.get('status') == 'failed']
         failure_detail = ''
         if failed_external_mcp:
             failure_detail = '；'.join(f"{item.get('name')}: {item.get('message')}" for item in failed_external_mcp[:3])
+        elif action_tool_filter.get('enforced'):
+            failure_detail = (
+                f"动作 {action_tool_filter.get('action_code') or '-'} 的 allowed_tools "
+                '与当前 MCP/RBAC 暴露工具没有交集。'
+            )
         emit(
             step={
                 'title': '\u672a\u53d1\u73b0\u53ef\u7528 MCP \u5de5\u5177',
@@ -16797,10 +16897,16 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
 
     failed_mcp_count = len([item for item in mcp_diagnostics if item.get('status') == 'failed'])
     external_tool_count = len([name for name, item in registry.items() if item.get('kind') == 'external'])
+    action_filter_detail = ''
+    if action_tool_filter.get('enforced'):
+        action_filter_detail = (
+            f"；Action 工具约束 {len(action_tool_filter.get('exposed_tools') or [])}/"
+            f"{len(action_tool_filter.get('available_tools') or [])} 个可用"
+        )
     emit(
         step={
             'title': '\u52a0\u8f7d MCP \u4e0e Skill',
-            'detail': f'\u5df2\u542f\u7528 {len(active_mcp_servers)} \u4e2a MCP\uff0c{len(active_skills)} \u4e2a Skill\uff0c外部工具 {external_tool_count} 个，失败 {failed_mcp_count} 个。',
+            'detail': f'\u5df2\u542f\u7528 {len(active_mcp_servers)} \u4e2a MCP\uff0c{len(active_skills)} \u4e2a Skill\uff0c外部工具 {external_tool_count} 个，失败 {failed_mcp_count} 个{action_filter_detail}。',
             'status': PROCESSING_STATUS_COMPLETED,
         },
         text='\u6b63\u5728\u89c4\u5212\u5de5\u5177\u8c03\u7528',
@@ -16980,6 +17086,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                     'formatter_attempts': 0,
                     'fallback_reason': str(exc)[:300],
                     'mcp_diagnostics': mcp_diagnostics,
+                    'action_tool_filter': action_tool_filter,
                     'skill_trace': _build_skill_trace(
                         active_skills,
                         formatter_result={'fell_back': True},
@@ -17124,6 +17231,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             ),
             'formatter_attempts': (formatter_result or {}).get('attempts', 0),
             'mcp_diagnostics': mcp_diagnostics,
+            'action_tool_filter': action_tool_filter,
             'incident_context': session_memory.get('incident_context') or {},
             'skill_trace': _build_skill_trace(
                 active_skills,
