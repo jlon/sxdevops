@@ -863,25 +863,13 @@
         </el-form-item>
         <el-form-item label="核心工具依赖">
           <el-select v-model="skillForm.builtin_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="选择必需工具，保存值为工具 code">
-            <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool">
-              <div class="tool-option">
-                <span>{{ formatSkillToolOptionLabel(tool) }}</span>
-                <small>{{ skillToolOptionDescription(tool) }}</small>
-              </div>
-            </el-option>
+            <el-option v-for="tool in skillToolOptions" :key="`builtin-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool" />
           </el-select>
-          <div class="runtime-field-tip">核心工具会作为 Skill 的必需工具依赖，运行时仍会经过 MCP 可用性、Action 安全策略和 RBAC 过滤。</div>
         </el-form-item>
         <el-form-item label="补充工具依赖">
           <el-select v-model="skillForm.recommended_tools" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="选择可选工具，保存值为工具 code">
-            <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool">
-              <div class="tool-option">
-                <span>{{ formatSkillToolOptionLabel(tool) }}</span>
-                <small>{{ skillToolOptionDescription(tool) }}</small>
-              </div>
-            </el-option>
+            <el-option v-for="tool in skillToolOptions" :key="`recommend-${tool}`" :label="formatSkillToolOptionLabel(tool)" :value="tool" />
           </el-select>
-          <div class="runtime-field-tip">补充工具只作为关联能力候选，用于扩展证据来源，不强制每次注入。</div>
         </el-form-item>
         <el-form-item label="适用角色"><el-select v-model="skillForm.allowed_role_codes" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
         <el-form-item label="输出指导">
@@ -2987,22 +2975,6 @@ onMounted(async () => {
   color: #64748b;
   font-size: 12px;
   line-height: 1.45;
-}
-
-.tool-option {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  line-height: 1.35;
-}
-
-.tool-option span {
-  color: #0f172a;
-}
-
-.tool-option small {
-  color: #64748b;
-  font-size: 12px;
 }
 
 .section-toolbar {
