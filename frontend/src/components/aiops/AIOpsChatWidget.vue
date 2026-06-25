@@ -636,6 +636,8 @@ const composer = ref('')
 const currentSessionId = ref(Number(localStorage.getItem(STORAGE_SESSION_KEY) || '') || null)
 const newSessionAgentSlug = ref(localStorage.getItem(STORAGE_AGENT_KEY) || '')
 const newSessionEnvironmentName = ref(localStorage.getItem(STORAGE_ENVIRONMENT_KEY) || '')
+const selectedAgentSlug = ref(localStorage.getItem(STORAGE_AGENT_KEY) || '')
+const selectedEnvironmentOverride = ref(localStorage.getItem(STORAGE_ENVIRONMENT_KEY) || '')
 const loading = ref({ bootstrap: false, sessions: false, messages: false, send: false, poll: false, deleteSession: null })
 const pendingAssistantMessage = ref(null)
 const messageListRef = ref(null)
@@ -669,10 +671,10 @@ const currentSession = computed(() => sessions.value.find(item => item.id === cu
 const availableAgents = computed(() => bootstrap.value.available_agents || [])
 const sessionAgentSlug = computed(() => currentSession.value?.agent?.slug || currentSession.value?.context?.agent_slug || '')
 const fallbackAgentSlug = computed(() => bootstrap.value.default_agent?.slug || availableAgents.value[0]?.slug || '')
-const currentAgentSlug = computed(() => currentSessionId.value ? sessionAgentSlug.value || fallbackAgentSlug.value : newSessionAgentSlug.value || fallbackAgentSlug.value)
+const currentAgentSlug = computed(() => selectedAgentSlug.value || sessionAgentSlug.value || newSessionAgentSlug.value || fallbackAgentSlug.value)
 const currentAgent = computed(() => availableAgents.value.find(item => item.slug === currentAgentSlug.value) || bootstrap.value.default_agent || null)
 const currentAgentName = computed(() => currentAgent.value?.name || '')
-const agentSelectorValue = computed(() => currentSessionId.value ? currentAgentSlug.value : newSessionAgentSlug.value || fallbackAgentSlug.value)
+const agentSelectorValue = computed(() => currentAgentSlug.value)
 const currentAgentRuntime = computed(() => currentAgent.value?.runtime || {})
 const currentRuntime = computed(() => currentSession.value?.context?.runtime || currentAgentRuntime.value || bootstrap.value.runtime || {})
 const currentProvider = computed(() => currentAgentRuntime.value?.provider || bootstrap.value.provider || {})
@@ -719,8 +721,19 @@ const fallbackEnvironmentName = computed(() => {
   return platformDefault || agentEnvironmentOptions.value[0]?.name || ''
 })
 const selectedEnvironmentName = computed(() => {
-  if (currentSessionId.value) return currentEnvironmentName.value || fallbackEnvironmentName.value
-  return newSessionEnvironmentName.value || fallbackEnvironmentName.value
+  const options = agentEnvironmentOptions.value
+  const allowedNames = new Set(options.map(item => item.name).filter(Boolean))
+  const candidates = [
+    selectedEnvironmentOverride.value,
+    currentSessionId.value ? currentEnvironmentName.value : '',
+    newSessionEnvironmentName.value,
+    fallbackEnvironmentName.value,
+  ]
+  for (const name of candidates) {
+    if (!name) continue
+    if (!allowedNames.size || allowedNames.has(name)) return name
+  }
+  return fallbackEnvironmentName.value || ''
 })
 const environmentSelectorValue = computed(() => selectedEnvironmentName.value || '')
 const environmentSelectPlaceholder = computed(() => {
@@ -1721,11 +1734,11 @@ async function refreshSessionListOnly() {
 }
 
 function preferredAgentSlug() {
-  return newSessionAgentSlug.value || fallbackAgentSlug.value
+  return selectedAgentSlug.value || newSessionAgentSlug.value || sessionAgentSlug.value || fallbackAgentSlug.value
 }
 
 function preferredEnvironmentName() {
-  return newSessionEnvironmentName.value || currentEnvironmentName.value || fallbackEnvironmentName.value || ''
+  return selectedEnvironmentOverride.value || newSessionEnvironmentName.value || currentEnvironmentName.value || fallbackEnvironmentName.value || ''
 }
 
 function defaultEnvironmentForAgent(agentSlug = '') {
@@ -1745,12 +1758,41 @@ function environmentOptionLabel(environment = {}) {
 }
 
 function rememberEnvironment(name = '') {
+  selectedEnvironmentOverride.value = name || ''
   newSessionEnvironmentName.value = name || ''
   if (name) {
     localStorage.setItem(STORAGE_ENVIRONMENT_KEY, name)
   } else {
     localStorage.removeItem(STORAGE_ENVIRONMENT_KEY)
   }
+}
+
+function applyEnvironmentSelection(name = '') {
+  selectedEnvironmentOverride.value = name || ''
+}
+
+function apiErrorMessage(error, fallback = '操作失败') {
+  const data = error?.response?.data
+  if (!data) return fallback
+  if (typeof data === 'string') return data || fallback
+  for (const key of ['detail', 'environment_name', 'agent_slug', 'content', 'non_field_errors']) {
+    const value = data[key]
+    if (Array.isArray(value)) return value.join('；') || fallback
+    if (value) return String(value)
+  }
+  return fallback
+}
+
+function syncSelectionFromSession(session = currentSession.value) {
+  const sessionAgent = session?.agent?.slug || session?.context?.agent_slug || ''
+  const sessionEnvironment = session?.context?.current_environment
+  const sessionEnvironmentName = typeof sessionEnvironment === 'string' ? sessionEnvironment : (sessionEnvironment?.name || '')
+  const nextAgentSlug = sessionAgent || fallbackAgentSlug.value || ''
+  if (nextAgentSlug) {
+    selectedAgentSlug.value = nextAgentSlug
+    newSessionAgentSlug.value = nextAgentSlug
+  }
+  applyEnvironmentSelection(sessionEnvironmentName || defaultEnvironmentForAgent(nextAgentSlug))
 }
 
 async function createSessionForAgent(agentSlug = preferredAgentSlug(), draft = composer.value, environmentName = preferredEnvironmentName()) {
@@ -1874,11 +1916,14 @@ async function fetchBootstrap() {
   loading.value.bootstrap = true
   try {
     bootstrap.value = await getAIOpsBootstrap()
-    if (!newSessionAgentSlug.value) {
-      newSessionAgentSlug.value = preferredAgentSlug()
+    const initialAgentSlug = selectedAgentSlug.value || newSessionAgentSlug.value || fallbackAgentSlug.value
+    if (initialAgentSlug) {
+      selectedAgentSlug.value = initialAgentSlug
+      newSessionAgentSlug.value = initialAgentSlug
+      localStorage.setItem(STORAGE_AGENT_KEY, initialAgentSlug)
     }
-    if (!newSessionEnvironmentName.value) {
-      rememberEnvironment(defaultEnvironmentForAgent(newSessionAgentSlug.value || preferredAgentSlug()))
+    if (!selectedEnvironmentOverride.value && !newSessionEnvironmentName.value) {
+      rememberEnvironment(defaultEnvironmentForAgent(initialAgentSlug || preferredAgentSlug()))
     }
   } finally {
     loading.value.bootstrap = false
@@ -1911,6 +1956,7 @@ async function selectSession(sessionId) {
   loading.value.messages = true
   try {
     messages.value = await getAIOpsMessages(sessionId)
+    syncSelectionFromSession()
     resumeMessagePolling(sessionId, messages.value)
     loadDraft(sessionId)
     await nextTick()
@@ -1925,13 +1971,13 @@ async function handleCreateSession() {
   try {
     await createSessionForAgent(preferredAgentSlug(), '')
   } catch (error) {
-    ElMessage.error(error?.response?.data?.detail || '创建会话失败')
+    ElMessage.error(apiErrorMessage(error, '创建会话失败'))
   }
 }
 
 async function ensureSession() {
   if (currentSessionId.value) return currentSessionId.value
-  const session = await createSessionForAgent(preferredAgentSlug(), composer.value)
+  const session = await createSessionForAgent(preferredAgentSlug(), composer.value, selectedEnvironmentName.value)
   return session.id
 }
 
@@ -1964,7 +2010,7 @@ async function handleSend() {
     const response = await sendAIOpsMessageAsync(sessionId, {
       content,
       analysis_only: effectiveAnalysisOnly.value,
-      agent_slug: sessionAgentSlug.value || '',
+      agent_slug: currentAgentSlug.value || '',
       environment_name: selectedEnvironmentName.value || '',
       page_context: buildPageContext(),
     })
@@ -1972,6 +2018,7 @@ async function handleSend() {
     messages.value.push(response.assistant_message)
     pendingAssistantMessage.value = null
     await refreshSessionListOnly()
+    syncSelectionFromSession(sessions.value.find(item => item.id === sessionId))
     startMessagePolling(sessionId, response.assistant_message?.id)
     await nextTick()
     scrollToBottom(true)
@@ -1979,7 +2026,7 @@ async function handleSend() {
   } catch (error) {
     composer.value = rawContent
     persistDraft(sessionId, rawContent)
-    ElMessage.error(error?.response?.data?.detail || '发送失败，请稍后重试')
+    ElMessage.error(apiErrorMessage(error, '发送失败，请稍后重试'))
   } finally {
     loading.value.send = false
     pendingAssistantMessage.value = null
@@ -1987,65 +2034,25 @@ async function handleSend() {
 }
 
 async function handleAgentChange(value) {
-  if (!currentSessionId.value) {
-    newSessionAgentSlug.value = value || ''
-    const nextDefaultEnvironment = defaultEnvironmentForAgent(value)
-    if (nextDefaultEnvironment) {
-      rememberEnvironment(nextDefaultEnvironment)
-    }
-    if (value) {
-      localStorage.setItem(STORAGE_AGENT_KEY, value)
-    } else {
-      localStorage.removeItem(STORAGE_AGENT_KEY)
-    }
-    return
+  const nextAgentSlug = value || fallbackAgentSlug.value || ''
+  selectedAgentSlug.value = nextAgentSlug
+  newSessionAgentSlug.value = nextAgentSlug
+  if (nextAgentSlug) {
+    localStorage.setItem(STORAGE_AGENT_KEY, nextAgentSlug)
+  } else {
+    localStorage.removeItem(STORAGE_AGENT_KEY)
   }
-  if (value === sessionAgentSlug.value) return
-
-  const draft = composer.value
-  try {
-    loading.value.sessions = true
-    const nextDefaultEnvironment = defaultEnvironmentForAgent(value)
-    if (nextDefaultEnvironment) {
-      rememberEnvironment(nextDefaultEnvironment)
-    }
-    const session = await createSessionForAgent(value, draft, nextDefaultEnvironment)
-    const createdAgentSlug = session?.agent?.slug || session?.context?.agent_slug || value || ''
-    newSessionAgentSlug.value = createdAgentSlug
-    if (createdAgentSlug) {
-      localStorage.setItem(STORAGE_AGENT_KEY, createdAgentSlug)
-    } else {
-      localStorage.removeItem(STORAGE_AGENT_KEY)
-    }
-    ElMessage.success('已切换到新 Agent 会话')
-    focusComposer()
-  } catch (error) {
-    ElMessage.error(error?.response?.data?.agent_slug || error?.response?.data?.detail || '切换 Agent 失败')
-  } finally {
-    loading.value.sessions = false
-  }
+  const nextDefaultEnvironment = defaultEnvironmentForAgent(nextAgentSlug)
+  if (nextDefaultEnvironment) rememberEnvironment(nextDefaultEnvironment)
+  persistDraft()
+  focusComposer()
 }
 
 async function handleEnvironmentChange(value) {
   const environmentName = value || fallbackEnvironmentName.value || ''
-  if (!currentSessionId.value) {
-    rememberEnvironment(environmentName)
-    return
-  }
-  if (environmentName === currentEnvironmentName.value) return
-
-  const draft = composer.value
-  try {
-    loading.value.sessions = true
-    rememberEnvironment(environmentName)
-    await createSessionForAgent(currentAgentSlug.value, draft, environmentName)
-    ElMessage.success('已切换到新环境会话')
-    focusComposer()
-  } catch (error) {
-    ElMessage.error(error?.response?.data?.environment_name || error?.response?.data?.detail || '切换环境失败')
-  } finally {
-    loading.value.sessions = false
-  }
+  rememberEnvironment(environmentName)
+  persistDraft()
+  focusComposer()
 }
 
 async function handleConfirmAction(action) {
@@ -2066,7 +2073,7 @@ async function handleConfirmAction(action) {
     ElMessage.success(`已创建任务 ${result.task_name}`)
     await selectSession(currentSessionId.value)
   } catch (error) {
-    ElMessage.error(error?.response?.data?.detail || '确认执行失败')
+    ElMessage.error(apiErrorMessage(error, '确认执行失败'))
   }
 }
 
@@ -2107,7 +2114,7 @@ async function handleDeleteSession(session) {
     await selectSession(sessions.value[0].id)
     ElMessage.success('会话已删除')
   } catch (error) {
-    ElMessage.error(error?.response?.data?.detail || '删除会话失败')
+    ElMessage.error(apiErrorMessage(error, '删除会话失败'))
   } finally {
     loading.value.deleteSession = null
   }
@@ -2119,7 +2126,7 @@ async function handleCancelAction(action) {
     ElMessage.success('已取消待执行任务')
     await selectSession(currentSessionId.value)
   } catch (error) {
-    ElMessage.error(error?.response?.data?.detail || '取消失败')
+    ElMessage.error(apiErrorMessage(error, '取消失败'))
   }
 }
 
@@ -2148,18 +2155,6 @@ async function chooseEnvironmentCandidate(message, index, candidate) {
   rememberEnvironment(candidate.name)
   composer.value = previousPrompt || composer.value
   persistDraft()
-  if (currentSessionId.value && candidate.name !== currentEnvironmentName.value) {
-    try {
-      loading.value.sessions = true
-      await createSessionForAgent(currentAgentSlug.value, composer.value)
-    } catch (error) {
-      ElMessage.error(error?.response?.data?.environment_name || error?.response?.data?.detail || '设置环境失败')
-      loading.value.sessions = false
-      return
-    } finally {
-      loading.value.sessions = false
-    }
-  }
   await nextTick()
   await handleSend()
 }
