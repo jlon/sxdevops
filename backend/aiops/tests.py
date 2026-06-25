@@ -50,6 +50,7 @@ from .services import (
     _ensure_followup_line,
     _formatter_repair_issue,
     _build_history_messages,
+    _build_runtime_prompt,
     _extract_shell_command_from_question,
     _is_formatted_answer_valid,
     _is_direct_log_question,
@@ -6906,6 +6907,46 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.data['assistant_message']['metadata']['processing_status'], 'pending')
         mocked_start_async.assert_called_once()
 
+    def test_lightweight_chat_bypasses_model_and_tools(self):
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'light-chat'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '在吗'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        assistant_message = response.data['assistant_message']
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'lightweight_chat')
+        self.assertEqual(assistant_message['tool_calls'], [])
+        self.assertIn('我在', assistant_message['content'])
+        self.assertFalse(AIOpsModelInvocation.objects.exists())
+        self.assertFalse(AIOpsToolInvocation.objects.exists())
+
+    @mock.patch('aiops.views.start_async_chat_processing')
+    def test_lightweight_async_chat_returns_completed_without_worker(self, mocked_start_async):
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'light-chat-async'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message_async/',
+            {'content': '在吗'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        assistant_message = response.data['assistant_message']
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'lightweight_chat')
+        self.assertEqual(assistant_message['metadata']['processing_status'], 'completed')
+        self.assertIn('我在', assistant_message['content'])
+        self.assertFalse(AIOpsModelInvocation.objects.exists())
+        self.assertFalse(AIOpsToolInvocation.objects.exists())
+        mocked_start_async.assert_not_called()
+
     @mock.patch('aiops.views.start_async_chat_processing')
     def test_chat_session_and_async_message_persist_page_context(self, mocked_start_async):
         initial_context = {
@@ -9474,6 +9515,34 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(validation['catalog_without_executor'], [])
         self.assertEqual(managed_clients, [])
 
+    def test_runtime_prompt_uses_skill_metadata_without_full_skill_body(self):
+        config = get_agent_config()
+        skill = AIOpsSkill.objects.create(
+            name='HBase Inspector',
+            slug='hbase-inspector',
+            description='分析 HBase 集群节点、RegionServer 和 Master 状态。',
+            category='HBase 运维',
+            content='HBASE_FULL_RUNBOOK_BODY_SHOULD_NOT_BE_IN_PLANNER_PROMPT',
+            applicable_actions=['resource.inventory'],
+            examples=['本地 HBase 集群有几个节点'],
+            builtin_tools=['query_task_resources'],
+            output_contract={'trigger_keywords': ['HBase', 'RegionServer']},
+            is_enabled=True,
+        )
+
+        prompt = _build_runtime_prompt(
+            config,
+            [],
+            [skill],
+            self.user,
+            skill_prompt_trace={'prompt_skill_count': 1, 'enabled_count': 1, 'prompt_skill_limit': 6},
+        )
+
+        self.assertIn('HBase Inspector', prompt)
+        self.assertIn('触发线索：HBase、RegionServer、本地 HBase 集群有几个节点', prompt)
+        self.assertIn('query_task_resources', prompt)
+        self.assertNotIn('HBASE_FULL_RUNBOOK_BODY_SHOULD_NOT_BE_IN_PLANNER_PROMPT', prompt)
+
     @mock.patch('aiops.services._create_mcp_client_session')
     def test_runtime_registry_exposes_external_mcp_failure_diagnostics(self, mocked_create_session):
         server = AIOpsMCPServer.objects.create(
@@ -9492,6 +9561,26 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(diagnostics[0]['status'], 'failed')
         self.assertIn('[REDACTED]', diagnostics[0]['message'])
         self.assertNotIn('secret-value', diagnostics[0]['message'])
+
+    @mock.patch('aiops.services._create_mcp_client_session')
+    def test_runtime_registry_short_circuits_recent_external_mcp_discovery_failure(self, mocked_create_session):
+        server = AIOpsMCPServer.objects.create(
+            name='Slow Broken MCP',
+            server_type=AIOpsMCPServer.SERVER_HTTP,
+            endpoint_or_command='https://mcp.example.com',
+            is_enabled=True,
+        )
+        mocked_create_session.side_effect = RuntimeError('connect failed')
+
+        first_tools, _first_registry, _first_clients, first_diagnostics = _build_runtime_tool_registry([server], self.user)
+        second_tools, _second_registry, _second_clients, second_diagnostics = _build_runtime_tool_registry([server], self.user)
+
+        self.assertEqual(first_tools, [])
+        self.assertEqual(second_tools, [])
+        self.assertEqual(mocked_create_session.call_count, 1)
+        self.assertEqual(first_diagnostics[0]['status'], 'failed')
+        self.assertEqual(second_diagnostics[0]['status'], 'failed')
+        self.assertIn('已短期跳过外部 MCP 探测', second_diagnostics[0]['message'])
 
     def test_external_mcp_result_summary_uses_structured_content_and_citations(self):
         server = AIOpsMCPServer.objects.create(

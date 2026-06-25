@@ -76,6 +76,9 @@ from .services import (
     create_external_task,
     dispatch_chat,
     ensure_default_agent_profile,
+    _apply_dispatch_result_to_message,
+    _build_lightweight_chat_result,
+    _is_lightweight_chat_question,
     get_agent_config,
     resolve_agent_profile_for_user,
     resolve_agent_chat_environment,
@@ -1257,6 +1260,22 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             session.title = content[:48] or '新会话'
         session.save(update_fields=['last_message_at', 'title', 'updated_at'])
         sync_session_to_demo_if_needed(session)
+        if _is_lightweight_chat_question(content):
+            result = _build_lightweight_chat_result(content)
+            assistant_message, pending_action = _apply_dispatch_result_to_message(
+                session,
+                assistant_message,
+                result,
+                request.user,
+                enable_stream=False,
+                question=content,
+                analysis_only=analysis_only,
+            )
+            return Response({
+                'user_message': AIOpsChatMessageSerializer(user_message).data,
+                'assistant_message': AIOpsChatMessageSerializer(assistant_message).data,
+                'pending_action': AIOpsPendingActionSerializer(pending_action).data if pending_action else None,
+            }, status=status.HTTP_201_CREATED)
         start_async_chat_processing(session, user_message, request.user, assistant_message, analysis_only=analysis_only)
         return Response({
             'user_message': AIOpsChatMessageSerializer(user_message).data,

@@ -2019,7 +2019,11 @@ async function handleSend() {
     pendingAssistantMessage.value = null
     await refreshSessionListOnly()
     syncSelectionFromSession(sessions.value.find(item => item.id === sessionId))
-    startMessagePolling(sessionId, response.assistant_message?.id)
+    if (isMessageProcessing(response.assistant_message)) {
+      startMessagePolling(sessionId, response.assistant_message?.id)
+    } else {
+      stopMessagePolling()
+    }
     await nextTick()
     scrollToBottom(true)
     focusComposer()

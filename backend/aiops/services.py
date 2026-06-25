@@ -280,6 +280,7 @@ MCP_CLIENT_INFO = {'name': 'SxDevOps AIOps', 'version': '1.0.0'}
 MCP_TOOL_NAME_MAX_CHARS = 64
 MCP_TOOL_DESCRIPTION_MAX_CHARS = 1200
 MCP_RESULT_TEXT_MAX_CHARS = 800
+MCP_DISCOVERY_FAILURE_CACHE_SECONDS = 120
 MCP_READ_ONLY_DENY_PATTERN = re.compile(
     r'^(create|update|delete|remove|write|patch|mutate|execute|run|apply|drop|truncate|grant|revoke)([_\-.]|$)',
     re.IGNORECASE,
@@ -2790,11 +2791,22 @@ def _truncate_skill_content(content, limit=1200):
     return text[: max(limit - 1, 0)].rstrip() + '…'
 
 
+def _skill_prompt_trigger_keywords(skill, limit=8):
+    output_contract = getattr(skill, 'output_contract', None) or {}
+    candidates = []
+    if isinstance(output_contract, dict):
+        candidates.extend(_normalize_text_list(output_contract.get('trigger_keywords') or output_contract.get('keywords'), limit=limit))
+    candidates.extend(_normalize_text_list(getattr(skill, 'examples', None) or [], limit=limit))
+    return list(dict.fromkeys([item for item in candidates if item]))[:limit]
+
+
 def _format_skill_prompt_block(skill, *, include_content=True):
     declared_tools = _skill_declared_tools(skill)
+    trigger_keywords = _skill_prompt_trigger_keywords(skill)
     lines = [
         f"- {skill.name}（{skill.category or '未分类'}）：{skill.description}",
         f"  推荐场景/运行策略：{'、'.join(skill.applicable_actions or []) or '通用，按问题和触发词匹配'}",
+        f"  触发线索：{'、'.join(trigger_keywords) or '以名称、描述和用户问题语义匹配'}",
         f"  能力依赖：{'、'.join(declared_tools) or '未声明工具依赖'}；用于提示优先取证，真实可用工具由 MCP 可用性、用户 RBAC 和运行策略过滤。",
     ]
     if include_content:
@@ -2808,7 +2820,7 @@ def _limit_skill_prompt_blocks(skills, *, max_count, max_chars):
     selected = []
     total_chars = 0
     for skill in skills or []:
-        block = _format_skill_prompt_block(skill)
+        block = _format_skill_prompt_block(skill, include_content=False)
         projected = total_chars + len(block)
         if selected and (len(selected) >= max_count or projected > max_chars):
             break
@@ -12099,7 +12111,11 @@ def _build_formatter_fact_digest(collected_tool_outputs, citations=None, pending
 
 
 def _build_answer_formatter_messages(question, draft_content, sections, citations, tool_calls, pending_action_draft, message_type, formatter_skill, active_skills, collected_tool_outputs=None, attempt=1, previous_issue='', reference_answer='', skill_prompt_trace=None):
-    skill_lines = [_format_skill_prompt_block(skill) for skill in active_skills or []]
+    skill_lines = [
+        _format_skill_prompt_block(skill, include_content=False)
+        for skill in active_skills or []
+        if getattr(skill, 'slug', '') != ANSWER_FORMATTER_SKILL_SLUG
+    ]
     skill_trace_line = ''
     if isinstance(skill_prompt_trace, dict):
         skill_trace_line = (
@@ -14692,6 +14708,52 @@ def _build_dispatch_error_result(detail='', code='error', message='问答失败�
     }
 
 
+def _normalize_light_chat_text(question):
+    return re.sub(r'[\s，。！？!?、,.~～…]+', '', str(question or '').strip().lower())
+
+
+def _is_lightweight_chat_question(question):
+    text = _normalize_light_chat_text(question)
+    if not text:
+        return False
+    greetings = {
+        '在吗', '在不在', '你好', '您好', 'hi', 'hello', 'hey',
+        '哈喽', '嗨', '早', '早上好', '下午好', '晚上好',
+    }
+    capability_questions = {
+        '你是谁', '你能做什么', '能做什么', '你会什么', '怎么用',
+        '介绍下自己', '介绍一下自己', '有什么功能', '有哪些功能',
+    }
+    return text in greetings or text in capability_questions
+
+
+def _build_lightweight_chat_result(question):
+    text = _normalize_light_chat_text(question)
+    if text in {'你是谁', '你能做什么', '能做什么', '你会什么', '怎么用', '介绍下自己', '介绍一下自己', '有什么功能', '有哪些功能'}:
+        content = (
+            '我在。你可以直接告诉我环境、系统或资源范围，我可以帮你查询资源、分析告警、关联事件、生成待确认任务草稿。'
+        )
+    else:
+        content = '我在。你可以直接说要查看哪个环境、资源、告警或任务。'
+    return {
+        'content': content,
+        'citations': [],
+        'tool_calls': [],
+        'message_type': AIOpsChatMessage.TYPE_TEXT,
+        'pending_action_draft': None,
+        'metadata': {
+            'execution_mode': 'lightweight_chat',
+            'processing_steps': [{
+                'title': '轻量问答',
+                'detail': '识别为寒暄或能力咨询，未进入 AIOps 取证链路。',
+                'status': PROCESSING_STATUS_COMPLETED,
+                'timestamp': timezone.now().isoformat(),
+            }],
+            'tool_events': [],
+        },
+    }
+
+
 def _format_model_call_error(detail):
     if isinstance(detail, dict):
         try:
@@ -15638,6 +15700,30 @@ def _build_mcp_runtime_diagnostic(server, status, message='', tool_count=0):
     }
 
 
+def _mcp_discovery_failure_cache_key(server):
+    return f'aiops:mcp-discovery-failed:{_fingerprint_mcp_config(server)}'
+
+
+def _get_cached_mcp_discovery_failure(server):
+    failure = cache.get(_mcp_discovery_failure_cache_key(server))
+    return failure if isinstance(failure, dict) else None
+
+
+def _cache_mcp_discovery_failure(server, message):
+    cache.set(
+        _mcp_discovery_failure_cache_key(server),
+        {
+            'message': _sanitize_mcp_error_text(message),
+            'cached_at': timezone.now().isoformat(),
+        },
+        MCP_DISCOVERY_FAILURE_CACHE_SECONDS,
+    )
+
+
+def _clear_cached_mcp_discovery_failure(server):
+    cache.delete(_mcp_discovery_failure_cache_key(server))
+
+
 def _truncate_text(value, limit):
     text = str(value or '').strip()
     if len(text) <= limit:
@@ -16093,7 +16179,7 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
             diagnostic_lines.append(f"- {item.get('name')}：不可用，原因：{item.get('message') or '连接失败'}")
         elif item.get('status') == 'connected' and item.get('server_type') != AIOpsMCPServer.SERVER_PLATFORM_BUILTIN:
             diagnostic_lines.append(f"- {item.get('name')}：已连接，发现 {item.get('tool_count') or 0} 个外部工具")
-    skill_lines = [_format_skill_prompt_block(skill) for skill in active_skills]
+    skill_lines = [_format_skill_prompt_block(skill, include_content=False) for skill in active_skills]
     skill_trace_line = ''
     if isinstance(skill_prompt_trace, dict):
         skill_trace_line = (
@@ -16563,11 +16649,20 @@ def _build_runtime_tool_registry(active_mcp_servers, user):
     for server in active_mcp_servers:
         if server.server_type == AIOpsMCPServer.SERVER_PLATFORM_BUILTIN:
             continue
+        cached_failure = _get_cached_mcp_discovery_failure(server)
+        if cached_failure:
+            diagnostics.append(_build_mcp_runtime_diagnostic(
+                server,
+                'failed',
+                f"{cached_failure.get('message') or '上次发现失败'}（已短期跳过外部 MCP 探测）",
+            ))
+            continue
         client_session = None
         try:
             client_session = _create_mcp_client_session(server)
             client_session.initialize()
             external_tools = _discover_external_mcp_tools(server, client_session)
+            _clear_cached_mcp_discovery_failure(server)
             if external_tools:
                 managed_clients.append(client_session)
             else:
@@ -16595,6 +16690,7 @@ def _build_runtime_tool_registry(active_mcp_servers, user):
                     'description_warnings': ((tool.get('_meta') or {}).get('description_warnings') or []),
                 }
         except Exception as exc:
+            _cache_mcp_discovery_failure(server, str(exc))
             diagnostics.append(_build_mcp_runtime_diagnostic(server, 'failed', str(exc)))
             if client_session is not None:
                 try:
@@ -18225,6 +18321,12 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
 
 def _build_chat_result(session, user_message, user, question, progress_callback=None, analysis_only=False):
     emit = progress_callback or (lambda **kwargs: None)
+    if _is_lightweight_chat_question(question):
+        emit(
+            status_value=PROCESSING_STATUS_RUNNING,
+            text='已识别为轻量问答',
+        )
+        return _build_lightweight_chat_result(question)
     emit(
         status_value=PROCESSING_STATUS_RUNNING,
         text='已收到问题，正在准备上下文',
