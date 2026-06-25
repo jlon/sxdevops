@@ -28,6 +28,7 @@ from django.utils.dateparse import parse_date, parse_datetime
 from cmdb.models import ConfigItem
 from eventwall.models import EventRecord
 from eventwall.services import record_event
+from sxdevops.features import filter_feature_tools
 from ops.host_tasks import build_host_target_snapshot as build_ops_host_target_snapshot
 from ops.host_tasks import build_k8s_target_snapshot as build_ops_k8s_target_snapshot
 from ops.host_tasks import resolve_host_source_refs, start_host_task, start_k8s_task

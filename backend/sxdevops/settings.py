@@ -352,6 +352,8 @@ ALLOWED_HOSTS = [
     if host.strip()
 ]
 
+X_FRAME_OPTIONS = os.getenv('X_FRAME_OPTIONS', 'SAMEORIGIN')
+
 
 # Application definition
 

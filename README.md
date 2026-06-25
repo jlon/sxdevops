@@ -77,6 +77,7 @@ SxDevOps AI Agent = **可观测性 + 事件中心 + 任务中心 + AIOps**
 SxDevOps 的 Agent 运行逻辑不是“用户提问 -> 大模型自由回答”，而是一套受控编排链路：**Action Router 先判断任务类型，Agent Mode 决定推理方式，Preflight 守住执行边界，Skill/SOP 约束专业过程，MCP 连接外部与平台工具，最终由审计和反馈闭环沉淀结果**。
 
 ```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 10, "rankSpacing": 14, "curve": "basis"}, "themeVariables": {"fontSize": "12px"}}}%%
 flowchart TB
     input["用户问题 / 页面上下文 / 外部协同任务"] --> router["Action Router<br/>识别任务入口与风险边界"]
     router --> mode{"Agent Mode"}
@@ -172,8 +173,7 @@ flowchart LR
 
 ### 方式一：Docker Compose
 
-（注意目前此启动方式我还没来得及测试，可能还有问题，可以先用本地开发方式启动，或者让你的AI来优化下启动方式）
-（等我今天晚上抽空测试完善下此启动方式后再把这两句删掉）
+（此部署方式自测已没问题，如有问题请再跟我反应。后面稳定版我加上 dockerhub 镜像，这样首次部署可以不用拉依赖了）
 仓库内置应用、MySQL 和 Redis 编排，适合最快体验完整功能：
 
 ```bash

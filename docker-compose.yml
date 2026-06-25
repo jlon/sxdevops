@@ -22,7 +22,6 @@ services:
       CHANNEL_REDIS_URL: redis://redis:6379/1
       SECRET_KEY: sxdevops-change-me-in-production
       DEBUG: "0"
-      ALLOWED_HOSTS: localhost,127.0.0.1,0.0.0.0,www.sxdevops.top
       CORS_ALLOW_ALL_ORIGINS: "1"
       SXDEVOPS_WAIT_FOR_DB: "1"
       SXDEVOPS_MIGRATE: "1"

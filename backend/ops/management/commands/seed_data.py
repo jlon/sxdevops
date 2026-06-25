@@ -173,8 +173,11 @@ def seed_marketplace_demo(stdout, hosts):
 def create_marketplace_deployment(item):
     columns = set()
     with connection.cursor() as cursor:
-        cursor.execute('PRAGMA table_info(marketplace_servicedeployment)')
-        columns = {row[1] for row in cursor.fetchall()}
+        table_description = connection.introspection.get_table_description(
+            cursor,
+            ServiceDeployment._meta.db_table,
+        )
+        columns = {column.name for column in table_description}
 
     now = timezone.now()
     status_value = item.get('status', 'pending')
