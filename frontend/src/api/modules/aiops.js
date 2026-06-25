@@ -5,7 +5,7 @@ const AIOPS_MODEL_TEST_TIMEOUT = 45000
 
 export const getAIOpsBootstrap = () => request.get('/aiops/bootstrap/')
 export const getAIOpsKnowledgeGraph = (params) => request.get('/aiops/knowledge-graph/', { params })
-export const getAIOpsKnowledgeEnvironments = (params) => request.get('/aiops/knowledge-environments/', { params })
+export const getAIOpsKnowledgeEnvironments = (params, config = {}) => request.get('/aiops/knowledge-environments/', { params, ...config })
 export const getAIOpsKnowledgeEnvironmentCatalog = () => request.get('/aiops/knowledge-environments/catalog/')
 export const createAIOpsKnowledgeEnvironment = (data) => request.post('/aiops/knowledge-environments/', data)
 export const updateAIOpsKnowledgeEnvironment = (id, data) => request.patch(`/aiops/knowledge-environments/${id}/`, data)

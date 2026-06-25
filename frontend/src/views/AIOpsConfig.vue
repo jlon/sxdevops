@@ -1001,6 +1001,29 @@
             </el-select>
           </el-form-item>
         </div>
+        <div class="dialog-grid">
+          <el-form-item label="默认环境">
+            <el-select v-model="agentForm.default_knowledge_environment_id" clearable filterable style="width:100%" placeholder="新会话自动带入的知识图谱环境">
+              <el-option
+                v-for="environment in agentAllowedEnvironmentOptions"
+                :key="environment.id"
+                :label="knowledgeEnvironmentLabel(environment)"
+                :value="environment.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="允许环境">
+            <el-select v-model="agentForm.allowed_knowledge_environment_ids" multiple collapse-tags collapse-tags-tooltip filterable style="width:100%" placeholder="空表示不限制环境">
+              <el-option
+                v-for="environment in knowledgeEnvironments"
+                :key="environment.id"
+                :label="knowledgeEnvironmentLabel(environment)"
+                :value="environment.id"
+              />
+            </el-select>
+          </el-form-item>
+        </div>
+        <div class="runtime-field-tip agent-scope-tip">默认环境决定聊天新会话的起点；允许环境决定该 Agent 能访问的知识图谱范围。</div>
         <el-form-item label="允许角色">
           <el-select v-model="agentForm.allowed_role_codes" multiple filterable allow-create default-first-option collapse-tags collapse-tags-tooltip style="width:100%" placeholder="空表示仅按 RBAC 控制">
             <el-option v-for="role in roleOptions" :key="role.value" :label="role.label" :value="role.value" />
@@ -1182,6 +1205,7 @@ import {
   getAIOpsActions,
   getAIOpsAgents,
   getAIOpsConfig,
+  getAIOpsKnowledgeEnvironments,
   getAIOpsPlatformMcpManifest,
   getAIOpsProviderPresets,
   getAIOpsReviewKnowledge,
@@ -1220,6 +1244,7 @@ const selectedAgentId = ref(null)
 const agentBaselinePanels = ref([])
 const skillAdvancedPanels = ref([])
 const agentRoles = ref([])
+const knowledgeEnvironments = ref([])
 const providers = ref([])
 const providerPresets = ref([])
 const mcpServers = ref([])
@@ -1356,6 +1381,11 @@ const selectedAgent = computed(() => {
 })
 const defaultAgent = computed(() => agents.value.find(item => item.is_default) || agents.value.find(item => item.slug === 'general') || null)
 const agentBindOptions = computed(() => agents.value.slice().sort((a, b) => Number(b.is_default) - Number(a.is_default) || String(a.name).localeCompare(String(b.name), 'zh-CN')))
+const agentAllowedEnvironmentOptions = computed(() => {
+  const ids = new Set((agentForm.allowed_knowledge_environment_ids || []).map(item => Number(item)).filter(Boolean))
+  if (!ids.size) return knowledgeEnvironments.value
+  return knowledgeEnvironments.value.filter(item => ids.has(Number(item.id)))
+})
 const builtinRoleOptions = [
   { label: '平台管理员', value: 'platform-admin' },
   { label: '运维管理员', value: 'ops-admin' },
@@ -1764,6 +1794,11 @@ function agentBindTip(resourceName) {
   return `选择 Agent 后保存会同步绑定；留空表示不把该 ${resourceName} 绑定到任何 Agent。`
 }
 
+function knowledgeEnvironmentLabel(environment = {}) {
+  const alias = Array.isArray(environment.aliases) && environment.aliases.length ? `（${environment.aliases[0]}）` : ''
+  return `${environment.name || '未命名环境'}${alias}`
+}
+
 function boundAgentIdsForProvider(provider = {}) {
   if (!provider?.id) return []
   return agents.value
@@ -2063,6 +2098,8 @@ function resetAgentForm() {
     slug: '',
     description: '',
     default_provider_id: null,
+    default_knowledge_environment_id: null,
+    allowed_knowledge_environment_ids: [],
     system_prompt: '',
     welcome_message: '',
     suggested_questions: [],
@@ -2088,6 +2125,8 @@ function applyDefaultAgentSeedToForm() {
   if (!source) return
   Object.assign(agentForm, {
     default_provider_id: source.default_provider?.id || null,
+    default_knowledge_environment_id: source.default_knowledge_environment?.id || source.default_knowledge_environment_id || null,
+    allowed_knowledge_environment_ids: Array.isArray(source.allowed_knowledge_environment_ids) ? [...source.allowed_knowledge_environment_ids] : [],
     system_prompt: source.system_prompt || '',
     welcome_message: source.welcome_message || '',
     suggested_questions: Array.isArray(source.suggested_questions) ? [...source.suggested_questions] : [],
@@ -2188,13 +2227,16 @@ async function optionalLoad(loader, fallback) {
 async function loadAll() {
   loading.page = true
   try {
-    const [config, agentData, roleData, providerData, presetData, mcpData, skillData, marketData, actionData, mcpManifestData] = await Promise.all([
+    const [config, agentData, roleData, environmentData, providerData, presetData, mcpData, skillData, marketData, actionData, mcpManifestData] = await Promise.all([
       getAIOpsConfig(),
       optionalLoad(() => getAIOpsAgents({ skipErrorMessage: true }), () => {
         agents.value = []
       }),
       optionalLoad(() => getRoles({ page_size: 200 }, { skipErrorMessage: true }), () => {
         agentRoles.value = []
+      }),
+      optionalLoad(() => getAIOpsKnowledgeEnvironments({ is_enabled: true }, { skipErrorMessage: true }), () => {
+        knowledgeEnvironments.value = []
       }),
       getAIOpsProviders(),
       getAIOpsProviderPresets(),
@@ -2210,6 +2252,7 @@ async function loadAll() {
       selectedAgentId.value = agents.value.find(item => item.is_default)?.id || agents.value[0]?.id || null
     }
     agentRoles.value = normalizeList(roleData)
+    knowledgeEnvironments.value = normalizeList(environmentData).filter(item => item.is_enabled !== false)
     providerPresets.value = presetData?.presets || []
     providers.value = normalizeProviderList(providerData)
     mcpServers.value = mcpData || []
@@ -2320,6 +2363,8 @@ function openAgentDialog(row) {
     Object.assign(agentForm, {
       ...row,
       default_provider_id: row.default_provider?.id || null,
+      default_knowledge_environment_id: row.default_knowledge_environment?.id || row.default_knowledge_environment_id || null,
+      allowed_knowledge_environment_ids: Array.isArray(row.allowed_knowledge_environment_ids) ? [...row.allowed_knowledge_environment_ids] : [],
       suggested_questions: Array.isArray(row.suggested_questions) ? [...row.suggested_questions] : [],
       enabled_mcp_server_ids: Array.isArray(row.enabled_mcp_server_ids) ? [...row.enabled_mcp_server_ids] : [],
       enabled_skill_ids: Array.isArray(row.enabled_skill_ids) ? [...row.enabled_skill_ids] : [],
@@ -2344,6 +2389,12 @@ async function saveAgent() {
     ElMessage.warning('停用 Agent 不能设为默认')
     return
   }
+  const allowedEnvironmentIds = (agentForm.allowed_knowledge_environment_ids || []).map(item => Number(item)).filter(Boolean)
+  const defaultEnvironmentId = Number(agentForm.default_knowledge_environment_id || 0)
+  if (defaultEnvironmentId && allowedEnvironmentIds.length && !allowedEnvironmentIds.includes(defaultEnvironmentId)) {
+    ElMessage.warning('默认环境必须在允许环境范围内')
+    return
+  }
 
   let toolPolicy = {}
   try {
@@ -2365,6 +2416,8 @@ async function saveAgent() {
       slug,
       description: String(agentForm.description || '').trim(),
       default_provider_id: agentForm.default_provider_id || null,
+      default_knowledge_environment_id: agentForm.default_knowledge_environment_id || null,
+      allowed_knowledge_environment_ids: allowedEnvironmentIds,
       system_prompt: agentForm.system_prompt || '',
       welcome_message: agentForm.welcome_message || '',
       suggested_questions: agentForm.suggested_questions || [],

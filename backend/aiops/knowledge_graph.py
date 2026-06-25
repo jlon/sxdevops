@@ -438,6 +438,7 @@ def resolve_knowledge_environment(name):
     if not config:
         return None
     return {
+        'id': config.id,
         'name': config.name,
         'aliases': _clean_list(getattr(config, 'aliases', []) or []),
         'event_environments': _clean_list(config.event_environments),

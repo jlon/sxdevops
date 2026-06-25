@@ -87,9 +87,6 @@
                   <div class="session-indicator">
                     <span class="session-indicator-label">{{ currentSession?.title || '新会话' }}</span>
                   </div>
-                  <span class="environment-chip" :class="{ empty: !currentEnvironmentName }">
-                    {{ currentEnvironmentName ? `环境：${currentEnvironmentName}` : '未指定环境' }}
-                  </span>
                   <div class="agent-mode-controls">
                     <el-select
                       v-if="availableAgents.length > 1"
@@ -105,6 +102,22 @@
                         :key="agent.slug"
                         :label="agent.name"
                         :value="agent.slug"
+                      />
+                    </el-select>
+                    <el-select
+                      :model-value="environmentSelectorValue"
+                      size="small"
+                      class="environment-select"
+                      filterable
+                      :placeholder="environmentSelectPlaceholder"
+                      :disabled="loading.send || loading.poll || loading.sessions || !agentEnvironmentOptions.length"
+                      @change="handleEnvironmentChange"
+                    >
+                      <el-option
+                        v-for="environment in agentEnvironmentOptions"
+                        :key="environment.id || environment.name"
+                        :label="environmentOptionLabel(environment)"
+                        :value="environment.name"
                       />
                     </el-select>
                     <label class="analysis-toggle">
@@ -606,6 +619,7 @@ const STORAGE_SESSION_KEY = 'sxdevops_aiops_current_session'
 const STORAGE_VISIBLE_KEY = 'sxdevops_aiops_visible'
 const STORAGE_ANALYSIS_KEY = 'sxdevops_aiops_analysis_only'
 const STORAGE_AGENT_KEY = 'sxdevops_aiops_agent'
+const STORAGE_ENVIRONMENT_KEY = 'sxdevops_aiops_environment'
 const STORAGE_DRAFT_PREFIX = 'sxdevops_aiops_draft_'
 
 const router = useRouter()
@@ -621,6 +635,7 @@ const messages = ref([])
 const composer = ref('')
 const currentSessionId = ref(Number(localStorage.getItem(STORAGE_SESSION_KEY) || '') || null)
 const newSessionAgentSlug = ref(localStorage.getItem(STORAGE_AGENT_KEY) || '')
+const newSessionEnvironmentName = ref(localStorage.getItem(STORAGE_ENVIRONMENT_KEY) || '')
 const loading = ref({ bootstrap: false, sessions: false, messages: false, send: false, poll: false, deleteSession: null })
 const pendingAssistantMessage = ref(null)
 const messageListRef = ref(null)
@@ -681,10 +696,36 @@ const analysisHintText = computed(() => {
   if (forcedAnalysisOnly.value) return '平台已关闭待执行任务生成'
   return effectiveAnalysisOnly.value ? '本轮会强制只分析，不生成待执行任务' : '具备权限时可生成待执行任务'
 })
+const knowledgeEnvironments = computed(() => bootstrap.value.knowledge_environments || [])
+const agentAllowedEnvironmentIds = computed(() => {
+  const ids = currentAgent.value?.allowed_knowledge_environment_ids
+  return new Set((Array.isArray(ids) ? ids : []).map(item => Number(item)).filter(Boolean))
+})
+const agentEnvironmentOptions = computed(() => {
+  const allowed = agentAllowedEnvironmentIds.value
+  const options = knowledgeEnvironments.value
+  if (!allowed.size) return options
+  return options.filter(item => allowed.has(Number(item.id)))
+})
 const currentEnvironmentName = computed(() => {
   const value = currentSession.value?.context?.current_environment
   if (!value) return ''
   return typeof value === 'string' ? value : (value.name || '')
+})
+const fallbackEnvironmentName = computed(() => {
+  const agentDefault = currentAgent.value?.default_knowledge_environment?.name || ''
+  if (agentDefault && agentEnvironmentOptions.value.some(item => item.name === agentDefault)) return agentDefault
+  const platformDefault = agentEnvironmentOptions.value.find(item => item.is_default)?.name
+  return platformDefault || agentEnvironmentOptions.value[0]?.name || ''
+})
+const selectedEnvironmentName = computed(() => {
+  if (currentSessionId.value) return currentEnvironmentName.value || fallbackEnvironmentName.value
+  return newSessionEnvironmentName.value || fallbackEnvironmentName.value
+})
+const environmentSelectorValue = computed(() => selectedEnvironmentName.value || '')
+const environmentSelectPlaceholder = computed(() => {
+  if (!agentEnvironmentOptions.value.length) return '无可用环境'
+  return currentAgent.value?.default_knowledge_environment?.name ? '跟随 Agent 默认环境' : '选择环境'
 })
 const fabStyle = computed(() => {
   if (!fabPosition.value || visible.value) return null
@@ -782,7 +823,7 @@ function routePageCode(path = '') {
   if (path.startsWith('/logs/query')) return 'logs.query'
   if (path.startsWith('/containers/k8s')) return 'containers.k8s'
   if (path.startsWith('/containers/docker')) return 'containers.docker'
-    if (path.startsWith('/observability/tracing')) return 'observability.tracing'
+  if (path.startsWith('/observability/tracing')) return 'observability.tracing'
   if (path.startsWith('/observability/metrics')) return 'observability.metrics'
   if (path.startsWith('/observability/grafana')) return 'observability.grafana'
   if (path.startsWith('/events')) return 'events'
@@ -1683,8 +1724,42 @@ function preferredAgentSlug() {
   return newSessionAgentSlug.value || fallbackAgentSlug.value
 }
 
-async function createSessionForAgent(agentSlug = preferredAgentSlug(), draft = composer.value) {
-  const session = await createAIOpsSession({ title: '', agent_slug: agentSlug || '' })
+function preferredEnvironmentName() {
+  return newSessionEnvironmentName.value || currentEnvironmentName.value || fallbackEnvironmentName.value || ''
+}
+
+function defaultEnvironmentForAgent(agentSlug = '') {
+  const agent = availableAgents.value.find(item => item.slug === agentSlug) || currentAgent.value
+  const allowedIds = new Set((agent?.allowed_knowledge_environment_ids || []).map(item => Number(item)).filter(Boolean))
+  const options = allowedIds.size
+    ? knowledgeEnvironments.value.filter(item => allowedIds.has(Number(item.id)))
+    : knowledgeEnvironments.value
+  const agentDefault = agent?.default_knowledge_environment?.name || ''
+  if (agentDefault && options.some(item => item.name === agentDefault)) return agentDefault
+  return options.find(item => item.is_default)?.name || options[0]?.name || ''
+}
+
+function environmentOptionLabel(environment = {}) {
+  const alias = Array.isArray(environment.aliases) && environment.aliases.length ? `（${environment.aliases[0]}）` : ''
+  return `${environment.name || '未命名环境'}${alias}`
+}
+
+function rememberEnvironment(name = '') {
+  newSessionEnvironmentName.value = name || ''
+  if (name) {
+    localStorage.setItem(STORAGE_ENVIRONMENT_KEY, name)
+  } else {
+    localStorage.removeItem(STORAGE_ENVIRONMENT_KEY)
+  }
+}
+
+async function createSessionForAgent(agentSlug = preferredAgentSlug(), draft = composer.value, environmentName = preferredEnvironmentName()) {
+  const session = await createAIOpsSession({
+    title: '',
+    agent_slug: agentSlug || '',
+    environment_name: environmentName || '',
+    page_context: buildPageContext(),
+  })
   sessions.value.unshift(session)
   messages.value = []
   if (draft) persistDraft(session.id, draft)
@@ -1802,6 +1877,9 @@ async function fetchBootstrap() {
     if (!newSessionAgentSlug.value) {
       newSessionAgentSlug.value = preferredAgentSlug()
     }
+    if (!newSessionEnvironmentName.value) {
+      rememberEnvironment(defaultEnvironmentForAgent(newSessionAgentSlug.value || preferredAgentSlug()))
+    }
   } finally {
     loading.value.bootstrap = false
   }
@@ -1887,6 +1965,8 @@ async function handleSend() {
       content,
       analysis_only: effectiveAnalysisOnly.value,
       agent_slug: sessionAgentSlug.value || '',
+      environment_name: selectedEnvironmentName.value || '',
+      page_context: buildPageContext(),
     })
     messages.value.push(response.user_message)
     messages.value.push(response.assistant_message)
@@ -1909,6 +1989,10 @@ async function handleSend() {
 async function handleAgentChange(value) {
   if (!currentSessionId.value) {
     newSessionAgentSlug.value = value || ''
+    const nextDefaultEnvironment = defaultEnvironmentForAgent(value)
+    if (nextDefaultEnvironment) {
+      rememberEnvironment(nextDefaultEnvironment)
+    }
     if (value) {
       localStorage.setItem(STORAGE_AGENT_KEY, value)
     } else {
@@ -1921,7 +2005,11 @@ async function handleAgentChange(value) {
   const draft = composer.value
   try {
     loading.value.sessions = true
-    const session = await createSessionForAgent(value, draft)
+    const nextDefaultEnvironment = defaultEnvironmentForAgent(value)
+    if (nextDefaultEnvironment) {
+      rememberEnvironment(nextDefaultEnvironment)
+    }
+    const session = await createSessionForAgent(value, draft, nextDefaultEnvironment)
     const createdAgentSlug = session?.agent?.slug || session?.context?.agent_slug || value || ''
     newSessionAgentSlug.value = createdAgentSlug
     if (createdAgentSlug) {
@@ -1933,6 +2021,28 @@ async function handleAgentChange(value) {
     focusComposer()
   } catch (error) {
     ElMessage.error(error?.response?.data?.agent_slug || error?.response?.data?.detail || '切换 Agent 失败')
+  } finally {
+    loading.value.sessions = false
+  }
+}
+
+async function handleEnvironmentChange(value) {
+  const environmentName = value || fallbackEnvironmentName.value || ''
+  if (!currentSessionId.value) {
+    rememberEnvironment(environmentName)
+    return
+  }
+  if (environmentName === currentEnvironmentName.value) return
+
+  const draft = composer.value
+  try {
+    loading.value.sessions = true
+    rememberEnvironment(environmentName)
+    await createSessionForAgent(currentAgentSlug.value, draft, environmentName)
+    ElMessage.success('已切换到新环境会话')
+    focusComposer()
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.environment_name || error?.response?.data?.detail || '切换环境失败')
   } finally {
     loading.value.sessions = false
   }
@@ -2035,10 +2145,21 @@ async function chooseEnvironmentCandidate(message, index, candidate) {
   const previousPrompt = resolveReusablePrompt(index, message)
     .replace(/^只做分析，不要执行：/, '')
     .trim()
-  composer.value = previousPrompt
-    ? `使用${candidate.name}环境继续分析：${previousPrompt}`
-    : `使用${candidate.name}环境继续分析`
+  rememberEnvironment(candidate.name)
+  composer.value = previousPrompt || composer.value
   persistDraft()
+  if (currentSessionId.value && candidate.name !== currentEnvironmentName.value) {
+    try {
+      loading.value.sessions = true
+      await createSessionForAgent(currentAgentSlug.value, composer.value)
+    } catch (error) {
+      ElMessage.error(error?.response?.data?.environment_name || error?.response?.data?.detail || '设置环境失败')
+      loading.value.sessions = false
+      return
+    } finally {
+      loading.value.sessions = false
+    }
+  }
   await nextTick()
   await handleSend()
 }
@@ -2299,14 +2420,15 @@ onBeforeUnmount(() => {
 .toolbar-chip{border:none;border-radius:999px;padding:6px 11px;background:#dbeafe;color:#1d4ed8;cursor:pointer;font-size:12px;font-weight:600}
 .session-indicator{display:flex;flex-direction:column;min-width:72px;max-width:220px;line-height:1.1;flex:0 1 auto}
 .session-indicator-label{font-size:12px;font-weight:700;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.environment-chip{display:inline-flex;align-items:center;max-width:180px;height:24px;padding:0 8px;border-radius:6px;background:#ecfdf5;border:1px solid #bbf7d0;color:#047857;font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
-.environment-chip.empty{background:#fff7ed;border-color:#fed7aa;color:#c2410c}
-.page-context-chip{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
-.agent-mode-controls{display:inline-flex;align-items:center;gap:8px;min-width:0;flex:0 0 auto}
-.agent-select{width:168px;max-width:168px;flex:0 0 168px}
-.agent-select :deep(.el-select__wrapper){min-height:24px;border-radius:8px}
+.agent-mode-controls{display:inline-flex;align-items:center;gap:8px;min-width:0;flex:0 1 auto}
+.agent-select{width:160px;max-width:160px;flex:0 0 160px}
+.environment-select{width:176px;max-width:176px;flex:0 0 176px}
+.agent-select :deep(.el-select__wrapper),
+.environment-select :deep(.el-select__wrapper){min-height:24px;border-radius:8px}
 .agent-select :deep(.el-select__placeholder),
-.agent-select :deep(.el-select__selected-item){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-select :deep(.el-select__selected-item),
+.environment-select :deep(.el-select__placeholder),
+.environment-select :deep(.el-select__selected-item){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .analysis-toggle{display:inline-flex;align-items:center;gap:7px;min-width:max-content;flex:0 0 auto;font-size:12px;color:#334155;white-space:nowrap;line-height:1}
 .analysis-toggle span{display:inline-block;white-space:nowrap;word-break:keep-all}
 .toolbar-hint{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

@@ -113,12 +113,21 @@ class AIOpsAgentProfileSerializer(serializers.ModelSerializer):
         required=False,
     )
     default_provider = AIOpsModelProviderLiteSerializer(read_only=True)
+    default_knowledge_environment_id = serializers.PrimaryKeyRelatedField(
+        queryset=AIOpsKnowledgeEnvironment.objects.filter(is_enabled=True),
+        source='default_knowledge_environment',
+        write_only=True,
+        allow_null=True,
+        required=False,
+    )
+    default_knowledge_environment = serializers.SerializerMethodField()
     execution_policy_display = serializers.CharField(source='get_execution_policy_display', read_only=True)
 
     class Meta:
         model = AIOpsAgentProfile
         fields = [
             'id', 'name', 'slug', 'description', 'default_provider', 'default_provider_id',
+            'default_knowledge_environment', 'default_knowledge_environment_id', 'allowed_knowledge_environment_ids',
             'system_prompt', 'welcome_message', 'suggested_questions',
             'enabled_mcp_server_ids', 'enabled_skill_ids', 'tool_policy', 'execution_policy',
             'execution_policy_display', 'allowed_role_codes', 'is_default', 'is_builtin', 'is_enabled',
@@ -133,10 +142,12 @@ class AIOpsAgentProfileSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        instance = self.instance
         list_fields = [
             'suggested_questions',
             'enabled_mcp_server_ids',
             'enabled_skill_ids',
+            'allowed_knowledge_environment_ids',
             'allowed_role_codes',
         ]
         for field in list_fields:
@@ -168,7 +179,26 @@ class AIOpsAgentProfileSerializer(serializers.ModelSerializer):
             elif not isinstance(value, dict):
                 raise serializers.ValidationError({'tool_policy': '必须为对象'})
 
-        instance = self.instance
+        allowed_ids = attrs.get(
+            'allowed_knowledge_environment_ids',
+            getattr(instance, 'allowed_knowledge_environment_ids', []) if instance else [],
+        )
+        normalized_allowed = [int(item) for item in (allowed_ids or []) if str(item).isdigit()]
+        if normalized_allowed:
+            existing_ids = set(AIOpsKnowledgeEnvironment.objects.filter(id__in=normalized_allowed, is_enabled=True).values_list('id', flat=True))
+            missing_ids = [item for item in normalized_allowed if item not in existing_ids]
+            if missing_ids:
+                raise serializers.ValidationError({'allowed_knowledge_environment_ids': f'环境不存在或未启用: {", ".join(str(item) for item in missing_ids)}'})
+
+        default_environment = attrs.get(
+            'default_knowledge_environment',
+            getattr(instance, 'default_knowledge_environment', None) if instance else None,
+        )
+        if default_environment:
+            env_id = default_environment.id
+            if normalized_allowed and env_id not in normalized_allowed:
+                raise serializers.ValidationError({'default_knowledge_environment_id': '默认环境必须在允许环境范围内'})
+
         if instance and instance.is_builtin:
             attrs.pop('slug', None)
             attrs.pop('is_default', None)
@@ -177,6 +207,17 @@ class AIOpsAgentProfileSerializer(serializers.ModelSerializer):
         if attrs.get('is_default') and attrs.get('is_enabled') is False:
             raise serializers.ValidationError({'is_default': '停用 Agent 不能设为默认'})
         return attrs
+
+    def get_default_knowledge_environment(self, obj):
+        env = getattr(obj, 'default_knowledge_environment', None)
+        if not env:
+            return None
+        return {
+            'id': env.id,
+            'name': env.name,
+            'aliases': env.aliases or [],
+            'is_enabled': env.is_enabled,
+        }
 
 
 class AIOpsMCPServerSerializer(serializers.ModelSerializer):
@@ -711,12 +752,14 @@ class AIOpsChatInputSerializer(serializers.Serializer):
     analysis_only = serializers.BooleanField(required=False, default=False)
     page_context = serializers.JSONField(required=False, default=dict)
     agent_slug = serializers.SlugField(max_length=128, required=False, allow_blank=True, default='')
+    environment_name = serializers.CharField(max_length=128, required=False, allow_blank=True, default='')
 
 
 class AIOpsCreateSessionSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=128, required=False, allow_blank=True, default='')
     page_context = serializers.JSONField(required=False, default=dict)
     agent_slug = serializers.SlugField(max_length=128, required=False, allow_blank=True, default='')
+    environment_name = serializers.CharField(max_length=128, required=False, allow_blank=True, default='')
 
 
 class AIOpsToolInvocationSerializer(_AIOpsAuditTraceMixin, serializers.ModelSerializer):

@@ -139,11 +139,20 @@ class AIOpsAgentProfile(models.Model):
         related_name='agent_profiles',
         verbose_name='默认模型提供商',
     )
+    default_knowledge_environment = models.ForeignKey(
+        'AIOpsKnowledgeEnvironment',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='default_agent_profiles',
+        verbose_name='默认知识图谱环境',
+    )
     system_prompt = models.TextField('系统提示词', blank=True, default='')
     welcome_message = models.CharField('欢迎语', max_length=255, blank=True, default='')
     suggested_questions = models.JSONField('建议问题', default=list, blank=True)
     enabled_mcp_server_ids = models.JSONField('启用的 MCP', default=list, blank=True)
     enabled_skill_ids = models.JSONField('启用的 Skill', default=list, blank=True)
+    allowed_knowledge_environment_ids = models.JSONField('允许知识图谱环境', default=list, blank=True)
     tool_policy = models.JSONField('工具策略', default=dict, blank=True)
     execution_policy = models.CharField('执行策略', max_length=32, choices=EXECUTION_POLICY_CHOICES, default=EXECUTION_MANUAL_CONFIRM)
     allowed_role_codes = models.JSONField('允许角色', default=list, blank=True)

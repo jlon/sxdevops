@@ -25,6 +25,7 @@ from .models import (
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
+    AIOpsAgentProfile,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelInvocation,
@@ -6945,6 +6946,63 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.data['assistant_message']['metadata']['page_context']['hints']['namespace'], 'production')
         mocked_start_async.assert_called_once()
 
+    @mock.patch('aiops.views.start_async_chat_processing')
+    def test_agent_default_environment_is_used_by_new_chat_session(self, mocked_start_async):
+        self.ensure_hbase_task_resource_environment()
+        hbase_env = AIOpsKnowledgeEnvironment.objects.get(name='本地 HBase 集群')
+        agent = AIOpsAgentProfile.objects.create(
+            name='HBase 运维 Agent',
+            slug='hbase-ops',
+            default_knowledge_environment=hbase_env,
+            allowed_knowledge_environment_ids=[hbase_env.id],
+            is_enabled=True,
+        )
+
+        session_response = self.client.post(
+            '/api/aiops/sessions/',
+            {'title': 'hbase-chat', 'agent_slug': agent.slug},
+            format='json',
+        )
+
+        self.assertEqual(session_response.status_code, 201)
+        self.assertEqual(session_response.data['context']['current_environment']['name'], '本地 HBase 集群')
+        session_id = session_response.data['id']
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message_async/',
+            {'content': '现在有几个节点？', 'agent_slug': agent.slug},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        session = AIOpsChatSession.objects.get(pk=session_id)
+        self.assertEqual(session.context['current_environment']['name'], '本地 HBase 集群')
+        self.assertEqual(response.data['user_message']['metadata']['environment'], '本地 HBase 集群')
+        mocked_start_async.assert_called_once()
+
+    def test_agent_rejects_environment_outside_allowed_scope(self):
+        self.ensure_hbase_task_resource_environment()
+        self.ensure_ecommerce_knowledge_environment()
+        hbase_env = AIOpsKnowledgeEnvironment.objects.get(name='本地 HBase 集群')
+        agent = AIOpsAgentProfile.objects.create(
+            name='HBase 运维 Agent',
+            slug='hbase-guarded',
+            default_knowledge_environment=hbase_env,
+            allowed_knowledge_environment_ids=[hbase_env.id],
+            is_enabled=True,
+        )
+
+        response = self.client.post(
+            '/api/aiops/sessions/',
+            {
+                'title': 'wrong-env-chat',
+                'agent_slug': agent.slug,
+                'environment_name': '电商测试环境',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('不允许访问环境', str(response.data))
+
     def test_demo_account_send_message_is_temporarily_disabled(self):
         demo_user = User.objects.create_user(username='demo', password='Demo#123')
         demo_client = APIClient()
@@ -7057,13 +7115,16 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['task_draft']['name'], draft['name'])
         self.assertEqual(response.data['task_draft']['trigger_source'], HostTask.TRIGGER_SOURCE_AIOPS)
-        self.assertFalse(HostTask.objects.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
+        action.refresh_from_db()
+        self.assertTrue(action.result_payload['materialized_in_task_center'])
+        self.assertTrue(action.result_payload['execution_started'])
+        self.assertTrue(HostTask.objects.filter(id=action.result_payload['task_id'], trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
 
         repeat_response = self.client.post(f'/api/aiops/actions/{action.id}/confirm/', {}, format='json')
 
         self.assertEqual(repeat_response.status_code, 200)
         self.assertEqual(repeat_response.data['task_draft']['name'], draft['name'])
-        self.assertFalse(HostTask.objects.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
+        self.assertEqual(HostTask.objects.filter(trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).count(), 1)
 
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_returns_error_when_model_does_not_call_tools(self, mocked_completion):
@@ -8240,7 +8301,9 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(task_draft['source_context']['resource_environment'], 'monitoring')
         action.refresh_from_db()
         self.assertTrue(action.result_payload['draft_ready'])
-        self.assertFalse(action.result_payload['materialized_in_task_center'])
+        self.assertTrue(action.result_payload['materialized_in_task_center'])
+        self.assertTrue(action.result_payload['execution_started'])
+        self.assertTrue(HostTask.objects.filter(id=action.result_payload['task_id'], trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
         self.assertEqual(action.result_payload['task_draft']['k8s_targets'][0]['kind'], 'service')
 
     def test_build_task_draft_normalizes_shell_script_alias_to_command_payload(self):
@@ -9133,9 +9196,13 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(task_draft['source_context']['source'], 'aiops')
         self.assertEqual(task_draft['source_context']['request_summary'], draft['request_summary'])
         self.assertEqual(task_draft['target_hosts'][0]['id'], target_host.id)
-        self.assertFalse(HostTask.objects.filter(created_by=self.user.username, trigger_source=HostTask.TRIGGER_SOURCE_AIOPS).exists())
         action.refresh_from_db()
         self.assertTrue(action.result_payload['draft_ready'])
+        self.assertTrue(action.result_payload['materialized_in_task_center'])
+        self.assertTrue(action.result_payload['execution_started'])
+        created_task = HostTask.objects.get(id=action.result_payload['task_id'])
+        self.assertEqual(created_task.created_by, self.user.username)
+        self.assertEqual(created_task.trigger_source, HostTask.TRIGGER_SOURCE_AIOPS)
 
     def test_generate_task_never_materializes_before_confirmation(self):
         decision = _should_materialize_host_task(

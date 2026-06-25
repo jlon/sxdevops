@@ -963,6 +963,7 @@ BUILTIN_ACTION_REGISTRY = [
             'query_recent_changes',
             'query_workorders',
             'query_event_wall',
+            'query_events',
             'query_knowledge_graph',
         ],
         'skills': [
@@ -3379,12 +3380,21 @@ def _user_role_codes(user):
 def _agent_profile_summary(agent, runtime_summary=None):
     if not agent:
         return None
+    default_environment = getattr(agent, 'default_knowledge_environment', None)
     payload = {
         'id': agent.id,
         'name': agent.name,
         'slug': agent.slug,
         'description': agent.description,
         'default_provider_id': agent.default_provider_id,
+        'default_knowledge_environment': {
+            'id': default_environment.id,
+            'name': default_environment.name,
+            'aliases': default_environment.aliases or [],
+            'is_enabled': default_environment.is_enabled,
+        } if default_environment else None,
+        'default_knowledge_environment_id': agent.default_knowledge_environment_id,
+        'allowed_knowledge_environment_ids': agent.allowed_knowledge_environment_ids or [],
         'system_prompt': agent.system_prompt,
         'welcome_message': agent.welcome_message,
         'suggested_questions': agent.suggested_questions or [],
@@ -3457,6 +3467,17 @@ def ensure_default_agent_profile(config=None):
     if not agent.tool_policy:
         agent.tool_policy = defaults['tool_policy']
         update_fields.append('tool_policy')
+    if (
+        config
+        and config.default_provider_id
+        and (
+            not agent.default_provider_id
+            or _builtin_experience_provider_needs_setup(agent.default_provider)
+        )
+        and not _builtin_experience_provider_needs_setup(config.default_provider)
+    ):
+        agent.default_provider = config.default_provider
+        update_fields.append('default_provider')
     if update_fields:
         agent.updated_by = 'system'
         update_fields.append('updated_by')
@@ -3491,7 +3512,7 @@ def list_available_agent_profiles(user):
     ensure_default_agent_profile()
     return [
         agent
-        for agent in AIOpsAgentProfile.objects.filter(is_enabled=True).select_related('default_provider').order_by('-is_default', 'name', 'id')
+        for agent in AIOpsAgentProfile.objects.filter(is_enabled=True).select_related('default_provider', 'default_knowledge_environment').order_by('-is_default', 'name', 'id')
         if user_can_use_agent_profile(user, agent)
     ]
 
@@ -3501,7 +3522,7 @@ def resolve_agent_profile_for_user(user, agent_slug='', *, session=None, config=
     context = session.context if session and isinstance(getattr(session, 'context', None), dict) else {}
     explicit_slug = str(agent_slug or '').strip()
     slug = explicit_slug or str(context.get('agent_slug') or '').strip()
-    queryset = AIOpsAgentProfile.objects.filter(is_enabled=True).select_related('default_provider')
+    queryset = AIOpsAgentProfile.objects.filter(is_enabled=True).select_related('default_provider', 'default_knowledge_environment')
     agent = queryset.filter(slug=slug).first() if slug else None
     if explicit_slug and not agent:
         raise ValueError('指定的 Agent 不存在或已停用。')
@@ -3891,6 +3912,16 @@ def bootstrap_payload_for_user(user):
         agent_runtime_by_id[agent.id] = _agent_runtime_summary(runtime_context)
     action_registry = list_action_registry(user=user, include_unavailable=False)
     all_action_registry = list_action_registry(user=user, include_unavailable=True)
+    knowledge_environments = [
+        {
+            'id': item.id,
+            'name': item.name,
+            'aliases': item.aliases or [],
+            'description': item.description,
+            'is_default': item.is_default,
+        }
+        for item in AIOpsKnowledgeEnvironment.objects.filter(is_enabled=True).order_by('-is_default', 'name', 'id')
+    ]
     return {
         'enabled': config.is_enabled and user_has_permissions(user, ['aiops.chat.view']),
         'default_agent': _agent_profile_summary(default_agent, agent_runtime_by_id.get(default_agent.id) if default_agent else None),
@@ -3898,6 +3929,7 @@ def bootstrap_payload_for_user(user):
             _agent_profile_summary(agent, agent_runtime_by_id.get(agent.id))
             for agent in available_agents
         ],
+        'knowledge_environments': knowledge_environments,
         'welcome_message': runtime_config.welcome_message,
         'suggested_questions': runtime_config.suggested_questions or DEFAULT_SUGGESTED_QUESTIONS,
         'action_registry': action_registry,
@@ -4755,7 +4787,72 @@ def _enabled_knowledge_environment_options():
     return options
 
 
-def _resolve_chat_environment(session, question):
+def _default_knowledge_environment():
+    config = AIOpsKnowledgeEnvironment.objects.filter(is_enabled=True, is_default=True).order_by('name', 'id').first()
+    if not config:
+        config = AIOpsKnowledgeEnvironment.objects.filter(is_enabled=True).order_by('name', 'id').first()
+    return resolve_knowledge_environment(config.name) if config else None
+
+
+def _agent_allowed_environment_ids(agent):
+    return set(_normalize_json_id_list(getattr(agent, 'allowed_knowledge_environment_ids', []) or []))
+
+
+def _agent_first_allowed_environment(agent):
+    allowed_ids = _agent_allowed_environment_ids(agent)
+    if not allowed_ids:
+        return None
+    config = AIOpsKnowledgeEnvironment.objects.filter(is_enabled=True, id__in=allowed_ids).order_by('-is_default', 'name', 'id').first()
+    return resolve_knowledge_environment(config.name) if config else None
+
+
+def _agent_environment_allowed(agent, environment):
+    if not agent or not environment:
+        return True
+    allowed_ids = _agent_allowed_environment_ids(agent)
+    if not allowed_ids:
+        return True
+    environment_id = environment.get('id')
+    return bool(environment_id and int(environment_id) in allowed_ids)
+
+
+def _resolve_context_environment(context):
+    current_environment = context.get('current_environment') if isinstance(context, dict) else {}
+    if isinstance(current_environment, dict):
+        return resolve_knowledge_environment(current_environment.get('name'))
+    return resolve_knowledge_environment(current_environment)
+
+
+def resolve_agent_chat_environment(agent, *, explicit_environment_name='', page_context=None, session=None, question=''):
+    context = session.context if session and isinstance(getattr(session, 'context', None), dict) else {}
+    explicit_name = str(explicit_environment_name or '').strip()
+    explicit_environment = resolve_knowledge_environment(explicit_name)
+    if explicit_name and not explicit_environment:
+        raise ValueError(f"环境 {explicit_name} 不存在或未启用。")
+    candidates = [
+        explicit_environment,
+        _resolve_context_environment(context),
+    ]
+    normalized_page_context = normalize_page_context(page_context or context.get('page_context'))
+    candidates.append(resolve_knowledge_environment(page_context_value(normalized_page_context, 'environment')))
+    if question:
+        text_matches = resolve_knowledge_environments_from_text(question)
+        if len(text_matches) == 1:
+            candidates.append(text_matches[0])
+    if getattr(agent, 'default_knowledge_environment_id', None):
+        candidates.append(resolve_knowledge_environment(agent.default_knowledge_environment.name))
+    candidates.append(_agent_first_allowed_environment(agent))
+    candidates.append(_default_knowledge_environment())
+    for environment in candidates:
+        if not environment:
+            continue
+        if not _agent_environment_allowed(agent, environment):
+            raise ValueError(f"当前 Agent 不允许访问环境 {environment.get('name')}。")
+        return environment
+    return None
+
+
+def _resolve_chat_environment(session, question, agent=None, *, allow_default_fallback=True):
     text = str(question or '').strip()
     matches = resolve_knowledge_environments_from_text(text)
     seen = set()
@@ -4766,9 +4863,12 @@ def _resolve_chat_environment(session, question):
             seen.add(name)
             unique_matches.append(item)
     if len(unique_matches) == 1:
+        if not _agent_environment_allowed(agent, unique_matches[0]):
+            return {'status': 'forbidden', 'environment': None, 'source': 'question', 'candidates': unique_matches}
         return {'status': 'resolved', 'environment': unique_matches[0], 'source': 'question', 'candidates': []}
     if len(unique_matches) > 1:
-        return {'status': 'ambiguous', 'environment': None, 'source': 'question', 'candidates': unique_matches}
+        allowed_matches = [item for item in unique_matches if _agent_environment_allowed(agent, item)]
+        return {'status': 'ambiguous', 'environment': None, 'source': 'question', 'candidates': allowed_matches or unique_matches}
 
     fingerprint = _extract_alert_fingerprint(text)
     if fingerprint:
@@ -4786,19 +4886,26 @@ def _resolve_chat_environment(session, question):
                 ]
                 alert_values = [alert.environment, alert.cluster, alert.namespace]
                 if any(value and value in candidates for value in alert_values):
+                    if not _agent_environment_allowed(agent, resolved):
+                        return {'status': 'forbidden', 'environment': None, 'source': 'alert_fingerprint', 'candidates': [resolved]}
                     return {'status': 'resolved', 'environment': resolved, 'source': 'alert_fingerprint', 'candidates': []}
 
     context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
-    page_context = normalize_page_context(context.get('page_context'))
-    page_environment = page_context_value(page_context, 'environment')
-    resolved = resolve_knowledge_environment(page_environment)
-    if resolved:
-        return {'status': 'resolved', 'environment': resolved, 'source': 'page_context', 'candidates': []}
-
-    current_name = (context.get('current_environment') or {}).get('name') or context.get('current_environment')
-    resolved = resolve_knowledge_environment(current_name)
-    if resolved:
-        return {'status': 'resolved', 'environment': resolved, 'source': 'session', 'candidates': []}
+    context_candidates = [
+        ('session', _resolve_context_environment(context)),
+        ('page_context', resolve_knowledge_environment(page_context_value(normalize_page_context(context.get('page_context')), 'environment'))),
+        ('agent_default', resolve_knowledge_environment(agent.default_knowledge_environment.name) if getattr(agent, 'default_knowledge_environment_id', None) else None),
+        ('agent_allowed_default', _agent_first_allowed_environment(agent)),
+        ('platform_default', _default_knowledge_environment()),
+    ]
+    if not allow_default_fallback:
+        context_candidates = context_candidates[:2]
+    for source, resolved in context_candidates:
+        if not resolved:
+            continue
+        if not _agent_environment_allowed(agent, resolved):
+            return {'status': 'forbidden', 'environment': None, 'source': source, 'candidates': [resolved]}
+        return {'status': 'resolved', 'environment': resolved, 'source': source, 'candidates': []}
 
     options = _enabled_knowledge_environment_options()
     lowered = text.lower()
@@ -4811,7 +4918,7 @@ def _resolve_chat_environment(session, question):
                 continue
             if candidate_text.lower() in lowered or lowered in candidate_text.lower():
                 resolved = resolve_knowledge_environment(option['name'])
-                if resolved and resolved.get('name') not in {item.get('name') for item in fuzzy_matches}:
+                if resolved and _agent_environment_allowed(agent, resolved) and resolved.get('name') not in {item.get('name') for item in fuzzy_matches}:
                     fuzzy_matches.append(resolved)
                 break
     if len(fuzzy_matches) == 1:
@@ -4819,7 +4926,17 @@ def _resolve_chat_environment(session, question):
     if len(fuzzy_matches) > 1:
         return {'status': 'ambiguous', 'environment': None, 'source': 'fuzzy', 'candidates': fuzzy_matches}
 
-    return {'status': 'missing', 'environment': None, 'source': '', 'candidates': [resolve_knowledge_environment(item['name']) for item in options if resolve_knowledge_environment(item['name'])]}
+    return {
+        'status': 'missing',
+        'environment': None,
+        'source': '',
+        'candidates': [
+            resolved
+            for item in options
+            for resolved in [resolve_knowledge_environment(item['name'])]
+            if resolved and _agent_environment_allowed(agent, resolved)
+        ],
+    }
 
 
 def _build_environment_required_result(resolution):
@@ -4828,6 +4945,9 @@ def _build_environment_required_result(resolution):
     if resolution.get('status') == 'ambiguous':
         content = '必须先确认唯一环境后才能分析。\n可选环境：' + ('、'.join(names) if names else '暂无可用环境')
         code = 'environment_ambiguous'
+    elif resolution.get('status') == 'forbidden':
+        content = '当前 Agent 不允许访问该环境，请切换到允许的环境或更换 Agent。\n受限环境：' + ('、'.join(names) if names else '未知环境')
+        code = 'environment_forbidden'
     else:
         content = '必须先指定环境后才能分析。\n可选环境：' + ('、'.join(names) if names else '暂无可用环境')
         code = 'environment_required'
@@ -17001,6 +17121,55 @@ def _run_tool_call(session, user_message, user, tool_name, arguments, registry_e
 def _run_selected_action(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
     action_skills = _skills_for_action(active_skills, action)
     action_code = action.get('code')
+    if action_code == 'skill.create':
+        request_summary = str(question or '').strip()
+        skill_name = re.sub(r'^(把|将|创建|新增|新建|注册|沉淀|保存|生成)\s*', '', request_summary).strip(' ：:，。')
+        skill_name = skill_name or '团队运维 Skill'
+        arguments = {
+            'name': skill_name[:48],
+            'description': f'由智能助手根据用户诉求生成的 Skill 草案：{request_summary}'[:255],
+            'category': '团队 Skill',
+            'content': '\n'.join([
+                f'适用场景：{request_summary}',
+                '处理流程：',
+                '1. 先确认目标环境、系统、服务或资源范围。',
+                '2. 按平台可用工具收集事实证据，避免凭空假设。',
+                '3. 输出结论、依据、风险和下一步建议。',
+                '边界：未确认前不执行写操作；需要变更时生成待确认动作。',
+            ]),
+            'applicable_actions': ['skill.create'],
+            'examples': [request_summary],
+            'builtin_tools': [],
+            'recommended_tools': [],
+            'risk_level': AIOpsSkill.RISK_DRAFT,
+            'output_contract': {'sections': ['结论', '依据', '建议'], 'trigger_keywords': [skill_name[:24]]},
+            'request_summary': request_summary,
+        }
+        tool_result = _run_tool_call(
+            session,
+            user_message,
+            user,
+            'draft_aiops_skill',
+            arguments,
+        )
+        result = {
+            'content': _build_fallback_answer(
+                tool_result.get('sections') or [],
+                tool_result.get('citations') or [{'title': '智能体配置 / Skill', 'path': '/aiops/config'}],
+                pending_action_draft=tool_result.get('pending_action_draft'),
+                question=question,
+                collected_tool_outputs=[{'tool_name': 'draft_aiops_skill', 'tool_output': tool_result.get('tool_output')}],
+            ),
+            'citations': tool_result.get('citations') or [{'title': '智能体配置 / Skill', 'path': '/aiops/config'}],
+            'tool_calls': ['draft_aiops_skill'],
+            'message_type': tool_result.get('message_type') or AIOpsChatMessage.TYPE_ACTION,
+            'pending_action_draft': tool_result.get('pending_action_draft'),
+            'metadata': {
+                'execution_mode': 'direct_action',
+                'tool_results': {'draft_aiops_skill': tool_result.get('tool_output')},
+            },
+        }
+        return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'direct_skill_create'})
     if action_code == 'alert.root_cause':
         return _run_action_root_cause(
             session,
@@ -17127,21 +17296,28 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             page_context=page_context,
             current_code=selected_action.get('code') if selected_action else '',
         ) or selected_action
-    environment_resolution = _resolve_chat_environment(session, question)
-    if environment_resolution.get('status') != 'resolved':
-        if not _action_allows_missing_environment(selected_action):
-            emit(
-                step={
-                    'title': '环境前置检查',
-                    'detail': '未确认唯一知识图谱环境，已停止分析。',
-                    'status': PROCESSING_STATUS_FAILED,
-                },
-                text='必须先指定环境',
-            )
-            return _build_environment_required_result(environment_resolution)
+    if _action_allows_missing_environment(selected_action):
+        environment_resolution = {'status': 'skipped', 'environment': None, 'source': 'action_policy', 'candidates': []}
         knowledge_environment = {}
         analysis_scope = {}
     else:
+        environment_resolution = _resolve_chat_environment(
+            session,
+            question,
+            agent=agent,
+            allow_default_fallback=True,
+        )
+        if environment_resolution.get('status') != 'resolved':
+            failed_text = '当前 Agent 不允许访问该环境' if environment_resolution.get('status') == 'forbidden' else '必须先指定环境'
+            emit(
+                step={
+                    'title': '环境前置检查',
+                    'detail': '当前 Agent 不允许访问该环境，已停止分析。' if environment_resolution.get('status') == 'forbidden' else '未确认唯一知识图谱环境，已停止分析。',
+                    'status': PROCESSING_STATUS_FAILED,
+                },
+                text=failed_text,
+            )
+            return _build_environment_required_result(environment_resolution)
         knowledge_environment = environment_resolution['environment']
         try:
             analysis_scope = _build_analysis_scope(knowledge_environment)
@@ -17185,6 +17361,30 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     scoped_question = f"{knowledge_environment.get('name')} {question}".strip() if knowledge_environment.get('name') else str(question or '').strip()
     if selected_action and knowledge_environment:
         selected_action = _select_action_for_question(question, user=user, analysis_scope=analysis_scope) or selected_action
+    if selected_action and selected_action.get('code') == 'skill.create' and not provider_ready:
+        emit(
+            step={
+                'title': '运行策略路由',
+                'detail': '已识别为 Skill 创建，当前无可用模型，直接生成可编辑 Skill 草案。',
+                'status': PROCESSING_STATUS_COMPLETED,
+            },
+            text='正在生成 Skill 草案',
+        )
+        routed_result = _run_selected_action(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            formatter_provider,
+            active_skills,
+            selected_action,
+            emit,
+        )
+        if routed_result:
+            return routed_result
     if should_use_task_resource_fallback(
         question,
         provider_ready=provider_ready,

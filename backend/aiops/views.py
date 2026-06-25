@@ -78,6 +78,7 @@ from .services import (
     ensure_default_agent_profile,
     get_agent_config,
     resolve_agent_profile_for_user,
+    resolve_agent_chat_environment,
     runtime_config_for_agent,
     interrupt_external_task,
     invoke_platform_mcp_tool,
@@ -231,7 +232,7 @@ class AIOpsAgentProfileViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         ensure_default_agent_profile(get_agent_config())
-        return AIOpsAgentProfile.objects.select_related('default_provider').order_by('-is_default', 'name', 'id')
+        return AIOpsAgentProfile.objects.select_related('default_provider', 'default_knowledge_environment').order_by('-is_default', 'name', 'id')
 
     @action(detail=True, methods=['get'])
     def runtime(self, request, pk=None):
@@ -248,10 +249,12 @@ class AIOpsAgentProfileViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             seed_fields = {}
             if not serializer.validated_data.get('default_provider') and default_agent.default_provider_id:
                 seed_fields['default_provider'] = default_agent.default_provider
+            if not serializer.validated_data.get('default_knowledge_environment') and default_agent.default_knowledge_environment_id:
+                seed_fields['default_knowledge_environment'] = default_agent.default_knowledge_environment
             for field in ['system_prompt', 'welcome_message']:
                 if not serializer.validated_data.get(field) and getattr(default_agent, field, ''):
                     seed_fields[field] = getattr(default_agent, field)
-            for field in ['suggested_questions', 'enabled_mcp_server_ids', 'enabled_skill_ids']:
+            for field in ['suggested_questions', 'enabled_mcp_server_ids', 'enabled_skill_ids', 'allowed_knowledge_environment_ids']:
                 if not serializer.validated_data.get(field) and getattr(default_agent, field, None):
                     seed_fields[field] = list(getattr(default_agent, field) or [])
             if is_default:
@@ -1056,6 +1059,26 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         except ValueError as exc:
             raise ValidationError({'agent_slug': str(exc)})
 
+    def _resolve_environment_for_request(self, agent, *, environment_name='', page_context=None, session=None):
+        try:
+            return resolve_agent_chat_environment(
+                agent,
+                explicit_environment_name=environment_name,
+                page_context=page_context,
+                session=session,
+            )
+        except ValueError as exc:
+            raise ValidationError({'environment_name': str(exc)})
+
+    def _apply_environment_context(self, context, environment):
+        if environment:
+            context['current_environment'] = {
+                'id': environment.get('id'),
+                'name': environment.get('name'),
+                'aliases': environment.get('aliases') or [],
+            }
+        return context
+
     def create(self, request, *args, **kwargs):
         serializer = AIOpsCreateSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1066,6 +1089,12 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         context = self._agent_context(agent, runtime_config)
         if page_context:
             context['page_context'] = page_context
+        environment = self._resolve_environment_for_request(
+            agent,
+            environment_name=serializer.validated_data.get('environment_name'),
+            page_context=page_context,
+        )
+        self._apply_environment_context(context, environment)
         session = AIOpsChatSession.objects.create(
             user=request.user,
             title=serializer.validated_data.get('title') or '新会话',
@@ -1122,6 +1151,13 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         context_patch = {**session_context, **self._agent_context(agent)}
         if page_context:
             context_patch['page_context'] = page_context
+        environment = self._resolve_environment_for_request(
+            agent,
+            environment_name=serializer.validated_data.get('environment_name'),
+            page_context=page_context,
+            session=session,
+        )
+        self._apply_environment_context(context_patch, environment)
         if context_patch != session_context:
             session.context = context_patch
             session.save(update_fields=['context', 'updated_at'])
@@ -1134,6 +1170,8 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             user_metadata['analysis_only'] = True
         if page_context:
             user_metadata['page_context'] = page_context
+        if environment:
+            user_metadata['environment'] = environment.get('name')
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
@@ -1164,6 +1202,13 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         context_patch = {**session_context, **self._agent_context(agent)}
         if page_context:
             context_patch['page_context'] = page_context
+        environment = self._resolve_environment_for_request(
+            agent,
+            environment_name=serializer.validated_data.get('environment_name'),
+            page_context=page_context,
+            session=session,
+        )
+        self._apply_environment_context(context_patch, environment)
         if context_patch != session_context:
             session.context = context_patch
             session.save(update_fields=['context', 'updated_at'])
@@ -1176,6 +1221,8 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             user_metadata['analysis_only'] = True
         if page_context:
             user_metadata['page_context'] = page_context
+        if environment:
+            user_metadata['environment'] = environment.get('name')
         user_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_USER,
@@ -1195,6 +1242,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 'agent_slug': agent.slug,
                 'agent_name': agent.name,
                 'agent_execution_policy': agent.execution_policy,
+                'environment': environment.get('name') if environment else '',
                 'processing_steps': [{
                     'title': '排队中',
                     'detail': '已收到问题，正在准备上下文',
