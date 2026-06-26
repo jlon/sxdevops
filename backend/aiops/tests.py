@@ -25,6 +25,7 @@ from .models import (
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
+    AIOpsAgentConfig,
     AIOpsAgentProfile,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
@@ -6926,6 +6927,42 @@ class AIOpsApiTests(TestCase):
         self.assertFalse(AIOpsModelInvocation.objects.exists())
         self.assertFalse(AIOpsToolInvocation.objects.exists())
 
+    @mock.patch('aiops.services._request_model_completion')
+    def test_non_operational_chat_uses_model_without_tools(self, mocked_completion):
+        get_agent_config()
+        provider = AIOpsModelProvider.objects.create(
+            name='light-chat-provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://example.com/v1',
+            default_model='mock-model',
+            is_enabled=True,
+        )
+        provider.set_api_key('test-key')
+        provider.save(update_fields=['api_key_encrypted'])
+        AIOpsAgentConfig.objects.update(default_provider=provider)
+        mocked_completion.return_value = {
+            'choices': [{'message': {'content': '我擅长把运维问题拆成可验证的查询、分析和任务草稿。'}}],
+        }
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'light-model-chat'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '你觉得自己擅长什么'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        assistant_message = response.data['assistant_message']
+        self.assertEqual(assistant_message['metadata']['execution_mode'], 'lightweight_model_chat')
+        self.assertEqual(assistant_message['tool_calls'], [])
+        self.assertIn('可验证', assistant_message['content'])
+        self.assertFalse(AIOpsToolInvocation.objects.exists())
+        mocked_completion.assert_called_once()
+        payload = mocked_completion.call_args.args[1]
+        self.assertNotIn('tools', payload)
+
     @mock.patch('aiops.views.start_async_chat_processing')
     def test_lightweight_async_chat_returns_completed_without_worker(self, mocked_start_async):
         session_response = self.client.post('/api/aiops/sessions/', {'title': 'light-chat-async'}, format='json')
@@ -6946,6 +6983,38 @@ class AIOpsApiTests(TestCase):
         self.assertFalse(AIOpsModelInvocation.objects.exists())
         self.assertFalse(AIOpsToolInvocation.objects.exists())
         mocked_start_async.assert_not_called()
+
+    @mock.patch('aiops.views.start_async_chat_processing')
+    def test_non_operational_async_chat_is_processed_by_worker(self, mocked_start_async):
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'light-model-async'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message_async/',
+            {'content': '你觉得自己擅长什么'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['assistant_message']['metadata']['processing_status'], 'pending')
+        mocked_start_async.assert_called_once()
+
+    @mock.patch('aiops.views.start_async_chat_processing')
+    def test_operational_async_question_keeps_full_runtime(self, mocked_start_async):
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'hbase-count-async'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+        session_id = session_response.data['id']
+
+        response = self.client.post(
+            f'/api/aiops/sessions/{session_id}/send_message_async/',
+            {'content': '本地 HBase 集群有几个节点'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['assistant_message']['metadata']['processing_status'], 'pending')
+        mocked_start_async.assert_called_once()
 
     @mock.patch('aiops.views.start_async_chat_processing')
     def test_chat_session_and_async_message_persist_page_context(self, mocked_start_async):

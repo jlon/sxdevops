@@ -78,7 +78,7 @@ from .services import (
     ensure_default_agent_profile,
     _apply_dispatch_result_to_message,
     _build_lightweight_chat_result,
-    _is_lightweight_chat_question,
+    _is_canned_lightweight_chat_question,
     get_agent_config,
     resolve_agent_profile_for_user,
     resolve_agent_chat_environment,
@@ -1232,14 +1232,18 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             content=content,
             metadata=user_metadata,
         )
+        is_canned_light_chat = _is_canned_lightweight_chat_question(content)
+        placeholder_content = '正在回复，请稍等...' if is_canned_light_chat else '正在处理请求，请稍等...'
+        processing_text = '正在生成轻量回复' if is_canned_light_chat else '请求已提交，正在排队处理'
+        processing_detail = '已收到轻量问答，正在生成回复' if is_canned_light_chat else '已收到问题，正在准备上下文'
         assistant_message = AIOpsChatMessage.objects.create(
             session=session,
             role=AIOpsChatMessage.ROLE_ASSISTANT,
             message_type=AIOpsChatMessage.TYPE_TEXT,
-            content='正在分析平台数据，请稍等...',
+            content=placeholder_content,
             metadata={
                 'processing_status': 'pending',
-                'processing_text': '请求已提交，正在排队处理',
+                'processing_text': processing_text,
                 'analysis_only': analysis_only,
                 'page_context': page_context,
                 'agent_slug': agent.slug,
@@ -1248,7 +1252,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                 'environment': environment.get('name') if environment else '',
                 'processing_steps': [{
                     'title': '排队中',
-                    'detail': '已收到问题，正在准备上下文',
+                    'detail': processing_detail,
                     'status': 'pending',
                     'timestamp': timezone.now().isoformat(),
                 }],
@@ -1260,7 +1264,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             session.title = content[:48] or '新会话'
         session.save(update_fields=['last_message_at', 'title', 'updated_at'])
         sync_session_to_demo_if_needed(session)
-        if _is_lightweight_chat_question(content):
+        if is_canned_light_chat:
             result = _build_lightweight_chat_result(content)
             assistant_message, pending_action = _apply_dispatch_result_to_message(
                 session,
