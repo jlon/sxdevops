@@ -3,6 +3,7 @@ from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
+from aiops.incident_investigation import run_readonly_investigation
 from aiops.models import (
     AIOpsExternalTask,
     AIOpsIncident,
@@ -273,3 +274,42 @@ class IncidentApiTests(TestCase):
         self.assertEqual(len(response.data['incident_actions']), 1)
         self.assertEqual(response.data['incident_actions'][0]['action_type_display'], '继续调查')
         self.assertEqual(response.data['incident_actions'][0]['risk_level_display'], '只读')
+
+    def test_run_readonly_incident_action_refreshes_evidence(self):
+        run_readonly_investigation(self.incident, reason='test_seed')
+        action = AIOpsIncidentAction.objects.get(
+            incident=self.incident,
+            action_type=AIOpsIncidentAction.ACTION_INVESTIGATE,
+            risk_level=AIOpsIncidentAction.RISK_READ_ONLY,
+        )
+
+        response = self.client.post(f'/api/aiops/incidents/{self.incident.id}/actions/{action.id}/run/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        action.refresh_from_db()
+        self.assertEqual(action.status, AIOpsIncidentAction.STATUS_COMPLETED)
+        self.assertEqual(action.verification_status, 'readonly_completed')
+        task = AIOpsExternalTask.objects.filter(action_code='incident.investigate').order_by('-id').first()
+        self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
+        self.assertEqual(task.input_payload['reason'], 'manual_followup')
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident).count(), 2)
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='run_incident_action').exists())
+        response_action = next(item for item in response.data['incident_actions'] if item['id'] == action.id)
+        self.assertEqual(response_action['status'], AIOpsIncidentAction.STATUS_COMPLETED)
+
+    def test_run_incident_action_rejects_non_readonly_action(self):
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            title='重启 order-center',
+            action_type=AIOpsIncidentAction.ACTION_FIX,
+            risk_level=AIOpsIncidentAction.RISK_HIGH,
+            status=AIOpsIncidentAction.STATUS_PROPOSED,
+            verification_plan=['确认服务恢复'],
+        )
+
+        response = self.client.post(f'/api/aiops/incidents/{self.incident.id}/actions/{action.id}/run/')
+
+        self.assertEqual(response.status_code, 400, response.data)
+        action.refresh_from_db()
+        self.assertEqual(action.status, AIOpsIncidentAction.STATUS_PROPOSED)
+        self.assertFalse(AIOpsExternalTask.objects.filter(action_code='incident.investigate').exists())

@@ -23,6 +23,7 @@ from .models import (
     AIOpsChatSession,
     AIOpsExternalTask,
     AIOpsIncident,
+    AIOpsIncidentAction,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelInvocation,
@@ -103,6 +104,7 @@ from .services import (
     test_mcp_server_connection,
     DEPRECATED_BUILTIN_MCP_SERVER_NAMES,
 )
+from .incident_investigation import run_readonly_investigation
 from .knowledge_graph import build_knowledge_graph
 
 K8S_NAMESPACE_OPTIONS_CACHE_TTL = 60
@@ -437,6 +439,7 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         'list': ['aiops.incident.view'],
         'retrieve': ['aiops.incident.view'],
         'close': ['aiops.incident.close'],
+        'run_action': ['aiops.incident.investigate'],
     }
 
     def get_serializer_class(self):
@@ -446,7 +449,7 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = AIOpsIncident.objects.order_by('-last_seen_at', '-id')
-        if self.action in {'retrieve', 'close'}:
+        if self.action in {'retrieve', 'close', 'run_action'}:
             queryset = queryset.prefetch_related(
                 'alert_links__alert',
                 'evidence_items__source_task',
@@ -485,6 +488,88 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
             severity=EventRecord.SEVERITY_INFO,
             correlation_id=f'aiops_incident:{incident.id}',
         )
+        return Response(self.get_serializer(incident).data)
+
+    @action(detail=True, methods=['post'], url_path=r'actions/(?P<action_id>\d+)/run')
+    def run_action(self, request, pk=None, action_id=None):
+        incident = self.get_object()
+        incident_action = AIOpsIncidentAction.objects.filter(incident=incident, id=action_id).first()
+        if not incident_action:
+            return Response({'detail': '建议动作不存在。'}, status=status.HTTP_404_NOT_FOUND)
+        if (
+            incident_action.action_type != AIOpsIncidentAction.ACTION_INVESTIGATE
+            or incident_action.risk_level != AIOpsIncidentAction.RISK_READ_ONLY
+        ):
+            return Response({'detail': '当前只允许触发只读调查建议。'}, status=status.HTTP_400_BAD_REQUEST)
+        if incident_action.status == AIOpsIncidentAction.STATUS_RUNNING:
+            return Response({'detail': '该建议动作正在执行中。'}, status=status.HTTP_409_CONFLICT)
+        if incident_action.status == AIOpsIncidentAction.STATUS_COMPLETED:
+            return Response({'detail': '该建议动作已完成。'}, status=status.HTTP_409_CONFLICT)
+
+        runnable_statuses = {AIOpsIncidentAction.STATUS_PROPOSED, AIOpsIncidentAction.STATUS_FAILED}
+        if incident_action.status not in runnable_statuses:
+            return Response({'detail': '该建议动作当前状态不可执行。'}, status=status.HTTP_409_CONFLICT)
+        updated = AIOpsIncidentAction.objects.filter(
+            id=incident_action.id,
+            status__in=runnable_statuses,
+        ).update(
+            status=AIOpsIncidentAction.STATUS_RUNNING,
+            verification_status='running',
+            result_summary=f'{request.user.username} 已触发只读补查。',
+            updated_at=timezone.now(),
+        )
+        if not updated:
+            return Response({'detail': '该建议动作状态已变化，请刷新后重试。'}, status=status.HTTP_409_CONFLICT)
+        incident_action.refresh_from_db()
+        try:
+            task = run_readonly_investigation(incident, reason='manual_followup')
+        except Exception as exc:
+            incident_action.refresh_from_db()
+            incident_action.status = AIOpsIncidentAction.STATUS_FAILED
+            incident_action.verification_status = 'failed'
+            incident_action.result_summary = f'只读补查失败：{str(exc)[:180]}'
+            incident_action.save(update_fields=['status', 'verification_status', 'result_summary', 'updated_at'])
+            record_event(
+                request=request,
+                module='aiops',
+                category='incident',
+                action='run_incident_action',
+                result=EventRecord.RESULT_FAILED,
+                title='Incident 建议动作失败',
+                summary=f'{request.user.username} 触发 Incident #{incident.id} 只读补查失败',
+                resource_type='aiops_incident_action',
+                resource_id=incident_action.id,
+                resource_name=incident_action.title,
+                environment=incident.environment,
+                application=incident.service,
+                severity=EventRecord.SEVERITY_WARNING,
+                correlation_id=f'aiops_incident:{incident.id}',
+                metadata={'incident_id': incident.id, 'action_id': incident_action.id, 'error': str(exc)[:255]},
+            )
+            return Response({'detail': '只读补查失败。', 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        incident_action.refresh_from_db()
+        incident_action.status = AIOpsIncidentAction.STATUS_COMPLETED
+        incident_action.verification_status = 'readonly_completed'
+        incident_action.result_summary = f'只读补查已完成，任务 {task.public_id}。'
+        incident_action.save(update_fields=['status', 'verification_status', 'result_summary', 'updated_at'])
+        record_event(
+            request=request,
+            module='aiops',
+            category='incident',
+            action='run_incident_action',
+            title='Incident 建议动作已执行',
+            summary=f'{request.user.username} 触发 Incident #{incident.id} 只读补查',
+            resource_type='aiops_incident_action',
+            resource_id=incident_action.id,
+            resource_name=incident_action.title,
+            environment=incident.environment,
+            application=incident.service,
+            severity=EventRecord.SEVERITY_INFO,
+            correlation_id=f'aiops_incident:{incident.id}',
+            metadata={'incident_id': incident.id, 'action_id': incident_action.id, 'task_id': task.id, 'task_public_id': str(task.public_id)},
+        )
+        incident = self.get_queryset().get(id=incident.id)
         return Response(self.get_serializer(incident).data)
 
 

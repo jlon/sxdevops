@@ -290,22 +290,38 @@ def generate_remediation_proposals(incident, hypothesis):
         'recommended_checks': next_checks,
         'target_scope': incident_scope(incident),
     }
+    defaults = {
+        'title': f'补充 {incident.service or incident.title} 只读证据',
+        'risk_level': AIOpsIncidentAction.RISK_READ_ONLY,
+        'action_payload': payload,
+        'preconditions': ['仅允许调用只读查询工具，不执行变更、重启、扩缩容或命令。'],
+        'rollback_plan': ['只读动作无需回滚；若查询失败，只记录失败原因并保留现有 Incident 状态。'],
+        'verification_plan': next_checks,
+        'created_by': INVESTIGATION_SOURCE_AGENT,
+    }
+    existing = AIOpsIncidentAction.objects.filter(
+        incident=incident,
+        hypothesis=hypothesis,
+        action_type=AIOpsIncidentAction.ACTION_INVESTIGATE,
+    ).first()
+    reusable_statuses = {
+        AIOpsIncidentAction.STATUS_PROPOSED,
+        AIOpsIncidentAction.STATUS_FAILED,
+        AIOpsIncidentAction.STATUS_CANCELED,
+    }
+    if existing and existing.status not in reusable_statuses:
+        return [existing]
+    if not existing or existing.status in {AIOpsIncidentAction.STATUS_FAILED, AIOpsIncidentAction.STATUS_CANCELED}:
+        defaults.update({
+            'status': AIOpsIncidentAction.STATUS_PROPOSED,
+            'verification_status': '',
+            'result_summary': '',
+        })
     proposal, _ = AIOpsIncidentAction.objects.update_or_create(
         incident=incident,
         hypothesis=hypothesis,
         action_type=AIOpsIncidentAction.ACTION_INVESTIGATE,
-        defaults={
-            'title': f'补充 {incident.service or incident.title} 只读证据',
-            'risk_level': AIOpsIncidentAction.RISK_READ_ONLY,
-            'status': AIOpsIncidentAction.STATUS_PROPOSED,
-            'action_payload': payload,
-            'preconditions': ['仅允许调用只读查询工具，不执行变更、重启、扩缩容或命令。'],
-            'rollback_plan': ['只读动作无需回滚；若查询失败，只记录失败原因并保留现有 Incident 状态。'],
-            'verification_plan': next_checks,
-            'verification_status': '',
-            'result_summary': '',
-            'created_by': INVESTIGATION_SOURCE_AGENT,
-        },
+        defaults=defaults,
     )
     return [proposal]
 

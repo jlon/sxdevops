@@ -171,6 +171,19 @@
               </div>
               <div class="evidence-summary">{{ item.title }}</div>
               <div v-for="step in item.verification_plan || []" :key="step" class="sub-line">- {{ step }}</div>
+              <div v-if="item.result_summary" class="sub-line">结果：{{ item.result_summary }}</div>
+            </div>
+            <div class="action-controls">
+              <el-button
+                v-if="canRunIncidentAction(item)"
+                type="primary"
+                size="small"
+                plain
+                :loading="runningActionId === item.id"
+                @click="runIncidentAction(item)"
+              >
+                只读补查
+              </el-button>
             </div>
           </div>
           <span v-if="!incidentActionCount" class="detail-empty">暂无建议动作</span>
@@ -223,12 +236,13 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search, Warning } from '@element-plus/icons-vue'
-import { closeAIOpsIncident, getAIOpsIncident, getAIOpsIncidents } from '@/api/modules/aiops'
+import { closeAIOpsIncident, getAIOpsIncident, getAIOpsIncidents, runAIOpsIncidentAction } from '@/api/modules/aiops'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
 const route = useRoute()
 const loading = ref(false)
+const runningActionId = ref(null)
 const incidents = ref([])
 const selectedIncident = ref(null)
 const detailVisible = ref(false)
@@ -247,6 +261,7 @@ const pagination = reactive({
 })
 
 const canClose = computed(() => authStore.hasPermission('aiops.incident.close'))
+const canInvestigate = computed(() => authStore.hasPermission('aiops.incident.investigate'))
 const criticalCount = computed(() => incidents.value.filter(item => item.severity === 'critical').length)
 const openCount = computed(() => incidents.value.filter(item => !['resolved', 'closed'].includes(item.status)).length)
 const activeAlertCount = computed(() => incidents.value.reduce((sum, item) => sum + Number(item.active_alert_count || 0), 0))
@@ -300,6 +315,13 @@ function formatEvidenceSource(value) {
     'builtin.alert_snapshot': '告警快照',
     'builtin.event_timeline': '事件时间线',
   }[value] || value || '-')
+}
+
+function canRunIncidentAction(item) {
+  return canInvestigate.value
+    && item.action_type === 'investigate'
+    && item.risk_level === 'read_only'
+    && ['proposed', 'failed'].includes(item.status)
 }
 
 async function copyEvidence(item) {
@@ -366,6 +388,18 @@ async function closeIncident(row) {
   await closeAIOpsIncident(row.id)
   ElMessage.success('Incident 已关闭')
   await fetchIncidents()
+}
+
+async function runIncidentAction(item) {
+  if (!selectedIncident.value || runningActionId.value) return
+  runningActionId.value = item.id
+  try {
+    selectedIncident.value = await runAIOpsIncidentAction(selectedIncident.value.id, item.id)
+    ElMessage.success('只读补查已完成')
+    await fetchIncidents()
+  } finally {
+    runningActionId.value = null
+  }
 }
 
 onMounted(fetchIncidents)
@@ -449,6 +483,9 @@ onMounted(fetchIncidents)
 }
 
 .action-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
   padding: 10px;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
@@ -462,6 +499,13 @@ onMounted(fetchIncidents)
 
 .action-main {
   min-width: 0;
+  flex: 1;
+}
+
+.action-controls {
+  display: flex;
+  align-items: flex-start;
+  flex-shrink: 0;
 }
 
 .evidence-title-row {
@@ -542,6 +586,14 @@ onMounted(fetchIncidents)
 
   .hypothesis-columns {
     grid-template-columns: 1fr;
+  }
+
+  .action-item {
+    flex-direction: column;
+  }
+
+  .action-controls {
+    justify-content: flex-start;
   }
 }
 </style>
