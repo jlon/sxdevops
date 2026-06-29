@@ -1749,7 +1749,7 @@ class TransactionTicketViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
 
 
 class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = Alert.objects.select_related('host', 'integration').prefetch_related('actions', 'claim_records', 'notification_logs__channel', 'notification_logs__rule').all()
+    queryset = Alert.objects.select_related('host', 'integration').prefetch_related('actions', 'claim_records', 'notification_logs__channel', 'notification_logs__rule', 'incident_links__incident').all()
     serializer_class = AlertSerializer
     search_fields = ['title', 'source', 'message', 'host__hostname', 'service', 'resource', 'business_line', 'cluster', 'namespace']
     filterset_fields = ['level', 'status', 'source_type', 'source', 'is_acknowledged', 'is_suppressed', 'service', 'environment', 'cluster', 'namespace', 'region', 'business_line', 'claimed_by']
@@ -2200,6 +2200,5 @@ def dashboard_stats(request):
         'recent_deploys': recent_deploys,
         'recent_alerts': recent_alerts,
     })
-
 
 

@@ -6,6 +6,8 @@ from .models import (
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
+    AIOpsIncident,
+    AIOpsIncidentAlert,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelInvocation,
@@ -395,6 +397,92 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         if is_default and not is_enabled:
             raise serializers.ValidationError({'is_default': '停用图谱不能设为默认'})
         return attrs
+
+
+class AIOpsIncidentAlertSerializer(serializers.ModelSerializer):
+    alert_id = serializers.IntegerField(source='alert.id', read_only=True)
+    alert_title = serializers.CharField(source='alert.title', read_only=True)
+    alert_level = serializers.CharField(source='alert.level', read_only=True)
+    alert_status = serializers.CharField(source='alert.status', read_only=True)
+    alert_service = serializers.CharField(source='alert.service', read_only=True)
+    alert_resource = serializers.CharField(source='alert.resource', read_only=True)
+    alert_last_received_at = serializers.DateTimeField(source='alert.last_received_at', read_only=True)
+    role_display = serializers.CharField(source='get_role_display', read_only=True)
+
+    class Meta:
+        model = AIOpsIncidentAlert
+        fields = [
+            'id',
+            'alert_id',
+            'alert_title',
+            'alert_level',
+            'alert_status',
+            'alert_service',
+            'alert_resource',
+            'role',
+            'role_display',
+            'linked_reason',
+            'alert_last_received_at',
+            'created_at',
+        ]
+
+
+class AIOpsIncidentListSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    severity_display = serializers.CharField(source='get_severity_display', read_only=True)
+    source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
+
+    class Meta:
+        model = AIOpsIncident
+        fields = [
+            'id',
+            'title',
+            'status',
+            'status_display',
+            'severity',
+            'severity_display',
+            'source_type',
+            'source_type_display',
+            'dedupe_key',
+            'environment',
+            'cluster',
+            'namespace',
+            'service',
+            'resource_type',
+            'resource',
+            'impact_summary',
+            'owner',
+            'alert_count',
+            'active_alert_count',
+            'started_at',
+            'detected_at',
+            'last_seen_at',
+            'resolved_at',
+            'closed_at',
+            'metadata',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'dedupe_key',
+            'alert_count',
+            'active_alert_count',
+            'detected_at',
+            'last_seen_at',
+            'resolved_at',
+            'closed_at',
+            'metadata',
+            'created_at',
+            'updated_at',
+        ]
+
+
+class AIOpsIncidentSerializer(AIOpsIncidentListSerializer):
+    alert_links = AIOpsIncidentAlertSerializer(many=True, read_only=True)
+
+    class Meta(AIOpsIncidentListSerializer.Meta):
+        fields = AIOpsIncidentListSerializer.Meta.fields + ['alert_links']
+        read_only_fields = AIOpsIncidentListSerializer.Meta.read_only_fields + ['alert_links']
 
 
 class AIOpsPendingActionSerializer(serializers.ModelSerializer):

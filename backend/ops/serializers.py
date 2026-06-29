@@ -1577,6 +1577,7 @@ class AlertSerializer(serializers.ModelSerializer):
     current_user_claimed = serializers.SerializerMethodField()
     actions = AlertActionSerializer(many=True, read_only=True)
     recent_notifications = serializers.SerializerMethodField()
+    incidents = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
@@ -1614,6 +1615,28 @@ class AlertSerializer(serializers.ModelSerializer):
     def get_recent_notifications(self, obj):
         logs = obj.notification_logs.select_related('channel', 'rule').all()[:5]
         return AlertNotificationLogSerializer(logs, many=True).data
+
+    def get_incidents(self, obj):
+        links = getattr(obj, '_prefetched_objects_cache', {}).get('incident_links')
+        if links is None:
+            links = obj.incident_links.select_related('incident').all()
+        payload = []
+        for link in links:
+            incident = link.incident
+            payload.append({
+                'id': incident.id,
+                'title': incident.title,
+                'status': incident.status,
+                'status_display': incident.get_status_display(),
+                'severity': incident.severity,
+                'severity_display': incident.get_severity_display(),
+                'active_alert_count': incident.active_alert_count,
+                'alert_count': incident.alert_count,
+                'last_seen_at': incident.last_seen_at,
+                'role': link.role,
+                'role_display': link.get_role_display(),
+            })
+        return payload
 
 
 class LogEntrySerializer(serializers.ModelSerializer):

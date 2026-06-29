@@ -10,6 +10,9 @@ export const getAIOpsKnowledgeEnvironmentCatalog = () => request.get('/aiops/kno
 export const createAIOpsKnowledgeEnvironment = (data) => request.post('/aiops/knowledge-environments/', data)
 export const updateAIOpsKnowledgeEnvironment = (id, data) => request.patch(`/aiops/knowledge-environments/${id}/`, data)
 export const deleteAIOpsKnowledgeEnvironment = (id) => request.delete(`/aiops/knowledge-environments/${id}/`)
+export const getAIOpsIncidents = (params, config = {}) => request.get('/aiops/incidents/', { params, ...config })
+export const getAIOpsIncident = (id, config = {}) => request.get(`/aiops/incidents/${id}/`, config)
+export const closeAIOpsIncident = (id) => request.post(`/aiops/incidents/${id}/close/`)
 
 export const getAIOpsSessions = (params) => request.get('/aiops/sessions/', { params })
 export const createAIOpsSession = (data) => request.post('/aiops/sessions/', data)

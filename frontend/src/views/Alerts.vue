@@ -458,6 +458,25 @@
               <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
             </el-descriptions>
           </section>
+          <section class="alert-detail-card">
+            <div class="detail-section-title">
+              <h4>关联 Incident</h4>
+              <span>{{ (selectedAlert.incidents || []).length }} 个</span>
+            </div>
+            <div class="incident-chip-list">
+              <button
+                v-for="item in selectedAlert.incidents || []"
+                :key="item.id"
+                type="button"
+                class="incident-chip"
+                @click="goIncident(item)"
+              >
+                <span>#{{ item.id }} {{ item.title }}</span>
+                <el-tag :type="incidentStatusType(item.status)" size="small">{{ item.status_display || item.status }}</el-tag>
+              </button>
+              <span v-if="!(selectedAlert.incidents || []).length" class="detail-empty">暂无关联 Incident</span>
+            </div>
+          </section>
           <div v-if="canManageAlerts || canNotifyAlerts" class="detail-actions">
             <el-button v-if="!selectedAlert.current_user_claimed" size="small" type="success" @click="runAlertAction(selectedAlert, 'claim')">&#x8BA4;&#x9886;</el-button>
             <el-button v-if="selectedAlert.current_user_claimed" size="small" @click="runAlertAction(selectedAlert, 'unclaim')">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-button>
@@ -712,7 +731,7 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Bell, Connection, Delete, Document, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { ElButton, ElInput, ElMessage, ElMessageBox, ElOption, ElPopconfirm, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import {
@@ -896,6 +915,7 @@ const PolicyTable = defineComponent({
 })
 
 const route = useRoute()
+const router = useRouter()
 const authStore = useAuthStore()
 
 const activeTab = ref('events')
@@ -1222,6 +1242,10 @@ function statusText(status) {
   return { active: '\u6D3B\u8DC3', resolved: '\u5DF2\u6062\u590D', muted: '\u5DF2\u5C4F\u853D', closed: '\u5DF2\u5173\u95ED' }[status] || status
 }
 
+function incidentStatusType(status) {
+  return { open: 'danger', investigating: 'warning', mitigating: 'warning', verifying: 'primary', resolved: 'success', closed: 'info' }[status] || 'info'
+}
+
 function providerText(value) {
   return providerOptions.find((item) => item.value === value)?.label || value || '-'
 }
@@ -1344,6 +1368,10 @@ function openGroup(row) {
 function openDetail(row) {
   selectedAlert.value = row
   detailVisible.value = true
+}
+
+function goIncident(item) {
+  router.push({ path: '/aiops/incidents', query: { incident_id: item.id } })
 }
 
 function handleSelectionChange(rows) {
@@ -2478,6 +2506,32 @@ onMounted(async () => {
 .alerts-page :deep(.el-tag) {
   border-radius: 999px;
   font-weight: 500;
+}
+
+.incident-chip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.incident-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--alert-text);
+  cursor: pointer;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.incident-chip:hover {
+  border-color: rgba(43, 99, 219, 0.35);
+  background: #f7faff;
 }
 
 .alerts-page :deep(.el-dialog),

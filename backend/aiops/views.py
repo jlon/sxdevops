@@ -22,6 +22,7 @@ from .models import (
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
+    AIOpsIncident,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelInvocation,
@@ -44,6 +45,8 @@ from .serializers import (
     AIOpsChatSessionSerializer,
     AIOpsCreateSessionSerializer,
     AIOpsExternalTaskSerializer,
+    AIOpsIncidentListSerializer,
+    AIOpsIncidentSerializer,
     AIOpsKnowledgeEnvironmentSerializer,
     AIOpsMCPServerSerializer,
     AIOpsModelInvocationSerializer,
@@ -424,6 +427,58 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             metadata={'source_skill_id': source.id, 'source_skill_slug': source.slug},
         )
         return Response(AIOpsSkillSerializer(cloned).data, status=status.HTTP_201_CREATED)
+
+
+class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = AIOpsIncidentSerializer
+    search_fields = ['title', 'impact_summary', 'service', 'resource', 'dedupe_key']
+    filterset_fields = ['status', 'severity', 'source_type', 'environment', 'cluster', 'namespace', 'service', 'owner']
+    rbac_permissions = {
+        'list': ['aiops.incident.view'],
+        'retrieve': ['aiops.incident.view'],
+        'close': ['aiops.incident.close'],
+    }
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return AIOpsIncidentListSerializer
+        return AIOpsIncidentSerializer
+
+    def get_queryset(self):
+        queryset = AIOpsIncident.objects.order_by('-last_seen_at', '-id')
+        if self.action in {'retrieve', 'close'}:
+            queryset = queryset.prefetch_related('alert_links__alert')
+        params = self.request.query_params
+        if params.get('only_open') in {'1', 'true', 'True'}:
+            queryset = queryset.exclude(status__in=[AIOpsIncident.STATUS_RESOLVED, AIOpsIncident.STATUS_CLOSED])
+        alert_id = params.get('alert_id')
+        if alert_id:
+            queryset = queryset.filter(alert_links__alert_id=alert_id).distinct()
+        return queryset
+
+    @action(detail=True, methods=['post'])
+    def close(self, request, pk=None):
+        incident = self.get_object()
+        incident.status = AIOpsIncident.STATUS_CLOSED
+        incident.closed_at = timezone.now()
+        incident.owner = incident.owner or request.user.username
+        incident.save(update_fields=['status', 'closed_at', 'owner', 'updated_at'])
+        record_event(
+            request=request,
+            module='aiops',
+            category='incident',
+            action='close_incident',
+            title='关闭 Incident',
+            summary=f'{request.user.username} 关闭 Incident #{incident.id}',
+            resource_type='aiops_incident',
+            resource_id=incident.id,
+            resource_name=incident.title,
+            environment=incident.environment,
+            application=incident.service,
+            severity=EventRecord.SEVERITY_INFO,
+            correlation_id=f'aiops_incident:{incident.id}',
+        )
+        return Response(self.get_serializer(incident).data)
 
 
 class _AuditRecentPagination(pagination.PageNumberPagination):

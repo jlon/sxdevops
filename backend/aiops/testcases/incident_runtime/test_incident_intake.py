@@ -1,0 +1,180 @@
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
+
+from aiops.models import AIOpsIncident, AIOpsIncidentAlert
+from eventwall.models import EventRecord
+from ops.models import Alert, AlertIntegration
+from rbac.models import Role
+from rbac.services import ensure_builtin_rbac
+
+
+User = get_user_model()
+
+
+class IncidentAlertIntakeTests(TestCase):
+    def setUp(self):
+        ensure_builtin_rbac()
+        self.integration = AlertIntegration.objects.create(
+            name='Prometheus',
+            provider=Alert.SOURCE_PROMETHEUS,
+            default_labels={'environment': 'prod'},
+        )
+        self.client = APIClient()
+
+    def post_alertmanager(self, alerts, group_key='service=order'):
+        return self.client.post(
+            f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
+            {
+                'status': 'firing',
+                'groupKey': group_key,
+                'commonLabels': {'service': 'order-center', 'namespace': 'production'},
+                'alerts': alerts,
+            },
+            format='json',
+        )
+
+    def test_webhook_creates_incident_for_prometheus_alert(self):
+        response = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-001',
+                'labels': {
+                    'alertname': 'HighErrorRate',
+                    'severity': 'critical',
+                    'cluster': 'dev-k8s-cluster',
+                    'pod': 'order-api-0',
+                },
+                'annotations': {'summary': 'Order error rate high', 'description': '5xx ratio above threshold'},
+                'startsAt': '2026-05-04T10:00:00+08:00',
+            },
+        ])
+
+        self.assertEqual(response.status_code, 202, response.data)
+        alert = Alert.objects.get()
+        incident = AIOpsIncident.objects.get()
+        self.assertEqual(incident.status, AIOpsIncident.STATUS_OPEN)
+        self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_CRITICAL)
+        self.assertEqual(incident.environment, 'prod')
+        self.assertEqual(incident.cluster, 'dev-k8s-cluster')
+        self.assertEqual(incident.namespace, 'production')
+        self.assertEqual(incident.service, 'order-center')
+        self.assertEqual(incident.alert_count, 1)
+        self.assertEqual(incident.active_alert_count, 1)
+        link = AIOpsIncidentAlert.objects.get(incident=incident, alert=alert)
+        self.assertEqual(link.role, AIOpsIncidentAlert.ROLE_PRIMARY)
+
+    def test_same_group_key_reuses_active_incident(self):
+        first = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-101',
+                'labels': {'alertname': 'HighErrorRate', 'severity': 'warning'},
+                'annotations': {'summary': 'Order warning'},
+            },
+        ], group_key='service=order-center')
+        second = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-102',
+                'labels': {'alertname': 'HighLatency', 'severity': 'critical'},
+                'annotations': {'summary': 'Order latency high'},
+            },
+        ], group_key='service=order-center')
+
+        self.assertEqual(first.status_code, 202, first.data)
+        self.assertEqual(second.status_code, 202, second.data)
+        incident = AIOpsIncident.objects.get()
+        self.assertEqual(incident.alert_count, 2)
+        self.assertEqual(incident.active_alert_count, 2)
+        self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_CRITICAL)
+        self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident).count(), 2)
+
+    def test_repeated_same_alert_does_not_duplicate_incident_events(self):
+        payload = [{
+            'status': 'firing',
+            'fingerprint': 'fp-incident-repeat',
+            'labels': {'alertname': 'HighErrorRate', 'severity': 'warning'},
+            'annotations': {'summary': 'Order warning'},
+        }]
+
+        first = self.post_alertmanager(payload, group_key='service=order-center')
+        second = self.post_alertmanager(payload, group_key='service=order-center')
+
+        self.assertEqual(first.status_code, 202, first.data)
+        self.assertEqual(second.status_code, 202, second.data)
+        incident = AIOpsIncident.objects.get()
+        self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident).count(), 1)
+        self.assertEqual(EventRecord.objects.filter(module='aiops', category='incident').count(), 1)
+
+    def test_resolved_signal_marks_incident_resolved_when_no_active_alerts(self):
+        firing = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-resolve',
+                'labels': {'alertname': 'HighErrorRate', 'severity': 'critical'},
+                'annotations': {'summary': 'Order error rate high'},
+            },
+        ])
+        resolved = self.client.post(
+            f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
+            {
+                'status': 'resolved',
+                'groupKey': 'service=order',
+                'commonLabels': {'service': 'order-center'},
+                'alerts': [{
+                    'status': 'resolved',
+                    'fingerprint': 'fp-incident-resolve',
+                    'labels': {'alertname': 'HighErrorRate', 'severity': 'critical'},
+                    'annotations': {'summary': 'Order error rate recovered'},
+                    'endsAt': '2026-05-04T10:30:00+08:00',
+                }],
+            },
+            format='json',
+        )
+
+        self.assertEqual(firing.status_code, 202, firing.data)
+        self.assertEqual(resolved.status_code, 202, resolved.data)
+        incident = AIOpsIncident.objects.get()
+        self.assertEqual(incident.status, AIOpsIncident.STATUS_RESOLVED)
+        self.assertEqual(incident.active_alert_count, 0)
+        self.assertIsNotNone(incident.resolved_at)
+
+
+class IncidentApiTests(TestCase):
+    def setUp(self):
+        ensure_builtin_rbac()
+        self.user = User.objects.create_user(username='incident-admin', password='Passw0rd!123')
+        self.user.rbac_roles.add(Role.objects.get(code='platform-admin'))
+        token = Token.objects.create(user=self.user)
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        self.incident = AIOpsIncident.objects.create(
+            title='order-center / HighErrorRate',
+            status=AIOpsIncident.STATUS_OPEN,
+            severity=AIOpsIncident.SEVERITY_CRITICAL,
+            dedupe_key='group:prometheus:service=order',
+            environment='prod',
+            service='order-center',
+            alert_count=1,
+            active_alert_count=1,
+        )
+
+    def test_incident_list_supports_filters(self):
+        response = self.client.get('/api/aiops/incidents/', {'environment': 'prod', 'only_open': '1'})
+
+        self.assertEqual(response.status_code, 200, response.data)
+        results = response.data['results'] if isinstance(response.data, dict) and 'results' in response.data else response.data
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['title'], 'order-center / HighErrorRate')
+        self.assertEqual(results[0]['active_alert_count'], 1)
+
+    def test_close_incident_updates_status_and_owner(self):
+        response = self.client.post(f'/api/aiops/incidents/{self.incident.id}/close/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.incident.refresh_from_db()
+        self.assertEqual(self.incident.status, AIOpsIncident.STATUS_CLOSED)
+        self.assertEqual(self.incident.owner, 'incident-admin')
+        self.assertIsNotNone(self.incident.closed_at)

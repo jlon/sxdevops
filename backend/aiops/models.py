@@ -290,6 +290,112 @@ class AIOpsKnowledgeEnvironment(models.Model):
         return self.name
 
 
+class AIOpsIncident(models.Model):
+    STATUS_OPEN = 'open'
+    STATUS_INVESTIGATING = 'investigating'
+    STATUS_MITIGATING = 'mitigating'
+    STATUS_VERIFYING = 'verifying'
+    STATUS_RESOLVED = 'resolved'
+    STATUS_CLOSED = 'closed'
+    STATUS_CHOICES = [
+        (STATUS_OPEN, '新建'),
+        (STATUS_INVESTIGATING, '调查中'),
+        (STATUS_MITIGATING, '处置中'),
+        (STATUS_VERIFYING, '验证中'),
+        (STATUS_RESOLVED, '已恢复'),
+        (STATUS_CLOSED, '已关闭'),
+    ]
+
+    SEVERITY_CRITICAL = 'critical'
+    SEVERITY_WARNING = 'warning'
+    SEVERITY_INFO = 'info'
+    SEVERITY_CHOICES = [
+        (SEVERITY_CRITICAL, '严重'),
+        (SEVERITY_WARNING, '警告'),
+        (SEVERITY_INFO, '信息'),
+    ]
+
+    SOURCE_ALERT = 'alert'
+    SOURCE_MANUAL = 'manual'
+    SOURCE_CHOICES = [
+        (SOURCE_ALERT, '告警'),
+        (SOURCE_MANUAL, '手动'),
+    ]
+
+    title = models.CharField('Incident 标题', max_length=256)
+    status = models.CharField('状态', max_length=24, choices=STATUS_CHOICES, default=STATUS_OPEN)
+    severity = models.CharField('严重级别', max_length=16, choices=SEVERITY_CHOICES, default=SEVERITY_INFO)
+    source_type = models.CharField('来源类型', max_length=24, choices=SOURCE_CHOICES, default=SOURCE_ALERT)
+    dedupe_key = models.CharField('归并键', max_length=320, db_index=True)
+    environment = models.CharField('环境', max_length=64, blank=True, default='')
+    cluster = models.CharField('集群', max_length=128, blank=True, default='')
+    namespace = models.CharField('命名空间', max_length=128, blank=True, default='')
+    service = models.CharField('服务', max_length=128, blank=True, default='')
+    resource_type = models.CharField('资源类型', max_length=64, blank=True, default='')
+    resource = models.CharField('资源标识', max_length=256, blank=True, default='')
+    impact_summary = models.TextField('影响摘要', blank=True, default='')
+    owner = models.CharField('负责人', max_length=64, blank=True, default='')
+    alert_count = models.PositiveIntegerField('关联告警数', default=0)
+    active_alert_count = models.PositiveIntegerField('活跃告警数', default=0)
+    started_at = models.DateTimeField('首次触发时间', null=True, blank=True)
+    detected_at = models.DateTimeField('平台检测时间', default=timezone.now)
+    last_seen_at = models.DateTimeField('最近告警时间', default=timezone.now)
+    resolved_at = models.DateTimeField('恢复时间', null=True, blank=True)
+    closed_at = models.DateTimeField('关闭时间', null=True, blank=True)
+    metadata = models.JSONField('元数据', default=dict, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-last_seen_at', '-id']
+        indexes = [
+            models.Index(fields=['status', 'severity']),
+            models.Index(fields=['environment', 'service']),
+            models.Index(fields=['cluster', 'namespace']),
+            models.Index(fields=['started_at']),
+        ]
+        verbose_name = 'AIOps Incident'
+        verbose_name_plural = 'AIOps Incident'
+
+    def __str__(self):
+        return f'[{self.severity}] {self.title}'
+
+
+class AIOpsIncidentAlert(models.Model):
+    ROLE_PRIMARY = 'primary'
+    ROLE_RELATED = 'related'
+    ROLE_SYMPTOM = 'symptom'
+    ROLE_RESOLVED_SIGNAL = 'resolved_signal'
+    ROLE_CHOICES = [
+        (ROLE_PRIMARY, '主告警'),
+        (ROLE_RELATED, '相关告警'),
+        (ROLE_SYMPTOM, '症状告警'),
+        (ROLE_RESOLVED_SIGNAL, '恢复信号'),
+    ]
+
+    incident = models.ForeignKey(AIOpsIncident, on_delete=models.CASCADE, related_name='alert_links', verbose_name='Incident')
+    alert = models.ForeignKey('ops.Alert', on_delete=models.CASCADE, related_name='incident_links', verbose_name='告警')
+    role = models.CharField('关联角色', max_length=24, choices=ROLE_CHOICES, default=ROLE_RELATED)
+    linked_reason = models.CharField('关联原因', max_length=255, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['incident_id', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['incident', 'alert'], name='aiops_incident_alert_unique'),
+        ]
+        indexes = [
+            models.Index(fields=['alert']),
+            models.Index(fields=['incident', 'role']),
+        ]
+        verbose_name = 'AIOps Incident 告警关联'
+        verbose_name_plural = 'AIOps Incident 告警关联'
+
+    def __str__(self):
+        return f'{self.incident_id}:{self.alert_id}:{self.role}'
+
+
 class AIOpsChatSession(models.Model):
     context = models.JSONField('上下文', default=dict, blank=True)
     STATUS_ACTIVE = 'active'

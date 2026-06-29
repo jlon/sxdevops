@@ -11,6 +11,7 @@ router.register('admin/agents', views.AIOpsAgentProfileViewSet, basename='aiops-
 router.register('admin/mcp-servers', views.AIOpsMCPServerViewSet, basename='aiops-mcp-server')
 router.register('admin/skills', views.AIOpsSkillViewSet, basename='aiops-skill')
 router.register('knowledge-environments', views.AIOpsKnowledgeEnvironmentViewSet, basename='aiops-knowledge-environment')
+router.register('incidents', views.AIOpsIncidentViewSet, basename='aiops-incident')
 router.register('admin/audit/sessions', views.AIOpsAuditSessionViewSet, basename='aiops-audit-session')
 router.register('admin/audit/tool-invocations', views.AIOpsToolInvocationViewSet, basename='aiops-audit-tool')
 router.register('admin/audit/model-invocations', views.AIOpsModelInvocationViewSet, basename='aiops-audit-model')

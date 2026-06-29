@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import re
 from collections import Counter, defaultdict
 from datetime import timedelta
@@ -29,6 +30,8 @@ from .models import (
     Host,
 )
 
+
+logger = logging.getLogger(__name__)
 
 LEVEL_RANK = {'info': 1, 'warning': 2, 'critical': 3}
 DEFAULT_GROUP_BY = ['source_type', 'environment', 'service', 'cluster', 'namespace', 'resource']
@@ -1022,6 +1025,12 @@ def ingest_webhook(provider, payload, integration=None, request=None):
             integration.save(update_fields=['last_received_at', 'updated_at'])
         for item in normalized_alerts:
             alert, created = upsert_alert(item, integration=integration, actor=provider)
+            try:
+                from aiops.incidents import upsert_incident_for_alert
+
+                upsert_incident_for_alert(alert)
+            except Exception:
+                logger.exception('Failed to upsert AIOps incident for alert %s', alert.id)
             apply_alert_suppression(alert)
             apply_escalation_policy(alert, request=request)
             action = 'resolved' if alert.status == Alert.STATUS_RESOLVED else 'fire'

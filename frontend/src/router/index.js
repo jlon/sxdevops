@@ -410,6 +410,16 @@ const routes = [
         },
       },
       {
+        path: 'aiops/incidents',
+        name: 'AIOpsIncidents',
+        component: () => import('@/views/AIOpsIncidents.vue'),
+        meta: {
+          title: 'Incident 中心',
+          icon: 'Warning',
+          permission: 'aiops.incident.view',
+        },
+      },
+      {
         path: 'aiops/knowledge/config',
         name: 'AIOpsKnowledgeConfig',
         redirect: (to) => ({ path: '/aiops/knowledge', query: { ...to.query, tab: 'config' } }),
@@ -506,5 +516,4 @@ router.beforeEach(async (to) => {
 })
 
 export default router
-
 
