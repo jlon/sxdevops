@@ -129,6 +129,18 @@ def _record_incident_event(incident, alert, action, created=False):
     )
 
 
+def _investigation_reason(created, link_created, role_changed, status_changed):
+    if created:
+        return 'incident_created'
+    if status_changed:
+        return 'incident_status_changed'
+    if role_changed:
+        return 'alert_role_changed'
+    if link_created:
+        return 'alert_linked'
+    return ''
+
+
 @transaction.atomic
 def upsert_incident_for_alert(alert):
     dedupe_key = build_incident_dedupe_key(alert)
@@ -212,9 +224,15 @@ def upsert_incident_for_alert(alert):
     previous_status = incident.status
     _refresh_incident_counts(incident)
     incident.refresh_from_db()
-    if incident.status != previous_status:
+    status_changed = incident.status != previous_status
+    if status_changed:
         action = 'resolve_incident' if incident.status == AIOpsIncident.STATUS_RESOLVED else 'reopen_incident'
         _record_incident_event(incident, alert, action, created=False)
     elif created or link_created or role_changed:
         _record_incident_event(incident, alert, 'create_incident' if created else 'link_alert', created=created)
+    reason = _investigation_reason(created, link_created, role_changed, status_changed)
+    if reason:
+        from .incident_investigation import schedule_readonly_investigation
+
+        schedule_readonly_investigation(incident, reason=reason)
     return incident, created

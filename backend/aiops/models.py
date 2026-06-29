@@ -396,6 +396,69 @@ class AIOpsIncidentAlert(models.Model):
         return f'{self.incident_id}:{self.alert_id}:{self.role}'
 
 
+class AIOpsIncidentEvidence(models.Model):
+    KIND_ALERT = 'alert'
+    KIND_METRIC = 'metric'
+    KIND_LOG = 'log'
+    KIND_TRACE = 'trace'
+    KIND_K8S = 'k8s'
+    KIND_CHANGE = 'change'
+    KIND_EVENT = 'event'
+    KIND_TASK = 'task'
+    KIND_TOPOLOGY = 'topology'
+    KIND_CHOICES = [
+        (KIND_ALERT, '告警证据'),
+        (KIND_METRIC, '指标证据'),
+        (KIND_LOG, '日志证据'),
+        (KIND_TRACE, '链路证据'),
+        (KIND_K8S, 'K8s 证据'),
+        (KIND_CHANGE, '变更证据'),
+        (KIND_EVENT, '事件证据'),
+        (KIND_TASK, '任务证据'),
+        (KIND_TOPOLOGY, '拓扑证据'),
+    ]
+
+    WEIGHT_PRIMARY = 'primary'
+    WEIGHT_SUPPORTING = 'supporting'
+    WEIGHT_CONTEXT = 'context'
+    WEIGHT_CHOICES = [
+        (WEIGHT_PRIMARY, '主证据'),
+        (WEIGHT_SUPPORTING, '支撑证据'),
+        (WEIGHT_CONTEXT, '上下文'),
+    ]
+
+    incident = models.ForeignKey(AIOpsIncident, on_delete=models.CASCADE, related_name='evidence_items', verbose_name='Incident')
+    kind = models.CharField('证据类型', max_length=24, choices=KIND_CHOICES)
+    source = models.CharField('来源', max_length=96)
+    source_task = models.ForeignKey('AIOpsExternalTask', on_delete=models.SET_NULL, null=True, blank=True, related_name='incident_evidence_items', verbose_name='来源任务')
+    tool_invocation = models.ForeignKey('AIOpsToolInvocation', on_delete=models.SET_NULL, null=True, blank=True, related_name='incident_evidence_items', verbose_name='工具调用')
+    scope = models.JSONField('取证范围', default=dict, blank=True)
+    window_start = models.DateTimeField('窗口开始', null=True, blank=True)
+    window_end = models.DateTimeField('窗口结束', null=True, blank=True)
+    summary = models.CharField('证据摘要', max_length=512)
+    payload = models.JSONField('证据载荷', default=dict, blank=True)
+    weight = models.CharField('权重', max_length=16, choices=WEIGHT_CHOICES, default=WEIGHT_SUPPORTING)
+    collected_at = models.DateTimeField('采集时间', default=timezone.now)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-collected_at', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['incident', 'kind', 'source'], name='aiops_incident_evidence_unique_source'),
+        ]
+        indexes = [
+            models.Index(fields=['incident', 'kind']),
+            models.Index(fields=['source']),
+            models.Index(fields=['collected_at']),
+        ]
+        verbose_name = 'AIOps Incident 证据'
+        verbose_name_plural = 'AIOps Incident 证据'
+
+    def __str__(self):
+        return f'{self.incident_id}:{self.kind}:{self.source}'
+
+
 class AIOpsChatSession(models.Model):
     context = models.JSONField('上下文', default=dict, blank=True)
     STATUS_ACTIVE = 'active'

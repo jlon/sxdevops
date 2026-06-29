@@ -305,6 +305,7 @@ class AIOpsApiTests(TestCase):
             'self_heal.recommend',
             'host_task.generate',
             'slo.analysis',
+            'incident.investigate',
             'skill.create',
         }.issubset(action_codes))
         self.assertEqual(response.data['action_registry_summary']['total'], len(response.data['action_registry']))
@@ -471,6 +472,7 @@ class AIOpsApiTests(TestCase):
             'self_heal.recommend',
             'host_task.generate',
             'slo.analysis',
+            'incident.investigate',
         }
         for action in list_action_registry(user=self.user, include_unavailable=True):
             for question in action.get('suggested_questions') or []:

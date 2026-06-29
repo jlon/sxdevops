@@ -3,7 +3,7 @@ from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from aiops.models import AIOpsIncident, AIOpsIncidentAlert
+from aiops.models import AIOpsExternalTask, AIOpsIncident, AIOpsIncidentAlert, AIOpsIncidentEvidence
 from eventwall.models import EventRecord
 from ops.models import Alert, AlertIntegration
 from rbac.models import Role
@@ -24,16 +24,17 @@ class IncidentAlertIntakeTests(TestCase):
         self.client = APIClient()
 
     def post_alertmanager(self, alerts, group_key='service=order'):
-        return self.client.post(
-            f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
-            {
-                'status': 'firing',
-                'groupKey': group_key,
-                'commonLabels': {'service': 'order-center', 'namespace': 'production'},
-                'alerts': alerts,
-            },
-            format='json',
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(
+                f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
+                {
+                    'status': 'firing',
+                    'groupKey': group_key,
+                    'commonLabels': {'service': 'order-center', 'namespace': 'production'},
+                    'alerts': alerts,
+                },
+                format='json',
+            )
 
     def test_webhook_creates_incident_for_prometheus_alert(self):
         response = self.post_alertmanager([
@@ -64,6 +65,11 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 1)
         link = AIOpsIncidentAlert.objects.get(incident=incident, alert=alert)
         self.assertEqual(link.role, AIOpsIncidentAlert.ROLE_PRIMARY)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 2)
+        self.assertTrue(AIOpsIncidentEvidence.objects.filter(incident=incident, source='builtin.alert_snapshot').exists())
+        task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
+        self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
+        self.assertEqual(task.input_payload['incident_id'], incident.id)
 
     def test_same_group_key_reuses_active_incident(self):
         first = self.post_alertmanager([
@@ -90,6 +96,10 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 2)
         self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_CRITICAL)
         self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident).count(), 2)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 2)
+        self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 2)
+        alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
+        self.assertEqual(len(alert_evidence.payload['alerts']), 2)
 
     def test_repeated_same_alert_does_not_duplicate_incident_events(self):
         payload = [{
@@ -106,7 +116,10 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(second.status_code, 202, second.data)
         incident = AIOpsIncident.objects.get()
         self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident).count(), 1)
-        self.assertEqual(EventRecord.objects.filter(module='aiops', category='incident').count(), 1)
+        lifecycle_events = EventRecord.objects.filter(module='aiops', category='incident').exclude(action='investigate_incident')
+        self.assertEqual(lifecycle_events.count(), 1)
+        self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 1)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 2)
 
     def test_resolved_signal_marks_incident_resolved_when_no_active_alerts(self):
         firing = self.post_alertmanager([
@@ -117,22 +130,23 @@ class IncidentAlertIntakeTests(TestCase):
                 'annotations': {'summary': 'Order error rate high'},
             },
         ])
-        resolved = self.client.post(
-            f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
-            {
-                'status': 'resolved',
-                'groupKey': 'service=order',
-                'commonLabels': {'service': 'order-center'},
-                'alerts': [{
+        with self.captureOnCommitCallbacks(execute=True):
+            resolved = self.client.post(
+                f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
+                {
                     'status': 'resolved',
-                    'fingerprint': 'fp-incident-resolve',
-                    'labels': {'alertname': 'HighErrorRate', 'severity': 'critical'},
-                    'annotations': {'summary': 'Order error rate recovered'},
-                    'endsAt': '2026-05-04T10:30:00+08:00',
-                }],
-            },
-            format='json',
-        )
+                    'groupKey': 'service=order',
+                    'commonLabels': {'service': 'order-center'},
+                    'alerts': [{
+                        'status': 'resolved',
+                        'fingerprint': 'fp-incident-resolve',
+                        'labels': {'alertname': 'HighErrorRate', 'severity': 'critical'},
+                        'annotations': {'summary': 'Order error rate recovered'},
+                        'endsAt': '2026-05-04T10:30:00+08:00',
+                    }],
+                },
+                format='json',
+            )
 
         self.assertEqual(firing.status_code, 202, firing.data)
         self.assertEqual(resolved.status_code, 202, resolved.data)
@@ -178,3 +192,20 @@ class IncidentApiTests(TestCase):
         self.assertEqual(self.incident.status, AIOpsIncident.STATUS_CLOSED)
         self.assertEqual(self.incident.owner, 'incident-admin')
         self.assertIsNotNone(self.incident.closed_at)
+
+    def test_incident_detail_includes_evidence(self):
+        AIOpsIncidentEvidence.objects.create(
+            incident=self.incident,
+            kind=AIOpsIncidentEvidence.KIND_ALERT,
+            source='builtin.alert_snapshot',
+            summary='关联 1 条告警，活跃 1 条；主信号：HighErrorRate',
+            payload={'alerts': [{'id': 1}]},
+            weight=AIOpsIncidentEvidence.WEIGHT_PRIMARY,
+        )
+
+        response = self.client.get(f'/api/aiops/incidents/{self.incident.id}/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data['evidence_items']), 1)
+        self.assertEqual(response.data['evidence_items'][0]['source'], 'builtin.alert_snapshot')
+        self.assertEqual(response.data['evidence_items'][0]['kind_display'], '告警证据')

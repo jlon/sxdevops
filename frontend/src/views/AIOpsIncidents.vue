@@ -125,6 +125,29 @@
         </el-descriptions>
 
         <div class="section-head compact">
+          <h3>只读调查证据</h3>
+          <span class="toolbar-desc">{{ evidenceCount }} 条</span>
+        </div>
+        <div class="evidence-list">
+          <div v-for="item in selectedIncident.evidence_items || []" :key="item.id" class="evidence-item">
+            <div class="evidence-main">
+              <div class="evidence-title-row">
+                <el-tag :type="evidenceKindType(item.kind)" size="small">{{ item.kind_display || item.kind }}</el-tag>
+                <span class="evidence-source">{{ formatEvidenceSource(item.source) }}</span>
+                <el-tag size="small" effect="plain">{{ item.weight_display || item.weight }}</el-tag>
+              </div>
+              <div class="evidence-summary">{{ item.summary }}</div>
+              <div class="sub-line">
+                {{ formatTime(item.window_start) }} - {{ formatTime(item.window_end) }}
+                <template v-if="item.source_task_public_id"> · 任务 {{ item.source_task_public_id }}</template>
+              </div>
+            </div>
+            <el-button link type="primary" size="small" @click="copyEvidence(item)">复制</el-button>
+          </div>
+          <span v-if="!evidenceCount" class="detail-empty">暂无只读调查证据</span>
+        </div>
+
+        <div class="section-head compact">
           <h3>关联告警</h3>
           <span class="toolbar-desc">{{ selectedIncident.alert_count }} 条</span>
         </div>
@@ -175,6 +198,7 @@ const canClose = computed(() => authStore.hasPermission('aiops.incident.close'))
 const criticalCount = computed(() => incidents.value.filter(item => item.severity === 'critical').length)
 const openCount = computed(() => incidents.value.filter(item => !['resolved', 'closed'].includes(item.status)).length)
 const activeAlertCount = computed(() => incidents.value.reduce((sum, item) => sum + Number(item.active_alert_count || 0), 0))
+const evidenceCount = computed(() => (selectedIncident.value?.evidence_items || []).length)
 
 function formatTime(value) {
   if (!value) return '-'
@@ -195,6 +219,38 @@ function statusType(value) {
 
 function statusText(value) {
   return ({ open: '新建', investigating: '调查中', mitigating: '处置中', verifying: '验证中', resolved: '已恢复', closed: '已关闭' }[value] || value || '-')
+}
+
+function evidenceKindType(value) {
+  return ({ alert: 'danger', event: 'info', change: 'warning', metric: 'success', log: 'warning', trace: 'primary', k8s: 'success' }[value] || 'info')
+}
+
+function formatEvidenceSource(value) {
+  return ({
+    'builtin.alert_snapshot': '告警快照',
+    'builtin.event_timeline': '事件时间线',
+  }[value] || value || '-')
+}
+
+async function copyEvidence(item) {
+  const text = JSON.stringify({
+    kind: item.kind,
+    source: item.source,
+    summary: item.summary,
+    scope: item.scope,
+    window_start: item.window_start,
+    window_end: item.window_end,
+  }, null, 2)
+  if (!navigator.clipboard?.writeText) {
+    ElMessage.warning('当前浏览器不支持直接复制')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('证据已复制')
+  } catch (error) {
+    ElMessage.warning('复制失败，请检查浏览器权限')
+  }
 }
 
 function buildParams() {
@@ -298,6 +354,48 @@ onMounted(fetchIncidents)
 .alert-link-title {
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidence-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--panel-soft-bg);
+}
+
+.evidence-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.evidence-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.evidence-source {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.evidence-summary {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 
 .toolbar :deep(.el-input),

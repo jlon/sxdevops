@@ -954,6 +954,45 @@ BUILTIN_ACTION_REGISTRY = [
         ],
     },
     {
+        'code': 'incident.investigate',
+        'display_name': 'Incident 只读调查',
+        'category': '故障排障',
+        'description': '围绕 Incident 自动采集告警、事件和后续可观测性证据，生成根因分析输入。',
+        'risk_level': 'read_only',
+        'agent_mode': 'readonly',
+        'required_context': ['incident'],
+        'allowed_tools': [
+            'query_alerts',
+            'query_alert_metrics',
+            'query_logs',
+            'query_traces',
+            'query_recent_changes',
+            'query_event_wall',
+            'query_knowledge_graph',
+            'query_k8s_cluster_summary',
+        ],
+        'skills': [
+            'sx-alert-evidence-checklist',
+            'sx-k8s-alert-troubleshooting',
+            'sx-change-impact-analysis',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'incident_id', 'label': 'Incident ID', 'required': True},
+            {'name': 'environment', 'label': '环境', 'required': False},
+            {'name': 'service', 'label': '服务', 'required': False},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+        ],
+        'output_blocks': ['incident_card', 'evidence_timeline', 'query_suggestion', 'risk_notice'],
+        'rbac_permissions': ['aiops.incident.view', 'aiops.incident.investigate'],
+        'suggested_questions': [
+            '调查 Incident #1 的告警和事件证据。',
+            '基于这个 Incident 的证据继续分析根因。',
+            '这个 Incident 还缺哪些只读证据？',
+        ],
+    },
+    {
         'code': 'change.correlation',
         'display_name': '变更关联分析',
         'category': '变更分析',
@@ -2254,6 +2293,7 @@ ACTION_ROUTE_PRIORITY = [
     'change.correlation',
     'k8s.diagnose',
     'slo.analysis',
+    'incident.investigate',
     'alert.root_cause',
 ]
 
@@ -2316,6 +2356,10 @@ def _action_question_matches(action_code, question, analysis_scope=None):
             )
             or has_abnormal_analysis_intent
         )
+    if action_code == 'incident.investigate':
+        has_incident_scope = _question_contains_any(lowered, ['incident', '故障单', '故障对象', '事故'])
+        has_investigation_intent = _question_contains_any(lowered, ['调查', '排查', '分析', '证据', '取证', '根因', '继续看'])
+        return has_incident_scope and has_investigation_intent
     if action_code == 'change.correlation':
         deploy_change_context = (
             _question_contains_any(lowered, ['deploy', 'deployment'])
@@ -2404,7 +2448,7 @@ def _select_action_for_question(question, user=None, analysis_scope=None):
 
 
 def _action_allows_missing_environment(action):
-    return (action or {}).get('code') in {'skill.create'}
+    return (action or {}).get('code') in {'skill.create', 'incident.investigate'}
 
 
 def _build_action_approval_block(action, *, summary, items=None, metrics=None, actions=None, status='preflight', status_display='待补充', block_id_suffix='preflight'):

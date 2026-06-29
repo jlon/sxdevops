@@ -447,7 +447,7 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         queryset = AIOpsIncident.objects.order_by('-last_seen_at', '-id')
         if self.action in {'retrieve', 'close'}:
-            queryset = queryset.prefetch_related('alert_links__alert')
+            queryset = queryset.prefetch_related('alert_links__alert', 'evidence_items__source_task', 'evidence_items__tool_invocation')
         params = self.request.query_params
         if params.get('only_open') in {'1', 'true', 'True'}:
             queryset = queryset.exclude(status__in=[AIOpsIncident.STATUS_RESOLVED, AIOpsIncident.STATUS_CLOSED])
