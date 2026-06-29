@@ -8,7 +8,7 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from ops.models import Alert
 
-from .models import AIOpsExternalTask, AIOpsIncident, AIOpsIncidentEvidence
+from .models import AIOpsExternalTask, AIOpsIncident, AIOpsIncidentEvidence, AIOpsIncidentHypothesis
 
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ def collect_event_evidence(incident, task=None, limit=20):
     candidates = (
         EventRecord.objects
         .filter(occurred_at__gte=window_start, occurred_at__lte=window_end)
-        .exclude(module='aiops', category='incident', action='investigate_incident')
+        .exclude(module='aiops', category='incident')
         .order_by('-occurred_at', '-id')[:100]
     )
     events = [event for event in candidates if _event_matches_incident(incident, event)][:limit]
@@ -178,6 +178,107 @@ def collect_event_evidence(incident, task=None, limit=20):
     return evidence
 
 
+def _evidence_by_source(incident):
+    return {
+        evidence.source: evidence
+        for evidence in incident.evidence_items.all()
+    }
+
+
+def _evidence_ids(*items):
+    return [item.id for item in items if item]
+
+
+def _event_count(evidence):
+    payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
+    events = payload.get('events') if isinstance(payload.get('events'), list) else []
+    return len(events)
+
+
+def _alert_count(evidence):
+    payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
+    alerts = payload.get('alerts') if isinstance(payload.get('alerts'), list) else []
+    return len(alerts)
+
+
+def _primary_alert_title(evidence, incident):
+    payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
+    alerts = payload.get('alerts') if isinstance(payload.get('alerts'), list) else []
+    for item in alerts:
+        if not isinstance(item, dict) or item.get('role') != 'primary':
+            continue
+        alert = item.get('alert') if isinstance(item.get('alert'), dict) else {}
+        return str(alert.get('title') or '').strip()
+    return incident.title
+
+
+def _recommended_next_checks(incident, event_count):
+    checks = [
+        '补查同时间窗指标走势，确认告警是否伴随资源或业务指标异常。',
+        '补查错误日志或慢调用样本，确认直接错误模式。',
+    ]
+    if incident.cluster or incident.namespace:
+        checks.append('补查 K8s Pod、Workload 和 Event 状态。')
+    if event_count == 0:
+        checks.append('补查发布、工单和任务中心记录，确认是否存在未接入的变更。')
+    return checks
+
+
+def generate_root_cause_hypothesis(incident, task=None):
+    incident = AIOpsIncident.objects.prefetch_related('evidence_items').get(id=incident.id)
+    evidence = _evidence_by_source(incident)
+    alert_evidence = evidence.get('builtin.alert_snapshot')
+    event_evidence = evidence.get('builtin.event_timeline')
+    event_count = _event_count(event_evidence)
+    alert_count = _alert_count(alert_evidence)
+    if event_count:
+        root_cause_type = AIOpsIncidentHypothesis.TYPE_CHANGE_REGRESSION
+        title = f'{incident.service or incident.title} 可能受近期事件或变更影响'
+        summary = f'Incident 时间窗内存在 {event_count} 条相关事件，需要结合告警、日志和变更内容验证是否为直接诱因。'
+        confidence = 0.62 if alert_count else 0.48
+        supporting_ids = _evidence_ids(alert_evidence, event_evidence)
+        missing = ['缺少事件详情与异常指标之间的直接因果证据。']
+    elif alert_count:
+        root_cause_type = AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM
+        primary_alert = _primary_alert_title(alert_evidence, incident)
+        title = f'{incident.service or incident.resource or incident.title} 出现 {primary_alert} 告警症状'
+        summary = f'当前主要证据来自 {alert_count} 条关联告警，尚不足以判定底层根因。'
+        confidence = 0.45
+        supporting_ids = _evidence_ids(alert_evidence)
+        missing = ['缺少指标、日志、Trace、K8s 或变更证据，暂不能确认根因类型。']
+    else:
+        root_cause_type = AIOpsIncidentHypothesis.TYPE_UNKNOWN
+        title = f'{incident.title} 根因待确认'
+        summary = '当前 Incident 尚缺少可用证据，只能保持未知根因。'
+        confidence = 0.2
+        supporting_ids = []
+        missing = ['缺少告警、指标、日志、Trace、K8s 和变更证据。']
+    recommended = _recommended_next_checks(incident, event_count)
+    AIOpsIncidentHypothesis.objects.filter(
+        incident=incident,
+        status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+        generated_by='rule_based',
+    ).exclude(root_cause_type=root_cause_type).update(status=AIOpsIncidentHypothesis.STATUS_REJECTED)
+    hypothesis, _ = AIOpsIncidentHypothesis.objects.update_or_create(
+        incident=incident,
+        status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+        generated_by='rule_based',
+        defaults={
+            'title': title[:256],
+            'root_cause_type': root_cause_type,
+            'confidence': confidence,
+            'supporting_evidence_ids': supporting_ids,
+            'counter_evidence_ids': [],
+            'missing_evidence': missing,
+            'recommended_next_checks': recommended,
+            'summary': summary,
+            'source_task': task,
+            'generated_at': timezone.now(),
+        },
+    )
+    return hypothesis
+
+
 def create_investigation_task(incident, reason='alert_changed'):
     payload = {
         'incident_id': incident.id,
@@ -219,6 +320,7 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         collect_alert_evidence(incident, task=task),
         collect_event_evidence(incident, task=task),
     ]
+    hypothesis = generate_root_cause_hypothesis(incident, task=task)
     now = timezone.now()
     task.status = AIOpsExternalTask.STATUS_COMPLETED
     task.completed_at = now
@@ -236,7 +338,7 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
             'agent': 'incident_readonly_investigator',
             'agent_name': 'Incident 只读调查',
             'status': 'completed',
-            'observations': [item.summary for item in evidence_items],
+            'observations': [item.summary for item in evidence_items] + [hypothesis.summary],
             'confidence': 'medium',
         }
     ]
@@ -249,7 +351,8 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         'mode': 'incident_readonly_investigation',
         'incident_id': incident.id,
         'evidence_ids': [item.id for item in evidence_items],
-        'summary': '已刷新 Incident 只读调查证据。',
+        'hypothesis_id': hypothesis.id,
+        'summary': '已刷新 Incident 只读调查证据和主根因假设。',
     }
     task.save(update_fields=[
         'status',
@@ -266,7 +369,7 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         category='incident',
         action='investigate_incident',
         title='Incident 只读调查',
-        summary=f'Incident #{incident.id} 已刷新 {len(evidence_items)} 条只读证据',
+        summary=f'Incident #{incident.id} 已刷新 {len(evidence_items)} 条只读证据和 1 条主根因假设',
         resource_type='aiops_incident',
         resource_id=incident.id,
         resource_name=incident.title,
@@ -274,7 +377,7 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         application=incident.service,
         severity=EventRecord.SEVERITY_INFO,
         correlation_id=f'aiops_incident:{incident.id}',
-        metadata={'task_id': task.id, 'evidence_ids': [item.id for item in evidence_items], 'reason': reason},
+        metadata={'task_id': task.id, 'evidence_ids': [item.id for item in evidence_items], 'hypothesis_id': hypothesis.id, 'reason': reason},
     )
     return task
 

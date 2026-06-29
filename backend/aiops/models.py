@@ -459,6 +459,65 @@ class AIOpsIncidentEvidence(models.Model):
         return f'{self.incident_id}:{self.kind}:{self.source}'
 
 
+class AIOpsIncidentHypothesis(models.Model):
+    STATUS_CANDIDATE = 'candidate'
+    STATUS_PRIMARY = 'primary'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CONFIRMED = 'confirmed'
+    STATUS_CHOICES = [
+        (STATUS_CANDIDATE, '候选'),
+        (STATUS_PRIMARY, '主假设'),
+        (STATUS_REJECTED, '已排除'),
+        (STATUS_CONFIRMED, '已确认'),
+    ]
+
+    TYPE_CHANGE_REGRESSION = 'change_regression'
+    TYPE_RESOURCE_SATURATION = 'resource_saturation'
+    TYPE_DEPENDENCY_FAILURE = 'dependency_failure'
+    TYPE_CONFIG_ERROR = 'config_error'
+    TYPE_CAPACITY = 'capacity'
+    TYPE_ALERT_SYMPTOM = 'alert_symptom'
+    TYPE_UNKNOWN = 'unknown'
+    ROOT_CAUSE_TYPE_CHOICES = [
+        (TYPE_CHANGE_REGRESSION, '变更回归'),
+        (TYPE_RESOURCE_SATURATION, '资源饱和'),
+        (TYPE_DEPENDENCY_FAILURE, '依赖故障'),
+        (TYPE_CONFIG_ERROR, '配置错误'),
+        (TYPE_CAPACITY, '容量不足'),
+        (TYPE_ALERT_SYMPTOM, '告警症状'),
+        (TYPE_UNKNOWN, '未知'),
+    ]
+
+    incident = models.ForeignKey(AIOpsIncident, on_delete=models.CASCADE, related_name='hypotheses', verbose_name='Incident')
+    title = models.CharField('假设标题', max_length=256)
+    root_cause_type = models.CharField('根因类型', max_length=32, choices=ROOT_CAUSE_TYPE_CHOICES, default=TYPE_UNKNOWN)
+    confidence = models.DecimalField('置信度', max_digits=4, decimal_places=2, default=0)
+    supporting_evidence_ids = models.JSONField('支持证据 ID', default=list, blank=True)
+    counter_evidence_ids = models.JSONField('反证 ID', default=list, blank=True)
+    missing_evidence = models.JSONField('证据缺口', default=list, blank=True)
+    recommended_next_checks = models.JSONField('下一步检查', default=list, blank=True)
+    summary = models.TextField('摘要', blank=True, default='')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_CANDIDATE)
+    source_task = models.ForeignKey('AIOpsExternalTask', on_delete=models.SET_NULL, null=True, blank=True, related_name='incident_hypotheses', verbose_name='来源任务')
+    generated_by = models.CharField('生成方式', max_length=64, blank=True, default='rule_based')
+    generated_at = models.DateTimeField('生成时间', default=timezone.now)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-confidence', '-generated_at', '-id']
+        indexes = [
+            models.Index(fields=['incident', 'status']),
+            models.Index(fields=['root_cause_type']),
+            models.Index(fields=['generated_at']),
+        ]
+        verbose_name = 'AIOps Incident 根因假设'
+        verbose_name_plural = 'AIOps Incident 根因假设'
+
+    def __str__(self):
+        return f'{self.incident_id}:{self.root_cause_type}:{self.status}'
+
+
 class AIOpsChatSession(models.Model):
     context = models.JSONField('上下文', default=dict, blank=True)
     STATUS_ACTIVE = 'active'

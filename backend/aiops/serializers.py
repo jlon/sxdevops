@@ -9,6 +9,7 @@ from .models import (
     AIOpsIncident,
     AIOpsIncidentAlert,
     AIOpsIncidentEvidence,
+    AIOpsIncidentHypothesis,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelInvocation,
@@ -460,6 +461,38 @@ class AIOpsIncidentEvidenceSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class AIOpsIncidentHypothesisSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    root_cause_type_display = serializers.CharField(source='get_root_cause_type_display', read_only=True)
+    source_task_public_id = serializers.UUIDField(source='source_task.public_id', read_only=True)
+    source_task_title = serializers.CharField(source='source_task.title', read_only=True)
+
+    class Meta:
+        model = AIOpsIncidentHypothesis
+        fields = [
+            'id',
+            'title',
+            'root_cause_type',
+            'root_cause_type_display',
+            'confidence',
+            'supporting_evidence_ids',
+            'counter_evidence_ids',
+            'missing_evidence',
+            'recommended_next_checks',
+            'summary',
+            'status',
+            'status_display',
+            'source_task',
+            'source_task_public_id',
+            'source_task_title',
+            'generated_by',
+            'generated_at',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = fields
+
+
 class AIOpsIncidentListSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     severity_display = serializers.CharField(source='get_severity_display', read_only=True)
@@ -513,10 +546,11 @@ class AIOpsIncidentListSerializer(serializers.ModelSerializer):
 class AIOpsIncidentSerializer(AIOpsIncidentListSerializer):
     alert_links = AIOpsIncidentAlertSerializer(many=True, read_only=True)
     evidence_items = AIOpsIncidentEvidenceSerializer(many=True, read_only=True)
+    hypotheses = AIOpsIncidentHypothesisSerializer(many=True, read_only=True)
 
     class Meta(AIOpsIncidentListSerializer.Meta):
-        fields = AIOpsIncidentListSerializer.Meta.fields + ['alert_links', 'evidence_items']
-        read_only_fields = AIOpsIncidentListSerializer.Meta.read_only_fields + ['alert_links', 'evidence_items']
+        fields = AIOpsIncidentListSerializer.Meta.fields + ['alert_links', 'evidence_items', 'hypotheses']
+        read_only_fields = AIOpsIncidentListSerializer.Meta.read_only_fields + ['alert_links', 'evidence_items', 'hypotheses']
 
 
 class AIOpsPendingActionSerializer(serializers.ModelSerializer):

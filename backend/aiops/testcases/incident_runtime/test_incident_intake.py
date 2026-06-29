@@ -3,7 +3,7 @@ from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from aiops.models import AIOpsExternalTask, AIOpsIncident, AIOpsIncidentAlert, AIOpsIncidentEvidence
+from aiops.models import AIOpsExternalTask, AIOpsIncident, AIOpsIncidentAlert, AIOpsIncidentEvidence, AIOpsIncidentHypothesis
 from eventwall.models import EventRecord
 from ops.models import Alert, AlertIntegration
 from rbac.models import Role
@@ -70,6 +70,10 @@ class IncidentAlertIntakeTests(TestCase):
         task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['incident_id'], incident.id)
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
+        self.assertTrue(hypothesis.supporting_evidence_ids)
+        self.assertIn('指标', ''.join(hypothesis.recommended_next_checks))
 
     def test_same_group_key_reuses_active_incident(self):
         first = self.post_alertmanager([
@@ -100,6 +104,7 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 2)
         alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
         self.assertEqual(len(alert_evidence.payload['alerts']), 2)
+        self.assertEqual(AIOpsIncidentHypothesis.objects.filter(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY).count(), 1)
 
     def test_repeated_same_alert_does_not_duplicate_incident_events(self):
         payload = [{
@@ -120,6 +125,7 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(lifecycle_events.count(), 1)
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 1)
         self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 2)
+        self.assertEqual(AIOpsIncidentHypothesis.objects.filter(incident=incident).count(), 1)
 
     def test_resolved_signal_marks_incident_resolved_when_no_active_alerts(self):
         firing = self.post_alertmanager([
@@ -209,3 +215,23 @@ class IncidentApiTests(TestCase):
         self.assertEqual(len(response.data['evidence_items']), 1)
         self.assertEqual(response.data['evidence_items'][0]['source'], 'builtin.alert_snapshot')
         self.assertEqual(response.data['evidence_items'][0]['kind_display'], '告警证据')
+
+    def test_incident_detail_includes_hypotheses(self):
+        AIOpsIncidentHypothesis.objects.create(
+            incident=self.incident,
+            title='order-center 出现 HighErrorRate 告警症状',
+            root_cause_type=AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM,
+            confidence=0.45,
+            supporting_evidence_ids=[1],
+            missing_evidence=['缺少日志证据'],
+            recommended_next_checks=['补查错误日志'],
+            summary='当前主要证据来自告警。',
+            status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+        )
+
+        response = self.client.get(f'/api/aiops/incidents/{self.incident.id}/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data['hypotheses']), 1)
+        self.assertEqual(response.data['hypotheses'][0]['status'], AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertEqual(response.data['hypotheses'][0]['root_cause_type_display'], '告警症状')

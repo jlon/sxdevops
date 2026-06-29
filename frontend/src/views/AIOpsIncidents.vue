@@ -125,6 +125,39 @@
         </el-descriptions>
 
         <div class="section-head compact">
+          <h3>主根因假设</h3>
+          <span class="toolbar-desc">{{ primaryHypothesis ? primaryHypothesis.status_display : '待生成' }}</span>
+        </div>
+        <div v-if="primaryHypothesis" class="hypothesis-panel">
+          <div class="hypothesis-title-row">
+            <div>
+              <div class="hypothesis-title">{{ primaryHypothesis.title }}</div>
+              <div class="sub-line">{{ primaryHypothesis.root_cause_type_display || primaryHypothesis.root_cause_type }} · {{ formatTime(primaryHypothesis.generated_at) }}</div>
+            </div>
+            <el-progress
+              type="circle"
+              :percentage="hypothesisConfidence(primaryHypothesis)"
+              :width="48"
+              :stroke-width="5"
+            />
+          </div>
+          <div class="hypothesis-summary">{{ primaryHypothesis.summary || '-' }}</div>
+          <div class="hypothesis-columns">
+            <div>
+              <div class="mini-title">证据缺口</div>
+              <div v-for="item in primaryHypothesis.missing_evidence || []" :key="item" class="sub-line">- {{ item }}</div>
+              <span v-if="!(primaryHypothesis.missing_evidence || []).length" class="detail-empty">暂无</span>
+            </div>
+            <div>
+              <div class="mini-title">下一步检查</div>
+              <div v-for="item in primaryHypothesis.recommended_next_checks || []" :key="item" class="sub-line">- {{ item }}</div>
+              <span v-if="!(primaryHypothesis.recommended_next_checks || []).length" class="detail-empty">暂无</span>
+            </div>
+          </div>
+        </div>
+        <span v-else class="detail-empty">暂无根因假设</span>
+
+        <div class="section-head compact">
           <h3>只读调查证据</h3>
           <span class="toolbar-desc">{{ evidenceCount }} 条</span>
         </div>
@@ -199,6 +232,10 @@ const criticalCount = computed(() => incidents.value.filter(item => item.severit
 const openCount = computed(() => incidents.value.filter(item => !['resolved', 'closed'].includes(item.status)).length)
 const activeAlertCount = computed(() => incidents.value.reduce((sum, item) => sum + Number(item.active_alert_count || 0), 0))
 const evidenceCount = computed(() => (selectedIncident.value?.evidence_items || []).length)
+const primaryHypothesis = computed(() => {
+  const hypotheses = selectedIncident.value?.hypotheses || []
+  return hypotheses.find(item => item.status === 'primary') || hypotheses[0] || null
+})
 
 function formatTime(value) {
   if (!value) return '-'
@@ -219,6 +256,11 @@ function statusType(value) {
 
 function statusText(value) {
   return ({ open: '新建', investigating: '调查中', mitigating: '处置中', verifying: '验证中', resolved: '已恢复', closed: '已关闭' }[value] || value || '-')
+}
+
+function hypothesisConfidence(item) {
+  const value = Number(item?.confidence || 0)
+  return Math.max(0, Math.min(100, Math.round(value * 100)))
 }
 
 function evidenceKindType(value) {
@@ -398,6 +440,47 @@ onMounted(fetchIncidents)
   word-break: break-word;
 }
 
+.hypothesis-panel {
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--panel-soft-bg);
+}
+
+.hypothesis-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.hypothesis-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.hypothesis-summary {
+  margin-top: 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.hypothesis-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.mini-title {
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
 .toolbar :deep(.el-input),
 .toolbar :deep(.el-select) {
   width: 150px;
@@ -410,6 +493,10 @@ onMounted(fetchIncidents)
 @media (max-width: 900px) {
   .incident-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hypothesis-columns {
+    grid-template-columns: 1fr;
   }
 }
 </style>
