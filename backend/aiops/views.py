@@ -452,6 +452,8 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
                 'evidence_items__source_task',
                 'evidence_items__tool_invocation',
                 'hypotheses__source_task',
+                'incident_actions__pending_action',
+                'incident_actions__host_task',
             )
         params = self.request.query_params
         if params.get('only_open') in {'1', 'true', 'True'}:

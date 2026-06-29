@@ -158,6 +158,25 @@
         <span v-else class="detail-empty">暂无根因假设</span>
 
         <div class="section-head compact">
+          <h3>建议动作</h3>
+          <span class="toolbar-desc">{{ incidentActionCount }} 条</span>
+        </div>
+        <div class="action-list">
+          <div v-for="item in selectedIncident.incident_actions || []" :key="item.id" class="action-item">
+            <div class="action-main">
+              <div class="evidence-title-row">
+                <el-tag size="small" :type="actionTypeTag(item.action_type)">{{ item.action_type_display || item.action_type }}</el-tag>
+                <el-tag size="small" :type="riskTag(item.risk_level)" effect="plain">{{ item.risk_level_display || item.risk_level }}</el-tag>
+                <el-tag size="small" effect="plain">{{ item.status_display || item.status }}</el-tag>
+              </div>
+              <div class="evidence-summary">{{ item.title }}</div>
+              <div v-for="step in item.verification_plan || []" :key="step" class="sub-line">- {{ step }}</div>
+            </div>
+          </div>
+          <span v-if="!incidentActionCount" class="detail-empty">暂无建议动作</span>
+        </div>
+
+        <div class="section-head compact">
           <h3>只读调查证据</h3>
           <span class="toolbar-desc">{{ evidenceCount }} 条</span>
         </div>
@@ -232,6 +251,7 @@ const criticalCount = computed(() => incidents.value.filter(item => item.severit
 const openCount = computed(() => incidents.value.filter(item => !['resolved', 'closed'].includes(item.status)).length)
 const activeAlertCount = computed(() => incidents.value.reduce((sum, item) => sum + Number(item.active_alert_count || 0), 0))
 const evidenceCount = computed(() => (selectedIncident.value?.evidence_items || []).length)
+const incidentActionCount = computed(() => (selectedIncident.value?.incident_actions || []).length)
 const primaryHypothesis = computed(() => {
   const hypotheses = selectedIncident.value?.hypotheses || []
   return hypotheses.find(item => item.status === 'primary') || hypotheses[0] || null
@@ -261,6 +281,14 @@ function statusText(value) {
 function hypothesisConfidence(item) {
   const value = Number(item?.confidence || 0)
   return Math.max(0, Math.min(100, Math.round(value * 100)))
+}
+
+function actionTypeTag(value) {
+  return ({ investigate: 'primary', mitigate: 'warning', fix: 'danger', rollback: 'danger', verify: 'success' }[value] || 'info')
+}
+
+function riskTag(value) {
+  return ({ read_only: 'success', low: 'success', medium: 'warning', high: 'danger', critical: 'danger' }[value] || 'info')
 }
 
 function evidenceKindType(value) {
@@ -404,6 +432,12 @@ onMounted(fetchIncidents)
   gap: 8px;
 }
 
+.action-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .evidence-item {
   display: flex;
   justify-content: space-between;
@@ -414,9 +448,20 @@ onMounted(fetchIncidents)
   background: var(--panel-soft-bg);
 }
 
+.action-item {
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--panel-soft-bg);
+}
+
 .evidence-main {
   min-width: 0;
   flex: 1;
+}
+
+.action-main {
+  min-width: 0;
 }
 
 .evidence-title-row {

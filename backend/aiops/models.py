@@ -518,6 +518,81 @@ class AIOpsIncidentHypothesis(models.Model):
         return f'{self.incident_id}:{self.root_cause_type}:{self.status}'
 
 
+class AIOpsIncidentAction(models.Model):
+    ACTION_INVESTIGATE = 'investigate'
+    ACTION_MITIGATE = 'mitigate'
+    ACTION_FIX = 'fix'
+    ACTION_ROLLBACK = 'rollback'
+    ACTION_VERIFY = 'verify'
+    ACTION_TYPE_CHOICES = [
+        (ACTION_INVESTIGATE, '继续调查'),
+        (ACTION_MITIGATE, '缓解'),
+        (ACTION_FIX, '修复'),
+        (ACTION_ROLLBACK, '回滚'),
+        (ACTION_VERIFY, '验证'),
+    ]
+
+    STATUS_PROPOSED = 'proposed'
+    STATUS_APPROVED = 'approved'
+    STATUS_RUNNING = 'running'
+    STATUS_COMPLETED = 'completed'
+    STATUS_FAILED = 'failed'
+    STATUS_CANCELED = 'canceled'
+    STATUS_CHOICES = [
+        (STATUS_PROPOSED, '待确认'),
+        (STATUS_APPROVED, '已批准'),
+        (STATUS_RUNNING, '执行中'),
+        (STATUS_COMPLETED, '已完成'),
+        (STATUS_FAILED, '失败'),
+        (STATUS_CANCELED, '已取消'),
+    ]
+
+    RISK_READ_ONLY = 'read_only'
+    RISK_LOW = 'low'
+    RISK_MEDIUM = 'medium'
+    RISK_HIGH = 'high'
+    RISK_CRITICAL = 'critical'
+    RISK_CHOICES = [
+        (RISK_READ_ONLY, '只读'),
+        (RISK_LOW, '低'),
+        (RISK_MEDIUM, '中'),
+        (RISK_HIGH, '高'),
+        (RISK_CRITICAL, '极高'),
+    ]
+
+    incident = models.ForeignKey(AIOpsIncident, on_delete=models.CASCADE, related_name='incident_actions', verbose_name='Incident')
+    hypothesis = models.ForeignKey(AIOpsIncidentHypothesis, on_delete=models.SET_NULL, null=True, blank=True, related_name='incident_actions', verbose_name='根因假设')
+    pending_action = models.ForeignKey('AIOpsPendingAction', on_delete=models.SET_NULL, null=True, blank=True, related_name='incident_actions', verbose_name='待确认动作')
+    host_task = models.ForeignKey('ops.HostTask', on_delete=models.SET_NULL, null=True, blank=True, related_name='aiops_incident_actions', verbose_name='任务中心任务')
+    title = models.CharField('动作标题', max_length=256)
+    action_type = models.CharField('动作类型', max_length=24, choices=ACTION_TYPE_CHOICES, default=ACTION_INVESTIGATE)
+    risk_level = models.CharField('风险等级', max_length=16, choices=RISK_CHOICES, default=RISK_READ_ONLY)
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_PROPOSED)
+    action_payload = models.JSONField('动作参数', default=dict, blank=True)
+    preconditions = models.JSONField('前置条件', default=list, blank=True)
+    rollback_plan = models.JSONField('回滚计划', default=list, blank=True)
+    verification_plan = models.JSONField('验证计划', default=list, blank=True)
+    verification_status = models.CharField('验证状态', max_length=32, blank=True, default='')
+    result_summary = models.TextField('执行结果摘要', blank=True, default='')
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='system')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['incident', 'status']),
+            models.Index(fields=['action_type', 'risk_level']),
+            models.Index(fields=['pending_action']),
+            models.Index(fields=['host_task']),
+        ]
+        verbose_name = 'AIOps Incident 处置建议'
+        verbose_name_plural = 'AIOps Incident 处置建议'
+
+    def __str__(self):
+        return f'{self.incident_id}:{self.action_type}:{self.status}'
+
+
 class AIOpsChatSession(models.Model):
     context = models.JSONField('上下文', default=dict, blank=True)
     STATUS_ACTIVE = 'active'

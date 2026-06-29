@@ -8,7 +8,7 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from ops.models import Alert
 
-from .models import AIOpsExternalTask, AIOpsIncident, AIOpsIncidentEvidence, AIOpsIncidentHypothesis
+from .models import AIOpsExternalTask, AIOpsIncident, AIOpsIncidentAction, AIOpsIncidentEvidence, AIOpsIncidentHypothesis
 
 
 logger = logging.getLogger(__name__)
@@ -279,6 +279,37 @@ def generate_root_cause_hypothesis(incident, task=None):
     return hypothesis
 
 
+def generate_remediation_proposals(incident, hypothesis):
+    next_checks = hypothesis.recommended_next_checks if isinstance(hypothesis.recommended_next_checks, list) else []
+    if not next_checks:
+        next_checks = _recommended_next_checks(incident, 0)
+    payload = {
+        'mode': 'readonly_followup',
+        'incident_id': incident.id,
+        'hypothesis_id': hypothesis.id,
+        'recommended_checks': next_checks,
+        'target_scope': incident_scope(incident),
+    }
+    proposal, _ = AIOpsIncidentAction.objects.update_or_create(
+        incident=incident,
+        hypothesis=hypothesis,
+        action_type=AIOpsIncidentAction.ACTION_INVESTIGATE,
+        defaults={
+            'title': f'补充 {incident.service or incident.title} 只读证据',
+            'risk_level': AIOpsIncidentAction.RISK_READ_ONLY,
+            'status': AIOpsIncidentAction.STATUS_PROPOSED,
+            'action_payload': payload,
+            'preconditions': ['仅允许调用只读查询工具，不执行变更、重启、扩缩容或命令。'],
+            'rollback_plan': ['只读动作无需回滚；若查询失败，只记录失败原因并保留现有 Incident 状态。'],
+            'verification_plan': next_checks,
+            'verification_status': '',
+            'result_summary': '',
+            'created_by': INVESTIGATION_SOURCE_AGENT,
+        },
+    )
+    return [proposal]
+
+
 def create_investigation_task(incident, reason='alert_changed'):
     payload = {
         'incident_id': incident.id,
@@ -321,6 +352,7 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         collect_event_evidence(incident, task=task),
     ]
     hypothesis = generate_root_cause_hypothesis(incident, task=task)
+    proposals = generate_remediation_proposals(incident, hypothesis)
     now = timezone.now()
     task.status = AIOpsExternalTask.STATUS_COMPLETED
     task.completed_at = now
@@ -352,7 +384,8 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         'incident_id': incident.id,
         'evidence_ids': [item.id for item in evidence_items],
         'hypothesis_id': hypothesis.id,
-        'summary': '已刷新 Incident 只读调查证据和主根因假设。',
+        'proposal_ids': [item.id for item in proposals],
+        'summary': '已刷新 Incident 只读调查证据、主根因假设和只读处置建议。',
     }
     task.save(update_fields=[
         'status',
@@ -369,7 +402,7 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         category='incident',
         action='investigate_incident',
         title='Incident 只读调查',
-        summary=f'Incident #{incident.id} 已刷新 {len(evidence_items)} 条只读证据和 1 条主根因假设',
+        summary=f'Incident #{incident.id} 已刷新 {len(evidence_items)} 条只读证据、1 条主根因假设和 {len(proposals)} 条建议',
         resource_type='aiops_incident',
         resource_id=incident.id,
         resource_name=incident.title,
@@ -377,7 +410,13 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         application=incident.service,
         severity=EventRecord.SEVERITY_INFO,
         correlation_id=f'aiops_incident:{incident.id}',
-        metadata={'task_id': task.id, 'evidence_ids': [item.id for item in evidence_items], 'hypothesis_id': hypothesis.id, 'reason': reason},
+        metadata={
+            'task_id': task.id,
+            'evidence_ids': [item.id for item in evidence_items],
+            'hypothesis_id': hypothesis.id,
+            'proposal_ids': [item.id for item in proposals],
+            'reason': reason,
+        },
     )
     return task
 
