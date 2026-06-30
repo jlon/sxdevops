@@ -15339,6 +15339,31 @@ def _incident_action_verification_status(task, incident_action):
     return ''
 
 
+def _refresh_incident_alert_counts_for_verification(incident):
+    aggregate = incident.alert_links.aggregate(
+        alert_count=Count('alert', distinct=True),
+        active_alert_count=Count(
+            'alert',
+            filter=Q(alert__status=Alert.STATUS_ACTIVE),
+            distinct=True,
+        ),
+    )
+    alert_count = aggregate.get('alert_count') or 0
+    active_alert_count = aggregate.get('active_alert_count') or 0
+    if alert_count == 0:
+        return False
+    update_fields = []
+    if incident.alert_count != alert_count:
+        incident.alert_count = alert_count
+        update_fields.append('alert_count')
+    if incident.active_alert_count != active_alert_count:
+        incident.active_alert_count = active_alert_count
+        update_fields.append('active_alert_count')
+    if update_fields:
+        incident.save(update_fields=[*update_fields, 'updated_at'])
+    return bool(update_fields)
+
+
 def _incident_action_status_for_task(task):
     if task.status in {HostTask.STATUS_SUCCESS, HostTask.STATUS_PARTIAL}:
         return AIOpsIncidentAction.STATUS_COMPLETED
@@ -15460,6 +15485,7 @@ def sync_incident_action_verification_for_task(task, request=None):
     updated_count = 0
     for incident_action in incident_actions:
         incident = incident_action.incident
+        counts_changed = _refresh_incident_alert_counts_for_verification(incident)
         verification_status = _incident_action_verification_status(task, incident_action)
         action_status = _incident_action_status_for_task(task)
         update_fields = []
@@ -15477,7 +15503,7 @@ def sync_incident_action_verification_for_task(task, request=None):
         if incident_action.result_summary != result_summary:
             incident_action.result_summary = result_summary[:2000]
             update_fields.append('result_summary')
-        changed = bool(update_fields)
+        changed = bool(update_fields) or counts_changed
         if update_fields:
             incident_action.save(update_fields=[*update_fields, 'updated_at'])
 

@@ -898,6 +898,54 @@ class IncidentApiTests(TestCase):
             metadata__verification_evidence_id=evidence.id,
         ).exists())
 
+    def test_verification_sync_refreshes_stale_incident_alert_counts(self):
+        alert = Alert.objects.create(
+            title='order-center HighErrorRate',
+            level='critical',
+            status=Alert.STATUS_ACTIVE,
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='5xx ratio above threshold',
+            environment=self.incident.environment,
+            service=self.incident.service,
+        )
+        AIOpsIncidentAlert.objects.create(
+            incident=self.incident,
+            alert=alert,
+            role=AIOpsIncidentAlert.ROLE_PRIMARY,
+        )
+        alert.status = Alert.STATUS_RESOLVED
+        alert.save(update_fields=['status'])
+        task = HostTask.objects.create(
+            name='重启 order-center',
+            task_type=HostTask.TASK_RUN_COMMAND,
+            status=HostTask.STATUS_SUCCESS,
+            trigger_source=HostTask.TRIGGER_SOURCE_AIOPS,
+            lifecycle_status=HostTask.LIFECYCLE_SUCCESS,
+            target_count=1,
+            success_count=1,
+            summary='共 1 台，成功 1，失败 0',
+        )
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            host_task=task,
+            title='重启 order-center',
+            action_type=AIOpsIncidentAction.ACTION_FIX,
+            risk_level=AIOpsIncidentAction.RISK_HIGH,
+            status=AIOpsIncidentAction.STATUS_RUNNING,
+            verification_status='execution_started',
+        )
+
+        updated = sync_incident_action_verification_for_task(task)
+
+        self.assertEqual(updated, 1)
+        action.refresh_from_db()
+        self.incident.refresh_from_db()
+        self.assertEqual(self.incident.alert_count, 1)
+        self.assertEqual(self.incident.active_alert_count, 0)
+        self.assertEqual(action.verification_status, 'verified_resolved')
+        self.assertEqual(self.incident.status, AIOpsIncident.STATUS_RESOLVED)
+
     def test_verification_sync_keeps_incident_open_when_task_fails(self):
         task = HostTask.objects.create(
             name='重启 order-center',
