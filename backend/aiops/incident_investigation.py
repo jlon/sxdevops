@@ -10,7 +10,9 @@ from django.utils import timezone
 
 from eventwall.models import EventRecord
 from eventwall.services import record_event
-from ops.models import Alert, MetricDataSource, TaskResource
+from ops.log_views import _merge_config as merge_log_config
+from ops.log_views import _run_query as run_log_provider_query
+from ops.models import Alert, LogDataSource, MetricDataSource, TaskResource
 from ops.observability_views import execute_promql_query
 
 from . import metric_evidence
@@ -594,6 +596,140 @@ def collect_metric_evidence(incident, task=None, tool_invocation=None, budget=2,
     return evidence
 
 
+def _log_query_terms(incident):
+    terms = []
+    for value in [incident.service, incident.resource, incident.namespace, incident.cluster]:
+        text = str(value or '').strip()
+        if text and text not in terms:
+            terms.append(text)
+    return terms
+
+
+def _log_label_value(value):
+    return str(value or '').replace('\\', '\\\\').replace('"', '\\"')
+
+
+def _log_query_for_provider(provider, incident):
+    terms = _log_query_terms(incident)
+    service = incident.service or incident.resource
+    namespace = incident.namespace
+    if provider == 'loki':
+        labels = {}
+        if namespace:
+            labels['namespace'] = namespace
+        selector = '{' + ','.join(f'{key}="{_log_label_value(value)}"' for key, value in labels.items()) + '}' if labels else '{job!=""}'
+        return f'{selector} |~ "(?i)error|exception|timeout|failed|fatal|warn"'
+    if provider == 'elk':
+        clauses = []
+        if service:
+            clauses.append(f'(service:"{service}" OR service.name:"{service}" OR container:"{service}")')
+        clauses.append('(level:"ERROR" OR level:"WARN" OR message:*error* OR message:*exception* OR message:*timeout* OR message:*failed*)')
+        return ' AND '.join(clauses)
+    if provider == 'sls':
+        return ' AND '.join(terms + ['error OR exception OR timeout OR failed OR warn']) if terms else 'error OR exception OR timeout OR failed OR warn'
+    return ' '.join(terms)
+
+
+def _log_sample(item):
+    attributes = item.get('attributes') if isinstance(item.get('attributes'), dict) else {}
+    return {
+        'timestamp': item.get('timestamp') or '',
+        'level': item.get('level') or '',
+        'source': item.get('source') or '',
+        'message': str(item.get('message') or '')[:500],
+        'datasource_id': item.get('datasource_id'),
+        'datasource_name': item.get('datasource_name') or '',
+        'trace_id': attributes.get('trace_id') or attributes.get('traceId') or '',
+    }
+
+
+def collect_log_evidence(incident, task=None, tool_invocation=None, limit=8):
+    window_start, window_end = investigation_window(incident)
+    start_ms = int(window_start.timestamp() * 1000)
+    end_ms = int(window_end.timestamp() * 1000)
+    datasources = list(LogDataSource.objects.filter(is_enabled=True).order_by('-is_default', 'provider', 'name')[:2])
+    logs = []
+    datasource_results = []
+    errors = []
+    for datasource in datasources:
+        config = merge_log_config(datasource.provider, datasource.config)
+        query = _log_query_for_provider(datasource.provider, incident)
+        payload = {
+            'provider': datasource.provider,
+            'datasource_id': datasource.id,
+            'start_ms': start_ms,
+            'end_ms': end_ms,
+            'limit': limit,
+            'query': query,
+        }
+        if datasource.provider == 'elk':
+            payload['source'] = config.get('index_pattern') or '*'
+            payload['index_pattern'] = config.get('index_pattern') or '*'
+            payload['time_field'] = config.get('time_field') or '@timestamp'
+            payload['message_fields'] = config.get('message_fields') or 'message,log,msg'
+        elif datasource.provider == 'sls':
+            payload['source'] = config.get('logstore') or ''
+            payload['logstore'] = config.get('logstore') or ''
+        try:
+            result = run_log_provider_query(datasource.provider, config, payload)
+            datasource_results.append({
+                'id': datasource.id,
+                'name': datasource.name,
+                'provider': datasource.provider,
+                'query': query,
+                'total': result.get('total', len(result.get('logs') or [])),
+            })
+            for item in result.get('logs') or []:
+                enriched = dict(item)
+                enriched['datasource_id'] = datasource.id
+                enriched['datasource_name'] = datasource.name
+                logs.append(enriched)
+        except Exception as exc:
+            errors.append({'datasource_id': datasource.id, 'name': datasource.name, 'provider': datasource.provider, 'error': str(exc)[:240]})
+    logs.sort(key=lambda item: str(item.get('timestamp') or ''), reverse=True)
+    logs = logs[:limit]
+    level_counts = Counter(str(item.get('level') or 'unknown').lower() for item in logs)
+    payload = {
+        'summary': {
+            'datasource_count': len(datasources),
+            'queried_datasource_count': len(datasource_results),
+            'log_count': len(logs),
+            'error_count': sum(level_counts.get(level, 0) for level in ['error', 'fatal', 'critical']),
+            'warning_count': sum(level_counts.get(level, 0) for level in ['warning', 'warn']),
+            'failed_count': len(errors),
+        },
+        'datasources': datasource_results,
+        'errors': errors,
+        'logs': [_log_sample(item) for item in logs],
+    }
+    if not datasources:
+        summary = '未配置启用的日志数据源，已跳过日志取证'
+        weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    elif logs:
+        summary = f"日志取证命中 {len(logs)} 条日志，ERROR {payload['summary']['error_count']} 条，WARNING {payload['summary']['warning_count']} 条"
+        weight = AIOpsIncidentEvidence.WEIGHT_SUPPORTING
+    else:
+        summary = f"日志取证未命中日志，查询数据源 {len(datasource_results)} 个，失败 {len(errors)} 个"
+        weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    evidence, _ = AIOpsIncidentEvidence.objects.update_or_create(
+        incident=incident,
+        kind=AIOpsIncidentEvidence.KIND_LOG,
+        source='builtin.log_snapshot',
+        defaults={
+            'source_task': task,
+            'tool_invocation': tool_invocation,
+            'scope': incident_scope(incident),
+            'window_start': window_start,
+            'window_end': window_end,
+            'summary': summary,
+            'payload': payload,
+            'weight': weight,
+            'collected_at': timezone.now(),
+        },
+    )
+    return evidence
+
+
 def _evidence_by_source(incident):
     return {
         evidence.source: evidence
@@ -643,6 +779,23 @@ def _metric_summary(evidence):
     }
 
 
+def _log_summary(evidence):
+    payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
+    summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+    def _int_value(key):
+        try:
+            return int(summary.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return {
+        'datasource_count': _int_value('datasource_count'),
+        'log_count': _int_value('log_count'),
+        'error_count': _int_value('error_count'),
+        'warning_count': _int_value('warning_count'),
+        'failed_count': _int_value('failed_count'),
+    }
+
+
 def _primary_alert_title(evidence, incident):
     payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
     alerts = payload.get('alerts') if isinstance(payload.get('alerts'), list) else []
@@ -675,31 +828,33 @@ def generate_root_cause_hypothesis(incident, task=None):
     event_evidence = evidence.get('builtin.event_timeline')
     resource_evidence = evidence.get('builtin.task_resource_scope')
     metric_evidence_item = evidence.get('builtin.metric_snapshot')
+    log_evidence = evidence.get('builtin.log_snapshot')
     event_count = _event_count(event_evidence)
     alert_count = _alert_count(alert_evidence)
     resource_count = _task_resource_count(resource_evidence)
     metric_summary = _metric_summary(metric_evidence_item)
+    log_summary = _log_summary(log_evidence)
     if event_count:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_CHANGE_REGRESSION
         title = f'{incident.service or incident.title} 可能受近期事件或变更影响'
         summary = f'Incident 时间窗内存在 {event_count} 条相关事件，需要结合告警、日志和变更内容验证是否为直接诱因。'
         confidence = 0.62 if alert_count else 0.48
-        supporting_ids = _evidence_ids(alert_evidence, event_evidence, metric_evidence_item, resource_evidence)
+        supporting_ids = _evidence_ids(alert_evidence, event_evidence, metric_evidence_item, log_evidence, resource_evidence)
         missing = ['缺少事件详情与异常指标之间的直接因果证据。']
     elif alert_count:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM
         primary_alert = _primary_alert_title(alert_evidence, incident)
         title = f'{incident.service or incident.resource or incident.title} 出现 {primary_alert} 告警症状'
         summary = f'当前主要证据来自 {alert_count} 条关联告警，尚不足以判定底层根因。'
-        confidence = 0.55 if metric_summary['abnormal_count'] else 0.45
-        supporting_ids = _evidence_ids(alert_evidence, metric_evidence_item, resource_evidence)
-        missing = ['缺少日志、Trace、K8s 或变更证据，暂不能确认根因类型。']
+        confidence = 0.6 if log_summary['error_count'] else (0.55 if metric_summary['abnormal_count'] else 0.45)
+        supporting_ids = _evidence_ids(alert_evidence, metric_evidence_item, log_evidence, resource_evidence)
+        missing = ['缺少 Trace、K8s 或变更证据，暂不能确认根因类型。']
     else:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_UNKNOWN
         title = f'{incident.title} 根因待确认'
         summary = '当前 Incident 尚缺少可用证据，只能保持未知根因。'
         confidence = 0.2
-        supporting_ids = _evidence_ids(metric_evidence_item, resource_evidence)
+        supporting_ids = _evidence_ids(metric_evidence_item, log_evidence, resource_evidence)
         missing = ['缺少告警、指标、日志、Trace、K8s 和变更证据。']
     if metric_summary['planned_count'] == 0:
         missing.append('未生成可执行指标查询计划，需补充告警指标名或服务/资源标签。')
@@ -707,6 +862,12 @@ def generate_root_cause_hypothesis(incident, task=None):
         missing.append('指标查询未执行成功，需确认 Prometheus 或指标数据源配置。')
     elif metric_summary['missing_count'] or metric_summary['failed_count']:
         missing.append('部分指标无数据或查询失败，需确认指标标签、PromQL 和数据源状态。')
+    if log_summary['datasource_count'] == 0:
+        missing.append('未配置启用的日志数据源，无法确认错误日志模式。')
+    elif log_summary['log_count'] == 0:
+        missing.append('日志查询未命中样本，需放宽服务、namespace 或时间窗口。')
+    elif log_summary['failed_count']:
+        missing.append('部分日志数据源查询失败，需确认日志接入配置。')
     if resource_count == 0:
         missing.append('缺少当前 Incident 范围的资源底座映射，影响后续执行目标确认。')
     recommended = _recommended_next_checks(incident, event_count, resource_count)
@@ -804,6 +965,7 @@ def create_investigation_task(incident, reason='alert_changed'):
         plan_steps=[
             {'tool': 'builtin.alert_snapshot', 'title': '采集关联告警快照', 'risk_level': 'read_only', 'status': 'running'},
             {'tool': 'builtin.metric_snapshot', 'title': '采集指标趋势快照', 'risk_level': 'read_only', 'status': 'pending'},
+            {'tool': 'builtin.log_snapshot', 'title': '采集错误日志快照', 'risk_level': 'read_only', 'status': 'pending'},
             {'tool': 'builtin.event_timeline', 'title': '采集相关事件时间线', 'risk_level': 'read_only', 'status': 'pending'},
             {'tool': 'builtin.task_resource_scope', 'title': '采集资源底座范围', 'risk_level': 'read_only', 'status': 'pending'},
         ],
@@ -848,6 +1010,13 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
             'builtin.metric_snapshot',
             collect_metric_evidence,
         )
+        log_evidence, log_invocation = _collect_evidence_with_audit(
+            incident,
+            task,
+            audit_session,
+            'builtin.log_snapshot',
+            collect_log_evidence,
+        )
         event_evidence, event_invocation = _collect_evidence_with_audit(
             incident,
             task,
@@ -865,8 +1034,8 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
     except Exception as exc:
         _mark_investigation_task_failed(task, exc)
         raise
-    evidence_items = [alert_evidence, metric_evidence_item, event_evidence, resource_evidence]
-    tool_invocation_ids = [alert_invocation.id, metric_invocation.id, event_invocation.id, resource_invocation.id]
+    evidence_items = [alert_evidence, metric_evidence_item, log_evidence, event_evidence, resource_evidence]
+    tool_invocation_ids = [alert_invocation.id, metric_invocation.id, log_invocation.id, event_invocation.id, resource_invocation.id]
     hypothesis = generate_root_cause_hypothesis(incident, task=task)
     proposals = generate_remediation_proposals(incident, hypothesis)
     now = timezone.now()
@@ -895,8 +1064,9 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
     task.react_trace = [
         {'phase': 'collect_alerts', 'status': 'completed', 'evidence_id': evidence_items[0].id, 'tool_invocation_id': alert_invocation.id},
         {'phase': 'collect_metrics', 'status': 'completed', 'evidence_id': evidence_items[1].id, 'tool_invocation_id': metric_invocation.id},
-        {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[2].id, 'tool_invocation_id': event_invocation.id},
-        {'phase': 'collect_task_resources', 'status': 'completed', 'evidence_id': evidence_items[3].id, 'tool_invocation_id': resource_invocation.id},
+        {'phase': 'collect_logs', 'status': 'completed', 'evidence_id': evidence_items[2].id, 'tool_invocation_id': log_invocation.id},
+        {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[3].id, 'tool_invocation_id': event_invocation.id},
+        {'phase': 'collect_task_resources', 'status': 'completed', 'evidence_id': evidence_items[4].id, 'tool_invocation_id': resource_invocation.id},
         {'phase': 'terminate', 'status': 'completed', 'stop_condition': '只读证据快照已刷新'},
     ]
     task.result_payload = {

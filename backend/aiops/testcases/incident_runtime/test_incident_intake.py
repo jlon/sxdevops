@@ -23,7 +23,7 @@ from aiops.models import (
 )
 from aiops.services import sync_incident_action_verification_for_task, sync_session_to_demo_if_needed
 from eventwall.models import EventRecord
-from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution, MetricDataSource, TaskResource, TaskResourceGroup
+from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -83,26 +83,29 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 1)
         link = AIOpsIncidentAlert.objects.get(incident=incident, alert=alert)
         self.assertEqual(link.role, AIOpsIncidentAlert.ROLE_PRIMARY)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 4)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 5)
         alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
+        log_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.log_snapshot')
         event_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.event_timeline')
         resource_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.task_resource_scope')
         self.assertIsNotNone(alert_evidence.tool_invocation)
+        self.assertIsNotNone(log_evidence.tool_invocation)
         self.assertIsNotNone(event_evidence.tool_invocation)
         self.assertIsNotNone(resource_evidence.tool_invocation)
         self.assertEqual(alert_evidence.tool_invocation.tool_name, 'builtin.alert_snapshot')
+        self.assertEqual(log_evidence.tool_invocation.tool_name, 'builtin.log_snapshot')
         self.assertEqual(event_evidence.tool_invocation.tool_name, 'builtin.event_timeline')
         self.assertEqual(resource_evidence.tool_invocation.tool_name, 'builtin.task_resource_scope')
         self.assertEqual(
             set(AIOpsToolInvocation.objects.filter(session__context__source='incident_background_investigation').values_list('tool_name', flat=True)),
-            {'builtin.alert_snapshot', 'builtin.metric_snapshot', 'builtin.event_timeline', 'builtin.task_resource_scope'},
+            {'builtin.alert_snapshot', 'builtin.metric_snapshot', 'builtin.log_snapshot', 'builtin.event_timeline', 'builtin.task_resource_scope'},
         )
         task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['incident_id'], incident.id)
-        self.assertEqual(len(task.result_payload['tool_invocation_ids']), 4)
-        self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 4)
-        self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:4]))
+        self.assertEqual(len(task.result_payload['tool_invocation_ids']), 5)
+        self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 5)
+        self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:5]))
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
         self.assertTrue(hypothesis.supporting_evidence_ids)
@@ -137,7 +140,7 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 2)
         self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_CRITICAL)
         self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident).count(), 2)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 4)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 5)
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 2)
         alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
         self.assertEqual(len(alert_evidence.payload['alerts']), 2)
@@ -162,7 +165,7 @@ class IncidentAlertIntakeTests(TestCase):
         lifecycle_events = EventRecord.objects.filter(module='aiops', category='incident').exclude(action='investigate_incident')
         self.assertEqual(lifecycle_events.count(), 1)
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 1)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 4)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 5)
         self.assertEqual(AIOpsIncidentHypothesis.objects.filter(incident=incident).count(), 1)
         self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident).count(), 1)
 
@@ -388,6 +391,44 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(evidence.payload['summary']['failed_count'], evidence.payload['summary']['planned_count'])
         self.assertIn('未配置启用的指标数据源', evidence.payload['evidence'][0]['error'])
         mocked_promql.assert_not_called()
+
+    def test_incident_investigation_collects_log_evidence(self):
+        LogDataSource.objects.create(
+            name='demo-loki-hbase',
+            provider='loki',
+            is_default=True,
+            config={'demo_mode': True},
+        )
+        alert = Alert.objects.create(
+            title='Gateway Error High',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='gateway errors are high',
+            environment='prod',
+            cluster='cn-sh-prod',
+            namespace='prod',
+            service='gateway-service',
+            resource_type='service',
+            resource='gateway-service',
+            fingerprint='gateway-error-log-scope',
+            group_key='gateway-error-log-scope',
+            labels={'service': 'gateway-service', 'namespace': 'prod'},
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='test_log_scope')
+
+        evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.log_snapshot')
+        self.assertEqual(evidence.kind, AIOpsIncidentEvidence.KIND_LOG)
+        self.assertEqual(evidence.tool_invocation.tool_name, 'builtin.log_snapshot')
+        self.assertGreaterEqual(evidence.payload['summary']['datasource_count'], 1)
+        self.assertGreaterEqual(evidence.payload['summary']['log_count'], 1)
+        self.assertTrue(any('failed' in item['message'].lower() for item in evidence.payload['logs']))
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
 
     def test_alert_detail_can_link_existing_incident(self):
         user = User.objects.create_user(username='alert-linker', password='Passw0rd!123')
@@ -740,7 +781,7 @@ class IncidentApiTests(TestCase):
         task = AIOpsExternalTask.objects.filter(action_code='incident.investigate').order_by('-id').first()
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['reason'], 'manual_followup')
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident).count(), 4)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident).count(), 5)
         self.assertTrue(AIOpsIncidentEvidence.objects.filter(incident=self.incident, source='builtin.task_resource_scope').exists())
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='run_incident_action').exists())
         response_action = next(item for item in response.data['incident_actions'] if item['id'] == action.id)
