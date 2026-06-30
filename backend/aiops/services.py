@@ -2297,6 +2297,149 @@ def _incident_review_evidence(incident):
     return evidence[:80]
 
 
+def _incident_hypothesis_context(hypothesis):
+    if not hypothesis:
+        return None
+    return {
+        'id': hypothesis.id,
+        'title': hypothesis.title,
+        'root_cause_type': hypothesis.root_cause_type,
+        'root_cause_type_display': hypothesis.get_root_cause_type_display(),
+        'confidence': str(hypothesis.confidence),
+        'status': hypothesis.status,
+        'status_display': hypothesis.get_status_display(),
+        'summary': hypothesis.summary,
+        'supporting_evidence_ids': hypothesis.supporting_evidence_ids or [],
+        'counter_evidence_ids': hypothesis.counter_evidence_ids or [],
+        'missing_evidence': hypothesis.missing_evidence or [],
+        'recommended_next_checks': hypothesis.recommended_next_checks or [],
+    }
+
+
+def _incident_evidence_context(item):
+    return {
+        'id': item.id,
+        'kind': item.kind,
+        'kind_display': item.get_kind_display(),
+        'source': item.source,
+        'summary': item.summary,
+        'weight': item.weight,
+        'collected_at': item.collected_at.isoformat() if item.collected_at else '',
+    }
+
+
+def _incident_action_context(item):
+    return {
+        'id': item.id,
+        'title': item.title,
+        'action_type': item.action_type,
+        'action_type_display': item.get_action_type_display(),
+        'risk_level': item.risk_level,
+        'risk_level_display': item.get_risk_level_display(),
+        'status': item.status,
+        'status_display': item.get_status_display(),
+        'verification_status': item.verification_status,
+        'result_summary': item.result_summary,
+    }
+
+
+def build_incident_chat_context(incident):
+    if not incident or not getattr(incident, 'id', None):
+        return {}
+    primary_hypothesis = _incident_primary_hypothesis(incident)
+    evidence_items = list(incident.evidence_items.order_by('-collected_at', '-id')[:10])
+    proposed_actions = list(incident.incident_actions.order_by('-updated_at', '-id')[:8])
+    context = {
+        'source': 'incident',
+        'incident_id': incident.id,
+        'title': incident.title,
+        'status': incident.status,
+        'status_display': incident.get_status_display(),
+        'severity': incident.severity,
+        'severity_display': incident.get_severity_display(),
+        'dedupe_key': incident.dedupe_key,
+        'environment': incident.environment,
+        'cluster': incident.cluster,
+        'namespace': incident.namespace,
+        'service': incident.service,
+        'resource_type': incident.resource_type,
+        'resource': incident.resource,
+        'impact_summary': incident.impact_summary,
+        'alert_count': incident.alert_count,
+        'active_alert_count': incident.active_alert_count,
+        'started_at': incident.started_at.isoformat() if incident.started_at else '',
+        'last_seen_at': incident.last_seen_at.isoformat() if incident.last_seen_at else '',
+        'primary_hypothesis': _incident_hypothesis_context(primary_hypothesis),
+        'evidence_items': [_incident_evidence_context(item) for item in evidence_items],
+        'incident_actions': [_incident_action_context(item) for item in proposed_actions],
+        'suggested_next_step': '围绕该 Incident 的主假设、证据缺口和建议动作回答；证据不足时先提出只读补查，不要直接执行写操作。',
+    }
+    review_knowledge = incident_review_knowledge_summary(incident)
+    if review_knowledge:
+        context['review_knowledge'] = review_knowledge
+    return context
+
+
+def build_incident_chat_suggested_question(incident):
+    primary_hypothesis = _incident_primary_hypothesis(incident)
+    if primary_hypothesis:
+        return f'基于 Incident #{incident.id} 的主根因假设“{primary_hypothesis.title}”，请继续分析证据是否充分，并给出下一步只读排查或处置建议。'
+    return f'基于 Incident #{incident.id} 的告警、证据和影响范围，请继续分析可能根因，并给出下一步只读排查建议。'
+
+
+def _incident_chat_page_context(incident):
+    return normalize_page_context({
+        'page': 'aiops.incident',
+        'title': f'Incident #{incident.id}',
+        'params': {
+            'incident_id': incident.id,
+        },
+        'hints': {
+            'incident': str(incident.id),
+            'environment': incident.environment,
+            'cluster': incident.cluster,
+            'namespace': incident.namespace,
+            'service': incident.service,
+            'resource_type': incident.resource_type,
+            'resource': incident.resource,
+        },
+    })
+
+
+def get_or_create_incident_chat_session(incident, user):
+    title = f'Incident #{incident.id} 排障追问'
+    incident_context = build_incident_chat_context(incident)
+    page_context = _incident_chat_page_context(incident)
+    context_updates = {
+        'source': 'incident_chat',
+        'incident_id': incident.id,
+        'incident_context': incident_context,
+        'page_context': page_context,
+    }
+    if incident.environment:
+        context_updates['environment'] = incident.environment
+    existing = AIOpsChatSession.objects.filter(
+        user=user,
+        title=title,
+        status=AIOpsChatSession.STATUS_ACTIVE,
+        mirror_source__isnull=True,
+    ).order_by('-last_message_at', '-id').first()
+    if existing:
+        context = existing.context if isinstance(existing.context, dict) else {}
+        context.update(context_updates)
+        existing.context = context
+        existing.save(update_fields=['context', 'updated_at'])
+        sync_session_to_demo_if_needed(existing)
+        return existing, False
+    session = AIOpsChatSession.objects.create(
+        user=user,
+        title=title,
+        context=context_updates,
+    )
+    sync_session_to_demo_if_needed(session)
+    return session, True
+
+
 def _incident_review_summary(incident):
     primary_hypothesis = incident.hypotheses.order_by('-confidence', '-generated_at', '-id').first()
     completed_actions = [
@@ -4320,12 +4463,14 @@ def _sync_chat_session_to_demo(source_session, demo_user):
         defaults={
             'title': source_session.title,
             'status': source_session.status,
+            'context': source_session.context,
             'last_message_at': source_session.last_message_at,
         },
     )
     AIOpsChatSession.objects.filter(pk=mirror_session.pk).update(
         title=source_session.title,
         status=source_session.status,
+        context=source_session.context,
         last_message_at=source_session.last_message_at,
     )
     _sync_mirror_timestamps(AIOpsChatSession, mirror_session.pk, source_session)

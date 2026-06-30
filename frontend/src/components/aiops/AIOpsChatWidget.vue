@@ -621,6 +621,7 @@ const STORAGE_ANALYSIS_KEY = 'sxdevops_aiops_analysis_only'
 const STORAGE_AGENT_KEY = 'sxdevops_aiops_agent'
 const STORAGE_ENVIRONMENT_KEY = 'sxdevops_aiops_environment'
 const STORAGE_DRAFT_PREFIX = 'sxdevops_aiops_draft_'
+const CHAT_QUERY_KEYS = ['session_id', 'question']
 
 const router = useRouter()
 const route = useRoute()
@@ -1934,6 +1935,13 @@ async function fetchSessions() {
   loading.value.sessions = true
   try {
     await refreshSessionListOnly()
+    const routedSessionId = routeSessionId()
+    if (routedSessionId && sessions.value.some(item => item.id === routedSessionId)) {
+      await selectSession(routedSessionId)
+      applyRouteQuestionDraft(routedSessionId)
+      clearChatRouteQuery()
+      return
+    }
     if (currentSessionId.value && sessions.value.some(item => item.id === currentSessionId.value)) {
       await selectSession(currentSessionId.value)
       return
@@ -1946,6 +1954,34 @@ async function fetchSessions() {
   } finally {
     loading.value.sessions = false
   }
+}
+
+function routeSessionId() {
+  const raw = route.query?.session_id
+  const value = Array.isArray(raw) ? raw[0] : raw
+  const id = Number(value || 0)
+  return Number.isFinite(id) && id > 0 ? id : 0
+}
+
+function routeQuestionDraft() {
+  const raw = route.query?.question
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return String(value || '').trim()
+}
+
+function applyRouteQuestionDraft(sessionId) {
+  const question = routeQuestionDraft()
+  if (!question) return
+  composer.value = question
+  persistDraft(sessionId, question)
+}
+
+function clearChatRouteQuery() {
+  if (!embedded.value || route.name !== 'AIOpsChat') return
+  if (!CHAT_QUERY_KEYS.some(key => key in (route.query || {}))) return
+  const query = { ...(route.query || {}) }
+  for (const key of CHAT_QUERY_KEYS) delete query[key]
+  router.replace({ path: route.path, query }).catch(() => {})
 }
 
 async function selectSession(sessionId) {
@@ -2318,9 +2354,17 @@ watch(visible, value => {
     nextTick(() => {
       focusComposer()
     })
-  } else {
-    }
+  }
 })
+
+watch(
+  () => [route.query?.session_id, route.query?.question],
+  async () => {
+    if (!embedded.value || route.name !== 'AIOpsChat') return
+    if (!routeSessionId()) return
+    await fetchSessions()
+  },
+)
 
 onMounted(async () => {
   if (!authStore.isAuthenticated) return

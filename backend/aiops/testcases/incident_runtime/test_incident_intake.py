@@ -6,6 +6,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from aiops.incident_investigation import run_readonly_investigation
+from aiops.conversation_context import build_session_memory_snapshot
 from aiops.models import (
     AIOpsChatSession,
     AIOpsExternalTask,
@@ -19,7 +20,7 @@ from aiops.models import (
     AIOpsRunbook,
     AIOpsSkill,
 )
-from aiops.services import sync_incident_action_verification_for_task
+from aiops.services import sync_incident_action_verification_for_task, sync_session_to_demo_if_needed
 from eventwall.models import EventRecord
 from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution
 from rbac.models import Role
@@ -393,6 +394,77 @@ class IncidentApiTests(TestCase):
         self.assertIn('回滚 order-center', runbook.content)
         self.assertTrue(any(item.get('type') == 'incident_action' and item.get('id') == action.id for item in runbook.evidence))
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='materialize_incident_runbook').exists())
+
+    def test_incident_chat_session_carries_incident_context(self):
+        evidence = AIOpsIncidentEvidence.objects.create(
+            incident=self.incident,
+            kind=AIOpsIncidentEvidence.KIND_ALERT,
+            source='builtin.alert_snapshot',
+            summary='错误率超过阈值',
+            weight=AIOpsIncidentEvidence.WEIGHT_PRIMARY,
+        )
+        hypothesis = AIOpsIncidentHypothesis.objects.create(
+            incident=self.incident,
+            title='order-center 发布后错误率升高',
+            root_cause_type=AIOpsIncidentHypothesis.TYPE_CHANGE_REGRESSION,
+            confidence=0.7,
+            supporting_evidence_ids=[evidence.id],
+            summary='发布窗口与错误率升高时间一致。',
+            status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+        )
+        AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            hypothesis=hypothesis,
+            title='补查 order-center 错误日志',
+            action_type=AIOpsIncidentAction.ACTION_INVESTIGATE,
+            risk_level=AIOpsIncidentAction.RISK_READ_ONLY,
+            status=AIOpsIncidentAction.STATUS_PROPOSED,
+            verification_plan=['确认错误日志模式'],
+        )
+
+        first = self.client.post(f'/api/aiops/incidents/{self.incident.id}/chat-session/')
+        second = self.client.post(f'/api/aiops/incidents/{self.incident.id}/chat-session/')
+
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertTrue(first.data['created'])
+        self.assertFalse(second.data['created'])
+        self.assertEqual(first.data['session']['id'], second.data['session']['id'])
+        self.assertIn('主根因假设', first.data['suggested_question'])
+        session = AIOpsChatSession.objects.get(id=first.data['session']['id'])
+        context = session.context
+        self.assertEqual(context['source'], 'incident_chat')
+        self.assertEqual(context['incident_id'], self.incident.id)
+        self.assertEqual(context['incident_context']['incident_id'], self.incident.id)
+        self.assertEqual(context['incident_context']['primary_hypothesis']['id'], hypothesis.id)
+        self.assertEqual(context['incident_context']['evidence_items'][0]['id'], evidence.id)
+        self.assertEqual(context['page_context']['hints']['service'], self.incident.service)
+        memory = build_session_memory_snapshot(session)
+        self.assertEqual(memory['incident_context']['incident_id'], self.incident.id)
+        self.assertEqual(memory['incident_context']['primary_hypothesis']['title'], hypothesis.title)
+        self.assertIn('session_scope', memory['incident_context'])
+        self.assertEqual(AIOpsChatSession.objects.filter(title=f'Incident #{self.incident.id} 排障追问').count(), 1)
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='open_incident_chat').exists())
+
+    def test_demo_session_sync_keeps_chat_context(self):
+        admin_user, _ = User.objects.get_or_create(username='admin', defaults={'is_staff': True, 'is_superuser': True})
+        admin_user.set_password('Passw0rd!123')
+        admin_user.save(update_fields=['password'])
+        admin_user.rbac_roles.add(Role.objects.get(code='platform-admin'))
+        demo_user, _ = User.objects.get_or_create(username='demo')
+        demo_user.set_password('Passw0rd!123')
+        demo_user.save(update_fields=['password'])
+        demo_user.rbac_roles.add(Role.objects.get(code='platform-admin'))
+        session = AIOpsChatSession.objects.create(
+            user=admin_user,
+            title='上下文同步测试',
+            context={'incident_context': {'incident_id': self.incident.id}},
+        )
+
+        sync_session_to_demo_if_needed(session)
+
+        mirror = AIOpsChatSession.objects.get(user=demo_user, mirror_source=session)
+        self.assertEqual(mirror.context['incident_context']['incident_id'], self.incident.id)
 
     def test_run_readonly_incident_action_refreshes_evidence(self):
         run_readonly_investigation(self.incident, reason='test_seed')

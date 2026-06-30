@@ -67,6 +67,7 @@ from .services import (
     bind_runtime_resource_to_agents,
     build_action_preflight_contract,
     build_incident_runbook_draft,
+    build_incident_chat_suggested_question,
     build_platform_mcp_manifest,
     build_action_registry_summary,
     agent_runtime_payload_for_user,
@@ -88,6 +89,7 @@ from .services import (
     _build_lightweight_chat_result,
     _is_canned_lightweight_chat_question,
     get_agent_config,
+    get_or_create_incident_chat_session,
     resolve_agent_profile_for_user,
     resolve_agent_chat_environment,
     runtime_config_for_agent,
@@ -497,6 +499,7 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         'materialize_action': ['aiops.incident.view', 'aiops.task.generate'],
         'materialize_skill': ['aiops.incident.view', 'aiops.config.manage'],
         'materialize_runbook': ['aiops.incident.view', 'aiops.runbook.manage'],
+        'chat_session': ['aiops.incident.view', 'aiops.chat.view'],
     }
 
     def get_serializer_class(self):
@@ -506,7 +509,15 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = AIOpsIncident.objects.order_by('-last_seen_at', '-id')
-        if self.action in {'retrieve', 'close', 'run_action', 'materialize_action', 'materialize_skill', 'materialize_runbook'}:
+        if self.action in {
+            'retrieve',
+            'close',
+            'run_action',
+            'materialize_action',
+            'materialize_skill',
+            'materialize_runbook',
+            'chat_session',
+        }:
             queryset = queryset.prefetch_related(
                 'alert_links__alert',
                 'evidence_items__source_task',
@@ -694,6 +705,34 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
             'incident': self.get_serializer(incident).data,
             'runbook': AIOpsRunbookSerializer(runbook).data,
             'created': created,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='chat-session')
+    def chat_session(self, request, pk=None):
+        incident = self.get_object()
+        session, created = get_or_create_incident_chat_session(incident, request.user)
+        if created:
+            record_event(
+                request=request,
+                module='aiops',
+                category='incident',
+                action='open_incident_chat',
+                title='Incident 追问智能助手',
+                summary=f'{request.user.username} 从 Incident #{incident.id} 打开智能助手追问会话',
+                result=EventRecord.RESULT_SUCCESS,
+                resource_type='aiops_chat_session',
+                resource_id=session.id,
+                resource_name=session.title,
+                environment=incident.environment,
+                application=incident.service,
+                severity=EventRecord.SEVERITY_INFO,
+                correlation_id=f'aiops_incident:{incident.id}',
+                metadata={'incident_id': incident.id, 'session_id': session.id},
+            )
+        return Response({
+            'session': AIOpsChatSessionSerializer(session).data,
+            'created': created,
+            'suggested_question': build_incident_chat_suggested_question(incident),
         }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path=r'actions/(?P<action_id>\d+)/materialize')

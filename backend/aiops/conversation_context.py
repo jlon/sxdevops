@@ -72,6 +72,8 @@ def _task_failed(task):
 
 
 def build_incident_context(memory):
+    session_incident_context = memory.get('session_incident_context')
+
     current_environment = memory.get('current_environment') or {}
     analysis_scope = memory.get('analysis_scope') or {}
     failed_tasks = [
@@ -107,7 +109,7 @@ def build_incident_context(memory):
         next_step = '涉及主机、机器、节点、中间件或非 K8s 集群清单时，优先用 query_task_resources 查资源底座事实。'
     else:
         next_step = '根据问题选择最相关的只读工具收集证据后再回答。'
-    return {
+    context = {
         'environment': current_environment.get('name') if isinstance(current_environment, dict) else current_environment,
         'resource_scope': resource_scope,
         'recent_user_intents': memory.get('recent_user_intents') or [],
@@ -116,6 +118,22 @@ def build_incident_context(memory):
         'open_pending_actions': open_actions[:3],
         'suggested_next_step': next_step,
     }
+    if isinstance(session_incident_context, dict) and session_incident_context:
+        context.update({
+            key: value
+            for key, value in session_incident_context.items()
+            if value not in (None, '', [], {})
+        })
+        context['session_scope'] = {
+            'environment': current_environment.get('name') if isinstance(current_environment, dict) else current_environment,
+            'resource_scope': resource_scope,
+            'recent_user_intents': memory.get('recent_user_intents') or [],
+            'last_evidence_tools': last_evidence[:8],
+            'last_failed_task': failed_tasks[0] if failed_tasks else None,
+            'open_pending_actions': open_actions[:3],
+        }
+        context['suggested_next_step'] = session_incident_context.get('suggested_next_step') or next_step
+    return context
 
 
 def build_session_memory_snapshot(session, *, limit=5):
@@ -123,6 +141,7 @@ def build_session_memory_snapshot(session, *, limit=5):
     memory = {
         'current_environment': context.get('current_environment') or {},
         'analysis_scope': context.get('analysis_scope') or {},
+        'session_incident_context': context.get('incident_context') if isinstance(context.get('incident_context'), dict) else {},
         'recent_user_intents': [],
         'recent_assistant_facts': [],
         'recent_pending_actions': [],

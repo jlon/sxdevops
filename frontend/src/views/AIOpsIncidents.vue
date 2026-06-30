@@ -110,6 +110,16 @@
           <div class="detail-tags">
             <el-tag :type="severityType(selectedIncident.severity)" size="small">{{ selectedIncident.severity_display }}</el-tag>
             <el-tag :type="statusType(selectedIncident.status)" size="small">{{ selectedIncident.status_display }}</el-tag>
+            <el-button
+              v-if="canAskAssistant"
+              size="small"
+              type="primary"
+              plain
+              :loading="chatSessionLoading"
+              @click="openIncidentChat"
+            >
+              追问智能助手
+            </el-button>
           </div>
         </div>
 
@@ -309,11 +319,12 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search, Warning } from '@element-plus/icons-vue'
 import {
   closeAIOpsIncident,
+  createAIOpsIncidentChatSession,
   getAIOpsIncident,
   getAIOpsIncidents,
   materializeAIOpsIncidentAction,
@@ -325,9 +336,11 @@ import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
 const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
 const runningActionId = ref(null)
 const retrospectiveLoading = ref('')
+const chatSessionLoading = ref(false)
 const incidents = ref([])
 const selectedIncident = ref(null)
 const detailVisible = ref(false)
@@ -350,6 +363,7 @@ const canInvestigate = computed(() => authStore.hasPermission('aiops.incident.in
 const canGenerateTask = computed(() => authStore.hasPermission('aiops.task.generate'))
 const canMaterializeSkill = computed(() => authStore.hasPermission('aiops.config.manage'))
 const canMaterializeRunbook = computed(() => authStore.hasPermission('aiops.runbook.manage'))
+const canAskAssistant = computed(() => authStore.hasPermission('aiops.chat.view'))
 const criticalCount = computed(() => incidents.value.filter(item => item.severity === 'critical').length)
 const openCount = computed(() => incidents.value.filter(item => !['resolved', 'closed'].includes(item.status)).length)
 const activeAlertCount = computed(() => incidents.value.reduce((sum, item) => sum + Number(item.active_alert_count || 0), 0))
@@ -548,6 +562,30 @@ async function materializeIncidentRunbook() {
   }
 }
 
+async function openIncidentChat() {
+  if (!selectedIncident.value || chatSessionLoading.value) return
+  chatSessionLoading.value = true
+  try {
+    const data = await createAIOpsIncidentChatSession(selectedIncident.value.id)
+    const sessionId = data.session?.id
+    if (!sessionId) {
+      ElMessage.error('追问会话创建失败')
+      return
+    }
+    ElMessage.success(data.created ? '已创建 Incident 追问会话' : '已打开已有 Incident 追问会话')
+    detailVisible.value = false
+    await router.push({
+      path: '/aiops/chat',
+      query: {
+        session_id: String(sessionId),
+        question: data.suggested_question || '',
+      },
+    })
+  } finally {
+    chatSessionLoading.value = false
+  }
+}
+
 onMounted(fetchIncidents)
 </script>
 
@@ -578,6 +616,9 @@ onMounted(fetchIncidents)
 
 .detail-tags {
   display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
