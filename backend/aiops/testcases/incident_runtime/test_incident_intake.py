@@ -184,6 +184,82 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 0)
         self.assertIsNotNone(incident.resolved_at)
 
+    def test_alert_detail_can_start_incident_investigation(self):
+        user = User.objects.create_user(username='alert-investigator', password='Passw0rd!123')
+        user.rbac_roles.add(Role.objects.get(code='platform-admin'))
+        token = Token.objects.create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        alert = Alert.objects.create(
+            title='HBase RegionServer Down',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='RegionServer unavailable',
+            environment='prod',
+            cluster='hbase-local',
+            namespace='middleware',
+            service='hbase',
+            resource='regionserver-1',
+            fingerprint='hbase-rs-down-1',
+            group_key='hbase-regionserver',
+            labels={'alertname': 'HBaseRegionServerDown'},
+        )
+
+        response = self.client.post(f'/api/alerts/{alert.id}/incident/investigate/')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        incident = AIOpsIncident.objects.get()
+        self.assertEqual(response.data['incident']['id'], incident.id)
+        self.assertEqual(incident.service, 'hbase')
+        self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident, alert=alert).count(), 1)
+        task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
+        self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
+        self.assertEqual(task.input_payload['reason'], 'manual_alert_investigation')
+        self.assertTrue(AIOpsIncidentEvidence.objects.filter(incident=incident, kind=AIOpsIncidentEvidence.KIND_ALERT).exists())
+
+    def test_alert_detail_can_link_existing_incident(self):
+        user = User.objects.create_user(username='alert-linker', password='Passw0rd!123')
+        user.rbac_roles.add(Role.objects.get(code='platform-admin'))
+        token = Token.objects.create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        alert = Alert.objects.create(
+            title='HBase GC High',
+            level='warning',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='GC pause high',
+            environment='prod',
+            cluster='hbase-local',
+            namespace='middleware',
+            service='hbase',
+            fingerprint='hbase-gc-high-1',
+        )
+        incident = AIOpsIncident.objects.create(
+            title='hbase / RegionServer unstable',
+            status=AIOpsIncident.STATUS_OPEN,
+            severity=AIOpsIncident.SEVERITY_WARNING,
+            source_type=AIOpsIncident.SOURCE_ALERT,
+            dedupe_key='manual:hbase-regionserver',
+            environment='prod',
+            cluster='hbase-local',
+            namespace='middleware',
+            service='hbase',
+        )
+
+        response = self.client.post(
+            f'/api/alerts/{alert.id}/incident/link/',
+            {'incident_id': incident.id, 'role': AIOpsIncidentAlert.ROLE_SYMPTOM, 'reason': '同一 HBase 故障窗口'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        link = AIOpsIncidentAlert.objects.get(incident=incident, alert=alert)
+        self.assertEqual(link.role, AIOpsIncidentAlert.ROLE_SYMPTOM)
+        self.assertEqual(link.linked_reason, '同一 HBase 故障窗口')
+        incident.refresh_from_db()
+        self.assertEqual(incident.alert_count, 1)
+        self.assertEqual(response.data['incident']['id'], incident.id)
+
 
 class IncidentApiTests(TestCase):
     def setUp(self):

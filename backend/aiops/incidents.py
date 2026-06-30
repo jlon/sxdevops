@@ -142,7 +142,7 @@ def _investigation_reason(created, link_created, role_changed, status_changed):
 
 
 @transaction.atomic
-def upsert_incident_for_alert(alert):
+def upsert_incident_for_alert(alert, schedule_investigation=True):
     dedupe_key = build_incident_dedupe_key(alert)
     incident = (
         AIOpsIncident.objects
@@ -231,8 +231,64 @@ def upsert_incident_for_alert(alert):
     elif created or link_created or role_changed:
         _record_incident_event(incident, alert, 'create_incident' if created else 'link_alert', created=created)
     reason = _investigation_reason(created, link_created, role_changed, status_changed)
-    if reason:
+    if reason and schedule_investigation:
         from .incident_investigation import schedule_readonly_investigation
 
         schedule_readonly_investigation(incident, reason=reason)
     return incident, created
+
+
+@transaction.atomic
+def link_alert_to_incident(alert, incident, role='', reason='', schedule_investigation=True, record_lifecycle_event=True):
+    incident = AIOpsIncident.objects.select_for_update().get(id=incident.id)
+    role = role or (
+        AIOpsIncidentAlert.ROLE_RESOLVED_SIGNAL
+        if alert.status == Alert.STATUS_RESOLVED
+        else AIOpsIncidentAlert.ROLE_RELATED
+    )
+    valid_roles = {value for value, _ in AIOpsIncidentAlert.ROLE_CHOICES}
+    if role not in valid_roles:
+        role = AIOpsIncidentAlert.ROLE_RELATED
+    link_reason = (reason or '手动关联告警到 Incident')[:255]
+    link, created = AIOpsIncidentAlert.objects.get_or_create(
+        incident=incident,
+        alert=alert,
+        defaults={'role': role, 'linked_reason': link_reason},
+    )
+    role_changed = False
+    if not created and (link.role != role or link.linked_reason != link_reason):
+        link.role = role
+        link.linked_reason = link_reason
+        link.save(update_fields=['role', 'linked_reason', 'updated_at'])
+        role_changed = True
+
+    previous_status = incident.status
+    incident.severity = _max_severity(incident.severity, alert.level)
+    incident.last_seen_at = max(incident.last_seen_at or timezone.now(), alert.last_received_at or timezone.now())
+    alert_started_at = alert.starts_at or alert.last_received_at or timezone.now()
+    if not incident.started_at or alert_started_at < incident.started_at:
+        incident.started_at = alert_started_at
+    update_fields = ['severity', 'last_seen_at', 'started_at', 'updated_at']
+    for field in ['environment', 'cluster', 'namespace', 'service', 'resource_type', 'resource']:
+        if not getattr(incident, field):
+            setattr(incident, field, _alert_scope_value(alert, field))
+            update_fields.append(field)
+    metadata = incident.metadata if isinstance(incident.metadata, dict) else {}
+    metadata['last_manual_alert_id'] = alert.id
+    incident.metadata = metadata
+    update_fields.append('metadata')
+    incident.save(update_fields=list(dict.fromkeys(update_fields)))
+
+    _refresh_incident_counts(incident)
+    incident.refresh_from_db()
+    status_changed = incident.status != previous_status
+    if record_lifecycle_event and (created or role_changed or status_changed):
+        action = 'link_alert' if not status_changed else (
+            'resolve_incident' if incident.status == AIOpsIncident.STATUS_RESOLVED else 'reopen_incident'
+        )
+        _record_incident_event(incident, alert, action, created=False)
+    if schedule_investigation and (created or role_changed or status_changed):
+        from .incident_investigation import schedule_readonly_investigation
+
+        schedule_readonly_investigation(incident, reason='manual_alert_linked')
+    return incident, link, created

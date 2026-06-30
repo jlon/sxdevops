@@ -458,6 +458,40 @@
               <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
             </el-descriptions>
           </section>
+          <section v-if="canUseIncidentWorkflow" class="alert-detail-card detail-workflow-card">
+            <div class="detail-section-title">
+              <h4>AIOps 调查闭环</h4>
+              <span>{{ (selectedAlert.incidents || []).length ? '已关联' : '待关联' }}</span>
+            </div>
+            <div class="workflow-actions">
+              <el-button
+                v-if="canInvestigateIncident"
+                size="small"
+                type="primary"
+                :loading="incidentActionLoading === 'investigate'"
+                @click="startIncidentInvestigation(selectedAlert)"
+              >
+                启动智能调查
+              </el-button>
+              <el-button
+                v-if="canManageIncident"
+                size="small"
+                :loading="incidentActionLoading === 'link'"
+                @click="openIncidentLinkDialog(selectedAlert)"
+              >
+                关联已有 Incident
+              </el-button>
+              <el-button
+                v-if="canManageConfig"
+                size="small"
+                type="warning"
+                plain
+                @click="openAlertNoisePolicyDraft(selectedAlert)"
+              >
+                噪音屏蔽建议
+              </el-button>
+            </div>
+          </section>
           <section class="alert-detail-card">
             <div class="detail-section-title">
               <h4>关联 Incident</h4>
@@ -726,6 +760,28 @@
         <el-button type="primary" @click="submitMuteDialog">&#x786E;&#x8BA4;&#x5C4F;&#x853D;</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="incidentLinkDialog.visible" title="关联已有 Incident" width="460px">
+      <el-form :model="incidentLinkDialog.form" label-width="100px">
+        <el-form-item label="Incident ID">
+          <el-input-number v-model="incidentLinkDialog.form.incident_id" :min="1" :precision="0" controls-position="right" />
+        </el-form-item>
+        <el-form-item label="关联角色">
+          <el-select v-model="incidentLinkDialog.form.role">
+            <el-option label="相关告警" value="related" />
+            <el-option label="症状告警" value="symptom" />
+            <el-option label="恢复信号" value="resolved_signal" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="原因">
+          <el-input v-model="incidentLinkDialog.form.reason" type="textarea" :rows="2" placeholder="说明为什么这条告警属于该 Incident" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="incidentLinkDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="incidentActionLoading === 'link'" @click="submitIncidentLink">确认关联</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -771,6 +827,8 @@ import {
   getAlerts,
   getAlertSummary,
   getUsers,
+  investigateAlertIncident,
+  linkAlertIncident,
   muteAlert,
   notifyAlert,
   reopenAlert,
@@ -1002,12 +1060,16 @@ const notificationLogs = ref([])
 const selectedAlert = ref(null)
 const detailVisible = ref(false)
 const integrationHelpVisible = ref(false)
+const incidentActionLoading = ref('')
 
 const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
 const canManageAlerts = computed(() => authStore.hasPermission('ops.alert.manage'))
 const canNotifyAlerts = computed(() => authStore.hasPermission('ops.alert.notify'))
 const canViewConfig = computed(() => authStore.hasPermission('ops.alert.config.view'))
 const canManageConfig = computed(() => authStore.hasPermission('ops.alert.config.manage'))
+const canInvestigateIncident = computed(() => authStore.hasPermission('aiops.incident.investigate'))
+const canManageIncident = computed(() => authStore.hasPermission('aiops.incident.manage'))
+const canUseIncidentWorkflow = computed(() => canInvestigateIncident.value || canManageIncident.value || canManageConfig.value)
 
 const statCards = computed(() => [
   { key: 'all', label: '\u5168\u90E8\u544A\u8B66', value: summary.value.total || 0, tone: 'base-card', filter: { status: '', level: '', claimed: '' } },
@@ -1231,6 +1293,11 @@ const environmentOptions = computed(() => {
 
 const integrationDialog = reactive({ visible: false, form: emptyIntegration() })
 const muteDialog = reactive({ visible: false, target: null, form: { minutes: 60 } })
+const incidentLinkDialog = reactive({
+  visible: false,
+  target: null,
+  form: { incident_id: null, role: 'related', reason: '' },
+})
 const channelDialog = reactive({ visible: false, form: emptyChannel() })
 const recipientDialog = reactive({ visible: false, form: emptyRecipient() })
 const recipientGroupDialog = reactive({ visible: false, form: emptyRecipientGroup() })
@@ -1383,6 +1450,86 @@ function openDetail(row) {
 
 function goIncident(item) {
   router.push({ path: '/aiops/incidents', query: { incident_id: item.id } })
+}
+
+function alertScopeMatchers(row) {
+  const pairs = [
+    ['environment', row?.environment],
+    ['cluster', row?.cluster],
+    ['namespace', row?.namespace],
+    ['service', row?.service],
+  ]
+  if (row?.labels?.alertname) pairs.push(['alertname', row.labels.alertname])
+  if (row?.resource) pairs.push(['resource', row.resource])
+  return pairs
+    .filter(([, value]) => value)
+    .map(([key, value]) => ({ key, op: '==', value }))
+}
+
+async function startIncidentInvestigation(row) {
+  if (!row?.id || incidentActionLoading.value) return
+  incidentActionLoading.value = 'investigate'
+  try {
+    const response = await investigateAlertIncident(row.id)
+    selectedAlert.value = response.alert || selectedAlert.value
+    const incidentId = response.incident?.id
+    ElMessage.success(incidentId ? `已启动 Incident #${incidentId} 智能调查` : '已启动智能调查')
+    await refreshAll()
+    if (incidentId) {
+      router.push({ path: '/aiops/incidents', query: { incident_id: incidentId } })
+      detailVisible.value = false
+    }
+  } finally {
+    incidentActionLoading.value = ''
+  }
+}
+
+function openIncidentLinkDialog(row) {
+  incidentLinkDialog.target = row
+  incidentLinkDialog.form = {
+    incident_id: row?.incidents?.[0]?.id || null,
+    role: row?.status === 'resolved' ? 'resolved_signal' : 'related',
+    reason: row?.incidents?.length ? '补充关联告警' : '从告警详情手动关联',
+  }
+  incidentLinkDialog.visible = true
+}
+
+async function submitIncidentLink() {
+  const row = incidentLinkDialog.target
+  const incidentId = Number(incidentLinkDialog.form.incident_id || 0)
+  if (!row?.id || !incidentId || incidentActionLoading.value) return
+  incidentActionLoading.value = 'link'
+  try {
+    const response = await linkAlertIncident(row.id, {
+      incident_id: incidentId,
+      role: incidentLinkDialog.form.role,
+      reason: incidentLinkDialog.form.reason,
+    })
+    selectedAlert.value = response.alert || selectedAlert.value
+    incidentLinkDialog.visible = false
+    ElMessage.success(`已关联到 Incident #${response.incident?.id || incidentId}`)
+    await refreshAll()
+  } finally {
+    incidentActionLoading.value = ''
+  }
+}
+
+function openAlertNoisePolicyDraft(row) {
+  if (!row?.id) return
+  activeTab.value = 'policies'
+  policyTab.value = 'mute'
+  detailVisible.value = false
+  policyDialog.kind = 'mute'
+  policyDialog.title = '屏蔽规则'
+  policyDialog.form = {
+    ...emptyMuteRule(),
+    name: `${row.title || '告警'} 噪音屏蔽建议`,
+    matchers: alertScopeMatchers(row),
+    reason: '复核为重复或低价值告警后启用',
+    description: `由告警 #${row.id} 生成，请复核匹配条件和生效窗口。`,
+  }
+  policyDialog.visible = true
+  router.replace({ path: route.path, query: { ...route.query, tab: 'policies', policy: 'mute' } }).catch(() => {})
 }
 
 function handleSelectionChange(rows) {
@@ -2562,6 +2709,17 @@ onMounted(async () => {
 .incident-chip-list {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+}
+
+.detail-workflow-card {
+  border-color: rgba(51, 112, 255, 0.18);
+  background: #f8fbff;
+}
+
+.workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 

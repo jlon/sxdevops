@@ -8,7 +8,9 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from aiops.models import AIOpsPendingAction
+from aiops.incident_investigation import run_readonly_investigation
+from aiops.incidents import link_alert_to_incident, upsert_incident_for_alert
+from aiops.models import AIOpsIncident, AIOpsPendingAction
 from aiops.services import sync_incident_actions_for_pending_task
 from eventwall.mixins import EventWallModelViewSetMixin
 from eventwall.models import EventRecord
@@ -1779,6 +1781,8 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         'close': ['ops.alert.manage'],
         'reopen': ['ops.alert.manage'],
         'notify': ['ops.alert.notify'],
+        'investigate_incident': ['ops.alert.view', 'aiops.incident.investigate'],
+        'link_incident': ['ops.alert.view', 'aiops.incident.manage'],
     }
 
     def get_queryset(self):
@@ -1847,6 +1851,102 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
             correlation_id=f'alert:{alert.id}',
         )
         return Response(self.get_serializer(alert).data)
+
+    def _incident_payload(self, incident):
+        return {
+            'id': incident.id,
+            'title': incident.title,
+            'status': incident.status,
+            'status_display': incident.get_status_display(),
+            'severity': incident.severity,
+            'severity_display': incident.get_severity_display(),
+            'active_alert_count': incident.active_alert_count,
+            'alert_count': incident.alert_count,
+            'last_seen_at': incident.last_seen_at,
+        }
+
+    @action(detail=True, methods=['post'], url_path='incident/investigate')
+    def investigate_incident(self, request, pk=None):
+        alert = self.get_object()
+        incident, created = upsert_incident_for_alert(alert, schedule_investigation=False)
+        try:
+            task = run_readonly_investigation(incident, reason='manual_alert_investigation')
+        except Exception as exc:
+            return Response({'detail': '只读调查失败。', 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        alert.refresh_from_db()
+        record_event(
+            request=request,
+            module='ops',
+            category='alert',
+            action='investigate_incident',
+            title='告警启动智能调查',
+            summary=f'{request.user.username} 从告警 {alert.title} 启动 Incident #{incident.id} 只读调查',
+            resource_type='alert',
+            resource_id=alert.id,
+            resource_name=alert.title,
+            severity=EventRecord.SEVERITY_INFO,
+            correlation_id=f'aiops_incident:{incident.id}',
+            related_resources=[
+                {'module': 'aiops', 'type': 'incident', 'id': str(incident.id), 'name': incident.title},
+            ],
+            metadata={'incident_id': incident.id, 'incident_created': created, 'task_id': task.id, 'task_public_id': str(task.public_id)},
+        )
+        return Response({
+            'alert': self.get_serializer(alert).data,
+            'incident': self._incident_payload(incident),
+            'incident_created': created,
+            'task': {
+                'id': task.id,
+                'public_id': str(task.public_id),
+                'status': task.status,
+            },
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='incident/link')
+    def link_incident(self, request, pk=None):
+        alert = self.get_object()
+        try:
+            incident_id = int(request.data.get('incident_id') or 0)
+        except (TypeError, ValueError):
+            incident_id = 0
+        if incident_id <= 0:
+            return Response({'detail': '缺少 incident_id。'}, status=status.HTTP_400_BAD_REQUEST)
+        incident = AIOpsIncident.objects.filter(id=incident_id).first()
+        if not incident:
+            return Response({'detail': 'Incident 不存在。'}, status=status.HTTP_404_NOT_FOUND)
+        if incident.status == AIOpsIncident.STATUS_CLOSED:
+            return Response({'detail': '已关闭的 Incident 不允许继续关联新告警。'}, status=status.HTTP_400_BAD_REQUEST)
+        incident, link, created = link_alert_to_incident(
+            alert,
+            incident,
+            role=request.data.get('role') or '',
+            reason=request.data.get('reason') or '',
+            schedule_investigation=False,
+            record_lifecycle_event=False,
+        )
+        alert.refresh_from_db()
+        record_event(
+            request=request,
+            module='ops',
+            category='alert',
+            action='link_incident',
+            title='告警关联 Incident',
+            summary=f'{request.user.username} 将告警 {alert.title} 关联到 Incident #{incident.id}',
+            resource_type='alert',
+            resource_id=alert.id,
+            resource_name=alert.title,
+            severity=EventRecord.SEVERITY_INFO,
+            correlation_id=f'aiops_incident:{incident.id}',
+            related_resources=[
+                {'module': 'aiops', 'type': 'incident', 'id': str(incident.id), 'name': incident.title},
+            ],
+            metadata={'incident_id': incident.id, 'link_id': link.id, 'created': created, 'role': link.role},
+        )
+        return Response({
+            'alert': self.get_serializer(alert).data,
+            'incident': self._incident_payload(incident),
+            'link_created': created,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
     def acknowledge(self, request, pk=None):
@@ -2203,5 +2303,3 @@ def dashboard_stats(request):
         'recent_deploys': recent_deploys,
         'recent_alerts': recent_alerts,
     })
-
-

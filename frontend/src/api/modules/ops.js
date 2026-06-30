@@ -96,6 +96,8 @@ export const resolveAlert = (id, data = {}) => request.post(`/alerts/${id}/resol
 export const closeAlert = (id, data = {}) => request.post(`/alerts/${id}/close/`, data)
 export const reopenAlert = (id, data = {}) => request.post(`/alerts/${id}/reopen/`, data)
 export const notifyAlert = (id, data = {}) => request.post(`/alerts/${id}/notify/`, data)
+export const investigateAlertIncident = (id, data = {}) => request.post(`/alerts/${id}/incident/investigate/`, data)
+export const linkAlertIncident = (id, data = {}) => request.post(`/alerts/${id}/incident/link/`, data)
 export const getAlertIntegrations = (params) => request.get('/alert-integrations/', { params })
 export const createAlertIntegration = (data) => request.post('/alert-integrations/', data)
 export const updateAlertIntegration = (id, data) => request.put(`/alert-integrations/${id}/`, data)
