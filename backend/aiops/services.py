@@ -99,6 +99,7 @@ from .models import (
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
+    AIOpsIncident,
     AIOpsIncidentAction,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
@@ -14642,6 +14643,137 @@ def sync_incident_actions_for_pending_task(action, task, request=None):
                 'task_status': task.status,
             },
         )
+    return updated_count
+
+
+def _incident_action_verification_status(task, incident_action):
+    if task.status == HostTask.STATUS_SUCCESS:
+        if incident_action.incident.active_alert_count == 0:
+            return 'verified_resolved'
+        return 'task_success_alerts_active'
+    if task.status == HostTask.STATUS_PARTIAL:
+        return 'partially_improved'
+    if task.status == HostTask.STATUS_FAILED:
+        return 'no_improvement'
+    if task.status == HostTask.STATUS_CANCELED:
+        return 'verification_canceled'
+    return ''
+
+
+def _incident_action_status_for_task(task):
+    if task.status in {HostTask.STATUS_SUCCESS, HostTask.STATUS_PARTIAL}:
+        return AIOpsIncidentAction.STATUS_COMPLETED
+    if task.status in {HostTask.STATUS_FAILED, HostTask.STATUS_CANCELED}:
+        return AIOpsIncidentAction.STATUS_FAILED
+    return ''
+
+
+def _incident_action_task_result_summary(task, verification_status):
+    summary = task.summary or ''
+    status_label = task.get_status_display() if hasattr(task, 'get_status_display') else task.status
+    base = f'任务中心任务 #{task.id} {task.name} {status_label}。'
+    if summary:
+        base = f'{base}{summary}'
+    if verification_status == 'verified_resolved':
+        return f'{base}活跃告警已清零，Incident 已验证恢复。'
+    if verification_status == 'task_success_alerts_active':
+        return f'{base}任务执行成功，但 Incident 仍存在活跃告警，需继续观察或补充处置。'
+    if verification_status == 'partially_improved':
+        return f'{base}任务部分成功，需继续验证未完成目标。'
+    if verification_status == 'no_improvement':
+        return f'{base}任务执行失败，未形成有效恢复证据。'
+    if verification_status == 'verification_canceled':
+        return f'{base}任务已取消，验证中止。'
+    return base
+
+
+def sync_incident_action_verification_for_task(task, request=None):
+    if not task or task.status in {HostTask.STATUS_PENDING, HostTask.STATUS_RUNNING}:
+        return 0
+
+    incident_actions = list(
+        AIOpsIncidentAction.objects
+        .select_related('incident')
+        .filter(host_task=task)
+    )
+    if not incident_actions:
+        return 0
+
+    updated_count = 0
+    for incident_action in incident_actions:
+        incident = incident_action.incident
+        verification_status = _incident_action_verification_status(task, incident_action)
+        action_status = _incident_action_status_for_task(task)
+        update_fields = ['updated_at']
+        if action_status and incident_action.status in {
+            AIOpsIncidentAction.STATUS_RUNNING,
+            AIOpsIncidentAction.STATUS_APPROVED,
+            AIOpsIncidentAction.STATUS_PROPOSED,
+        }:
+            incident_action.status = action_status
+            update_fields.append('status')
+        if verification_status and incident_action.verification_status != verification_status:
+            incident_action.verification_status = verification_status
+            update_fields.append('verification_status')
+        result_summary = _incident_action_task_result_summary(task, verification_status)
+        if incident_action.result_summary != result_summary:
+            incident_action.result_summary = result_summary[:2000]
+            update_fields.append('result_summary')
+        incident_action.save(update_fields=update_fields)
+
+        incident_update_fields = []
+        if verification_status == 'verified_resolved' and incident.status in {
+            AIOpsIncident.STATUS_OPEN,
+            AIOpsIncident.STATUS_INVESTIGATING,
+            AIOpsIncident.STATUS_MITIGATING,
+            AIOpsIncident.STATUS_VERIFYING,
+        }:
+            incident.status = AIOpsIncident.STATUS_RESOLVED
+            incident.resolved_at = timezone.now()
+            incident_update_fields = ['status', 'resolved_at', 'updated_at']
+        elif verification_status in {'task_success_alerts_active', 'partially_improved'} and incident.status in {
+            AIOpsIncident.STATUS_OPEN,
+            AIOpsIncident.STATUS_INVESTIGATING,
+            AIOpsIncident.STATUS_MITIGATING,
+        }:
+            incident.status = AIOpsIncident.STATUS_VERIFYING
+            incident_update_fields = ['status', 'updated_at']
+        if incident_update_fields:
+            incident.save(update_fields=incident_update_fields)
+
+        event_result = EventRecord.RESULT_SUCCESS
+        event_severity = EventRecord.SEVERITY_INFO
+        if verification_status in {'task_success_alerts_active', 'partially_improved'}:
+            event_result = EventRecord.RESULT_PARTIAL
+            event_severity = EventRecord.SEVERITY_WARNING
+        elif verification_status in {'no_improvement', 'verification_canceled'}:
+            event_result = EventRecord.RESULT_FAILED
+            event_severity = EventRecord.SEVERITY_WARNING
+        record_event(
+            request=request,
+            module='aiops',
+            category='incident',
+            action='incident_action_verified',
+            title='Incident 建议动作验证完成',
+            summary=result_summary[:255],
+            result=event_result,
+            resource_type='aiops_incident_action',
+            resource_id=incident_action.id,
+            resource_name=incident_action.title,
+            environment=incident.environment,
+            application=incident.service,
+            severity=event_severity,
+            correlation_id=f'aiops_incident:{incident.id}',
+            metadata={
+                'incident_id': incident.id,
+                'incident_action_id': incident_action.id,
+                'task_id': task.id,
+                'task_status': task.status,
+                'verification_status': verification_status,
+                'active_alert_count': incident.active_alert_count,
+            },
+        )
+        updated_count += 1
     return updated_count
 
 

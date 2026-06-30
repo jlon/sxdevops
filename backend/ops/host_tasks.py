@@ -683,6 +683,14 @@ def _task_severity_for_event(task):
     return EventRecord.SEVERITY_INFO
 
 
+def _sync_aiops_incident_action_verification(task):
+    try:
+        from aiops.services import sync_incident_action_verification_for_task
+    except ImportError:
+        return 0
+    return sync_incident_action_verification_for_task(task)
+
+
 def record_task_center_event(task, action, title, summary='', request=None, actor_username='', source_type=''):
     try:
         from eventwall.models import EventRecord
@@ -1398,6 +1406,7 @@ def execute_k8s_task(task, targets):
     task.summary = summary[:255]
     task.save(update_fields=['status', 'lifecycle_status', 'success_count', 'failed_count', 'skipped_count', 'finished_at', 'summary'])
     record_task_center_event(task, 'task_finished', '任务中心执行完成')
+    _sync_aiops_incident_action_verification(task)
     return task
 
 
@@ -1520,6 +1529,7 @@ def execute_host_task(task, hosts):
 
         sync_schedule_after_task(task)
     record_task_center_event(task, 'task_finished', '任务中心执行完成')
+    _sync_aiops_incident_action_verification(task)
     return task
 
 

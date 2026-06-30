@@ -16,8 +16,9 @@ from aiops.models import (
     AIOpsIncidentHypothesis,
     AIOpsPendingAction,
 )
+from aiops.services import sync_incident_action_verification_for_task
 from eventwall.models import EventRecord
-from ops.models import Alert, AlertIntegration, Host, HostTask
+from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -442,3 +443,82 @@ class IncidentApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400, response.data)
         self.assertFalse(AIOpsPendingAction.objects.exists())
+
+    def test_verification_sync_marks_action_resolved_when_task_succeeds_without_active_alerts(self):
+        self.incident.active_alert_count = 0
+        self.incident.save(update_fields=['active_alert_count'])
+        task = HostTask.objects.create(
+            name='重启 order-center',
+            task_type=HostTask.TASK_RUN_COMMAND,
+            status=HostTask.STATUS_SUCCESS,
+            trigger_source=HostTask.TRIGGER_SOURCE_AIOPS,
+            lifecycle_status=HostTask.LIFECYCLE_SUCCESS,
+            target_count=1,
+            success_count=1,
+            summary='共 1 台，成功 1，失败 0',
+        )
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            host_task=task,
+            title='重启 order-center',
+            action_type=AIOpsIncidentAction.ACTION_FIX,
+            risk_level=AIOpsIncidentAction.RISK_HIGH,
+            status=AIOpsIncidentAction.STATUS_RUNNING,
+            verification_status='execution_started',
+        )
+        HostTaskExecution.objects.create(
+            task=task,
+            status=HostTaskExecution.STATUS_SUCCESS,
+            command='systemctl restart order-center',
+            output='ok',
+        )
+
+        updated = sync_incident_action_verification_for_task(task)
+
+        self.assertEqual(updated, 1)
+        action.refresh_from_db()
+        self.incident.refresh_from_db()
+        self.assertEqual(action.status, AIOpsIncidentAction.STATUS_COMPLETED)
+        self.assertEqual(action.verification_status, 'verified_resolved')
+        self.assertIn('已验证恢复', action.result_summary)
+        self.assertEqual(self.incident.status, AIOpsIncident.STATUS_RESOLVED)
+        self.assertIsNotNone(self.incident.resolved_at)
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_SUCCESS).exists())
+
+    def test_verification_sync_keeps_incident_open_when_task_fails(self):
+        task = HostTask.objects.create(
+            name='重启 order-center',
+            task_type=HostTask.TASK_RUN_COMMAND,
+            status=HostTask.STATUS_FAILED,
+            trigger_source=HostTask.TRIGGER_SOURCE_AIOPS,
+            lifecycle_status=HostTask.LIFECYCLE_FAILED,
+            target_count=1,
+            failed_count=1,
+            summary='共 1 台，成功 0，失败 1',
+        )
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            host_task=task,
+            title='重启 order-center',
+            action_type=AIOpsIncidentAction.ACTION_FIX,
+            risk_level=AIOpsIncidentAction.RISK_HIGH,
+            status=AIOpsIncidentAction.STATUS_RUNNING,
+            verification_status='execution_started',
+        )
+        HostTaskExecution.objects.create(
+            task=task,
+            status=HostTaskExecution.STATUS_FAILED,
+            command='systemctl restart order-center',
+            error_message='failed',
+        )
+
+        updated = sync_incident_action_verification_for_task(task)
+
+        self.assertEqual(updated, 1)
+        action.refresh_from_db()
+        self.incident.refresh_from_db()
+        self.assertEqual(action.status, AIOpsIncidentAction.STATUS_FAILED)
+        self.assertEqual(action.verification_status, 'no_improvement')
+        self.assertIn('未形成有效恢复证据', action.result_summary)
+        self.assertEqual(self.incident.status, AIOpsIncident.STATUS_OPEN)
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_FAILED).exists())
