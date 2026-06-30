@@ -73,7 +73,8 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(response.status_code, 202, response.data)
         alert = Alert.objects.get()
         incident = AIOpsIncident.objects.get()
-        self.assertEqual(incident.status, AIOpsIncident.STATUS_OPEN)
+        self.assertEqual(incident.status, AIOpsIncident.STATUS_INVESTIGATING)
+        self.assertEqual(incident.metadata['last_investigation']['status'], AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_CRITICAL)
         self.assertEqual(incident.environment, 'prod')
         self.assertEqual(incident.cluster, 'dev-k8s-cluster')
@@ -598,6 +599,33 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(summary['service_name'], 'unknown-service')
         self.assertEqual(summary['match_count'], 0)
         self.assertEqual(evidence.payload['traces'], [])
+
+    def test_readonly_investigation_does_not_reopen_resolved_incident(self):
+        alert = Alert.objects.create(
+            title='Order Error Recovered',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            status=Alert.STATUS_RESOLVED,
+            message='order error recovered',
+            environment='prod',
+            cluster='dev-k8s-cluster',
+            namespace='production',
+            service='order-service',
+            fingerprint='order-recovered-investigation',
+            group_key='order-recovered-investigation',
+            labels={'service': 'order-service', 'namespace': 'production'},
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        self.assertEqual(incident.status, AIOpsIncident.STATUS_RESOLVED)
+        run_readonly_investigation(incident, reason='test_resolved_investigation')
+
+        incident.refresh_from_db()
+        self.assertEqual(incident.status, AIOpsIncident.STATUS_RESOLVED)
+        self.assertEqual(incident.metadata['last_investigation']['status'], AIOpsExternalTask.STATUS_COMPLETED)
 
     def test_alert_detail_can_link_existing_incident(self):
         user = User.objects.create_user(username='alert-linker', password='Passw0rd!123')

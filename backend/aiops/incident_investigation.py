@@ -1371,9 +1371,44 @@ def _mark_investigation_task_failed(task, error):
     return task
 
 
+def _mark_incident_investigating(incident, task, reason):
+    metadata = incident.metadata if isinstance(incident.metadata, dict) else {}
+    now = timezone.now()
+    metadata['last_investigation'] = {
+        'task_id': task.id,
+        'reason': reason,
+        'status': AIOpsExternalTask.STATUS_RUNNING,
+        'started_at': now.isoformat(),
+    }
+    update_fields = ['metadata', 'updated_at']
+    if incident.status == AIOpsIncident.STATUS_OPEN:
+        incident.status = AIOpsIncident.STATUS_INVESTIGATING
+        update_fields.append('status')
+    incident.metadata = metadata
+    incident.save(update_fields=update_fields)
+
+
+def _mark_incident_investigation_finished(incident, task, status, error=''):
+    fresh = AIOpsIncident.objects.get(id=incident.id)
+    metadata = fresh.metadata if isinstance(fresh.metadata, dict) else {}
+    last = metadata.get('last_investigation') if isinstance(metadata.get('last_investigation'), dict) else {}
+    if last.get('task_id') != task.id:
+        last = {'task_id': task.id}
+    last.update({
+        'status': status,
+        'completed_at': timezone.now().isoformat(),
+    })
+    if error:
+        last['error'] = str(error)[:240]
+    metadata['last_investigation'] = last
+    fresh.metadata = metadata
+    fresh.save(update_fields=['metadata', 'updated_at'])
+
+
 def _run_readonly_investigation_internal(incident, reason='alert_changed'):
     incident = AIOpsIncident.objects.get(id=incident.id)
     task = create_investigation_task(incident, reason=reason)
+    _mark_incident_investigating(incident, task, reason)
     audit_session = _investigation_audit_session(incident)
     try:
         alert_evidence, alert_invocation = _collect_evidence_with_audit(
@@ -1427,6 +1462,7 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         )
     except Exception as exc:
         _mark_investigation_task_failed(task, exc)
+        _mark_incident_investigation_finished(incident, task, AIOpsExternalTask.STATUS_FAILED, error=exc)
         raise
     evidence_items = [alert_evidence, metric_evidence_item, log_evidence, trace_evidence, k8s_evidence, event_evidence, resource_evidence]
     tool_invocation_ids = [
@@ -1514,6 +1550,7 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
             'reason': reason,
         },
     )
+    _mark_incident_investigation_finished(incident, task, AIOpsExternalTask.STATUS_COMPLETED)
     return task
 
 
