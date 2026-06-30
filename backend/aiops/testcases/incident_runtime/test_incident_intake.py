@@ -23,7 +23,7 @@ from aiops.models import (
 )
 from aiops.services import sync_incident_action_verification_for_task, sync_session_to_demo_if_needed
 from eventwall.models import EventRecord
-from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
+from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -83,29 +83,32 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 1)
         link = AIOpsIncidentAlert.objects.get(incident=incident, alert=alert)
         self.assertEqual(link.role, AIOpsIncidentAlert.ROLE_PRIMARY)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 5)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 6)
         alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
         log_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.log_snapshot')
+        k8s_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.k8s_snapshot')
         event_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.event_timeline')
         resource_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.task_resource_scope')
         self.assertIsNotNone(alert_evidence.tool_invocation)
         self.assertIsNotNone(log_evidence.tool_invocation)
+        self.assertIsNotNone(k8s_evidence.tool_invocation)
         self.assertIsNotNone(event_evidence.tool_invocation)
         self.assertIsNotNone(resource_evidence.tool_invocation)
         self.assertEqual(alert_evidence.tool_invocation.tool_name, 'builtin.alert_snapshot')
         self.assertEqual(log_evidence.tool_invocation.tool_name, 'builtin.log_snapshot')
+        self.assertEqual(k8s_evidence.tool_invocation.tool_name, 'builtin.k8s_snapshot')
         self.assertEqual(event_evidence.tool_invocation.tool_name, 'builtin.event_timeline')
         self.assertEqual(resource_evidence.tool_invocation.tool_name, 'builtin.task_resource_scope')
         self.assertEqual(
             set(AIOpsToolInvocation.objects.filter(session__context__source='incident_background_investigation').values_list('tool_name', flat=True)),
-            {'builtin.alert_snapshot', 'builtin.metric_snapshot', 'builtin.log_snapshot', 'builtin.event_timeline', 'builtin.task_resource_scope'},
+            {'builtin.alert_snapshot', 'builtin.metric_snapshot', 'builtin.log_snapshot', 'builtin.k8s_snapshot', 'builtin.event_timeline', 'builtin.task_resource_scope'},
         )
         task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['incident_id'], incident.id)
-        self.assertEqual(len(task.result_payload['tool_invocation_ids']), 5)
-        self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 5)
-        self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:5]))
+        self.assertEqual(len(task.result_payload['tool_invocation_ids']), 6)
+        self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 6)
+        self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:6]))
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
         self.assertTrue(hypothesis.supporting_evidence_ids)
@@ -140,7 +143,7 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 2)
         self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_CRITICAL)
         self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident).count(), 2)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 5)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 6)
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 2)
         alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
         self.assertEqual(len(alert_evidence.payload['alerts']), 2)
@@ -165,7 +168,7 @@ class IncidentAlertIntakeTests(TestCase):
         lifecycle_events = EventRecord.objects.filter(module='aiops', category='incident').exclude(action='investigate_incident')
         self.assertEqual(lifecycle_events.count(), 1)
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 1)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 5)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 6)
         self.assertEqual(AIOpsIncidentHypothesis.objects.filter(incident=incident).count(), 1)
         self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident).count(), 1)
 
@@ -298,6 +301,54 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(inventory['cluster_count'], 1)
         self.assertEqual(inventory['node_count'], 4)
         self.assertEqual(set(inventory['node_names']), {'hbase-master', 'hbase-regionserver-1', 'hbase-regionserver-2', 'rs-backup-3'})
+        k8s_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.k8s_snapshot')
+        self.assertFalse(k8s_evidence.payload['summary']['cluster_found'])
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
+
+    def test_incident_investigation_collects_k8s_evidence(self):
+        cluster = K8sCluster.objects.create(
+            name='dev-k8s-cluster',
+            kubeconfig='demo',
+            status='connected',
+        )
+        alert = Alert.objects.create(
+            title='Web Frontend Pod Pending',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='web frontend pod pending in staging namespace',
+            environment='prod',
+            cluster=cluster.name,
+            namespace='staging',
+            service='web-frontend',
+            resource_type='deployment',
+            resource='web-frontend',
+            fingerprint='k8s-web-frontend-pending',
+            group_key='k8s-web-frontend-pending',
+            labels={'alertname': 'KubeDeploymentReplicasMismatch', 'namespace': 'staging'},
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='test_k8s_scope')
+
+        evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.k8s_snapshot')
+        summary = evidence.payload['summary']
+        self.assertEqual(evidence.kind, AIOpsIncidentEvidence.KIND_K8S)
+        self.assertEqual(evidence.tool_invocation.tool_name, 'builtin.k8s_snapshot')
+        self.assertTrue(summary['cluster_found'])
+        self.assertEqual(summary['cluster_name'], cluster.name)
+        self.assertEqual(summary['namespaces'], ['staging'])
+        self.assertGreaterEqual(summary['pods_total'], 1)
+        self.assertGreaterEqual(summary['pods_abnormal'], 1)
+        self.assertGreaterEqual(summary['workloads_degraded'], 1)
+        self.assertTrue(any(item['status'] == 'Pending' for item in evidence.payload['pods']))
+        self.assertTrue(any(item['name'] == 'web-frontend' for item in evidence.payload['workloads']))
+        task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
+        self.assertIn('builtin.k8s_snapshot', [step['tool'] for step in task.plan_steps])
+        self.assertTrue(any(item.get('phase') == 'collect_k8s' for item in task.react_trace))
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
 
@@ -781,7 +832,7 @@ class IncidentApiTests(TestCase):
         task = AIOpsExternalTask.objects.filter(action_code='incident.investigate').order_by('-id').first()
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['reason'], 'manual_followup')
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident).count(), 5)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident).count(), 6)
         self.assertTrue(AIOpsIncidentEvidence.objects.filter(incident=self.incident, source='builtin.task_resource_scope').exists())
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='run_incident_action').exists())
         response_action = next(item for item in response.data['incident_actions'] if item['id'] == action.id)
