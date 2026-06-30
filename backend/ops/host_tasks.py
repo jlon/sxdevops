@@ -1540,12 +1540,29 @@ def should_run_async():
     return 'test' not in sys.argv
 
 
+def _mark_worker_task_failed(task_id, summary_prefix, exc):
+    task = HostTask.objects.filter(pk=task_id).first()
+    if not task:
+        return None
+    task.status = HostTask.STATUS_FAILED
+    task.lifecycle_status = HostTask.LIFECYCLE_FAILED
+    task.failed_count = task.target_count or 1
+    task.finished_at = timezone.now()
+    task.summary = f'{summary_prefix}：{str(exc)[:180]}'
+    task.save(update_fields=['status', 'lifecycle_status', 'failed_count', 'finished_at', 'summary'])
+    record_task_center_event(task, 'task_failed', '任务中心执行异常')
+    _sync_aiops_incident_action_verification(task)
+    return task
+
+
 def _execute_host_task_thread(task_id, host_refs):
     close_old_connections()
     try:
         task = HostTask.objects.get(pk=task_id)
         hosts = resolve_host_source_refs(host_refs)
         execute_host_task(task, hosts)
+    except Exception as exc:
+        _mark_worker_task_failed(task_id, '主机任务执行异常', exc)
     finally:
         close_old_connections()
         with _TASK_THREADS_LOCK:
@@ -1558,13 +1575,7 @@ def _execute_k8s_task_thread(task_id, targets):
         task = HostTask.objects.get(pk=task_id)
         execute_k8s_task(task, targets)
     except Exception as exc:
-        HostTask.objects.filter(pk=task_id).update(
-            status=HostTask.STATUS_FAILED,
-            lifecycle_status=HostTask.LIFECYCLE_FAILED,
-            failed_count=1,
-            finished_at=timezone.now(),
-            summary=f'K8s 任务执行异常：{str(exc)[:180]}',
-        )
+        _mark_worker_task_failed(task_id, 'K8s 任务执行异常', exc)
     finally:
         close_old_connections()
         with _TASK_THREADS_LOCK:

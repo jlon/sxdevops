@@ -23,6 +23,7 @@ from aiops.models import (
 )
 from aiops.services import sync_incident_action_verification_for_task, sync_session_to_demo_if_needed
 from eventwall.models import EventRecord
+from ops.host_tasks import _execute_k8s_task_thread
 from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup, TracingDataSource
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
@@ -1585,4 +1586,47 @@ class IncidentApiTests(TestCase):
         self.assertEqual(evidence.weight, AIOpsIncidentEvidence.WEIGHT_SUPPORTING)
         self.assertEqual(evidence.payload['verification_status'], 'no_improvement')
         self.assertEqual(evidence.payload['executions'][0]['error_preview'], 'failed')
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_FAILED).exists())
+
+    @patch('ops.host_tasks.execute_k8s_task', side_effect=RuntimeError('worker crashed'))
+    def test_k8s_worker_exception_syncs_incident_action_verification(self, _mock_execute_k8s_task):
+        task = HostTask.objects.create(
+            name='重启 order-center pod',
+            target_type=HostTask.TARGET_K8S,
+            task_type=HostTask.TASK_K8S_RESTART_POD,
+            execution_mode=HostTask.EXECUTION_MODE_K8S_API,
+            status=HostTask.STATUS_RUNNING,
+            trigger_source=HostTask.TRIGGER_SOURCE_AIOPS,
+            lifecycle_status=HostTask.LIFECYCLE_RUNNING,
+            target_count=1,
+            source_context={'source': 'aiops', 'incident_id': self.incident.id},
+        )
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            host_task=task,
+            title='重启 order-center pod',
+            action_type=AIOpsIncidentAction.ACTION_FIX,
+            risk_level=AIOpsIncidentAction.RISK_HIGH,
+            status=AIOpsIncidentAction.STATUS_RUNNING,
+            verification_status='execution_started',
+        )
+
+        _execute_k8s_task_thread(task.id, [{'cluster_id': 999, 'namespace': 'prod', 'name': 'order-center', 'kind': 'pod'}])
+
+        task.refresh_from_db()
+        action.refresh_from_db()
+        self.incident.refresh_from_db()
+        self.assertEqual(task.status, HostTask.STATUS_FAILED)
+        self.assertEqual(task.lifecycle_status, HostTask.LIFECYCLE_FAILED)
+        self.assertEqual(action.status, AIOpsIncidentAction.STATUS_FAILED)
+        self.assertEqual(action.verification_status, 'no_improvement')
+        self.assertIn('未形成有效恢复证据', action.result_summary)
+        self.assertEqual(self.incident.status, AIOpsIncident.STATUS_OPEN)
+        evidence = AIOpsIncidentEvidence.objects.get(
+            incident=self.incident,
+            kind=AIOpsIncidentEvidence.KIND_TASK,
+            source=f'builtin.verification.{action.id}',
+        )
+        self.assertEqual(evidence.payload['task_status'], HostTask.STATUS_FAILED)
+        self.assertEqual(evidence.payload['verification_status'], 'no_improvement')
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_FAILED).exists())
