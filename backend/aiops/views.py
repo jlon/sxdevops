@@ -205,6 +205,19 @@ def _incident_action_task_draft(incident, incident_action):
     return _ensure_task_draft_title(draft)
 
 
+def _incident_action_safety_gaps(incident_action):
+    if incident_action.risk_level not in {AIOpsIncidentAction.RISK_HIGH, AIOpsIncidentAction.RISK_CRITICAL}:
+        return []
+    gaps = []
+    if not incident_action.preconditions:
+        gaps.append('前置条件')
+    if not incident_action.rollback_plan:
+        gaps.append('回滚方案')
+    if not incident_action.verification_plan:
+        gaps.append('验证计划')
+    return gaps
+
+
 class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = AIOpsModelProvider.objects.all()
     serializer_class = AIOpsModelProviderSerializer
@@ -753,6 +766,12 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
                 return Response({'detail': '只读建议请直接触发只读补查，不需要生成执行审批。'}, status=status.HTTP_400_BAD_REQUEST)
             if incident_action.status in {AIOpsIncidentAction.STATUS_RUNNING, AIOpsIncidentAction.STATUS_COMPLETED}:
                 return Response({'detail': '该建议动作当前状态不可生成审批。'}, status=status.HTTP_409_CONFLICT)
+            safety_gaps = _incident_action_safety_gaps(incident_action)
+            if safety_gaps:
+                return Response(
+                    {'detail': f'高风险建议动作缺少{"、".join(safety_gaps)}，不能生成执行审批。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             if (
                 incident_action.pending_action_id
                 and incident_action.pending_action
