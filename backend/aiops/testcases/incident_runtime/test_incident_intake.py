@@ -5,15 +5,17 @@ from rest_framework.test import APIClient
 
 from aiops.incident_investigation import run_readonly_investigation
 from aiops.models import (
+    AIOpsChatSession,
     AIOpsExternalTask,
     AIOpsIncident,
     AIOpsIncidentAction,
     AIOpsIncidentAlert,
     AIOpsIncidentEvidence,
     AIOpsIncidentHypothesis,
+    AIOpsPendingAction,
 )
 from eventwall.models import EventRecord
-from ops.models import Alert, AlertIntegration
+from ops.models import Alert, AlertIntegration, Host, HostTask
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -313,3 +315,84 @@ class IncidentApiTests(TestCase):
         action.refresh_from_db()
         self.assertEqual(action.status, AIOpsIncidentAction.STATUS_PROPOSED)
         self.assertFalse(AIOpsExternalTask.objects.filter(action_code='incident.investigate').exists())
+
+    def test_materialize_incident_action_creates_pending_action(self):
+        host = Host.objects.create(hostname='order-host-01', ip_address='10.0.1.21', environment='prod', status='online')
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            title='重启 order-center',
+            action_type=AIOpsIncidentAction.ACTION_FIX,
+            risk_level=AIOpsIncidentAction.RISK_HIGH,
+            status=AIOpsIncidentAction.STATUS_PROPOSED,
+            action_payload={
+                'name': '重启 order-center',
+                'target_type': HostTask.TARGET_HOST,
+                'task_type': HostTask.TASK_RUN_COMMAND,
+                'payload': {'command': 'systemctl restart order-center'},
+                'target_refs': [{'source': 'host', 'id': host.id}],
+                'host_count': 1,
+                'execution_mode': HostTask.EXECUTION_MODE_SSH,
+                'execution_strategy': HostTask.STRATEGY_STOP_ON_ERROR,
+            },
+            verification_plan=['确认服务恢复'],
+        )
+
+        response = self.client.post(f'/api/aiops/incidents/{self.incident.id}/actions/{action.id}/materialize/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        action.refresh_from_db()
+        self.assertIsNotNone(action.pending_action_id)
+        self.assertEqual(action.verification_status, 'approval_pending')
+        pending_action = AIOpsPendingAction.objects.get(id=action.pending_action_id)
+        self.assertEqual(pending_action.session.user, self.user)
+        self.assertEqual(pending_action.action_type, AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK)
+        self.assertEqual(pending_action.status, AIOpsPendingAction.STATUS_PENDING)
+        self.assertEqual(pending_action.risk_level, AIOpsPendingAction.RISK_HIGH)
+        self.assertEqual(pending_action.action_payload['incident_id'], self.incident.id)
+        self.assertEqual(pending_action.action_payload['incident_action_id'], action.id)
+        self.assertEqual(pending_action.action_payload['target_refs'], [{'source': 'host', 'id': host.id}])
+        self.assertTrue(AIOpsChatSession.objects.filter(user=self.user, title=f'Incident #{self.incident.id} 审批').exists())
+        response_action = next(item for item in response.data['incident_actions'] if item['id'] == action.id)
+        self.assertEqual(response_action['pending_action'], pending_action.id)
+        self.assertEqual(response_action['pending_action_status'], AIOpsPendingAction.STATUS_PENDING)
+        self.assertEqual(response_action['pending_action_status_display'], '待确认')
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='materialize_incident_action').exists())
+
+    def test_materialize_incident_action_is_idempotent(self):
+        host = Host.objects.create(hostname='order-host-02', ip_address='10.0.1.22', environment='prod', status='online')
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            title='重启 order-center',
+            action_type=AIOpsIncidentAction.ACTION_FIX,
+            risk_level=AIOpsIncidentAction.RISK_HIGH,
+            status=AIOpsIncidentAction.STATUS_PROPOSED,
+            action_payload={
+                'name': '重启 order-center',
+                'target_type': HostTask.TARGET_HOST,
+                'task_type': HostTask.TASK_RUN_COMMAND,
+                'payload': {'command': 'systemctl restart order-center'},
+                'target_refs': [{'source': 'host', 'id': host.id}],
+                'host_count': 1,
+            },
+        )
+
+        first = self.client.post(f'/api/aiops/incidents/{self.incident.id}/actions/{action.id}/materialize/')
+        second = self.client.post(f'/api/aiops/incidents/{self.incident.id}/actions/{action.id}/materialize/')
+
+        self.assertEqual(first.status_code, 200, first.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(AIOpsPendingAction.objects.count(), 1)
+
+    def test_materialize_incident_action_rejects_readonly_action(self):
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            title='补充 order-center 只读证据',
+            action_type=AIOpsIncidentAction.ACTION_INVESTIGATE,
+            risk_level=AIOpsIncidentAction.RISK_READ_ONLY,
+            status=AIOpsIncidentAction.STATUS_PROPOSED,
+        )
+
+        response = self.client.post(f'/api/aiops/incidents/{self.incident.id}/actions/{action.id}/materialize/')
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(AIOpsPendingAction.objects.exists())

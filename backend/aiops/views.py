@@ -60,6 +60,7 @@ from .serializers import (
     AIOpsToolInvocationSerializer,
 )
 from .services import (
+    _ensure_task_draft_title,
     archive_runbook,
     auto_ingest_review_knowledge,
     bind_runtime_resource_to_agents,
@@ -147,6 +148,56 @@ def _request_bind_agent_ids(request):
 def _assert_agent_binding_permission(request):
     if _request_includes_agent_binding(request) and not user_has_permissions(request.user, ['aiops.agent.manage']):
         raise PermissionDenied('绑定 Agent 需要 aiops.agent.manage 权限')
+
+
+def _incident_action_approval_session(user, incident):
+    title = f'Incident #{incident.id} 审批'
+    session = AIOpsChatSession.objects.filter(user=user, title=title).order_by('id').first()
+    if session:
+        return session
+    return AIOpsChatSession.objects.create(
+        user=user,
+        title=title,
+        context={
+            'source': 'incident',
+            'incident_id': incident.id,
+            'environment': incident.environment,
+            'cluster': incident.cluster,
+            'namespace': incident.namespace,
+            'service': incident.service,
+        },
+    )
+
+
+def _incident_action_task_draft(incident, incident_action):
+    payload = incident_action.action_payload if isinstance(incident_action.action_payload, dict) else {}
+    draft = payload.get('task_draft') if isinstance(payload.get('task_draft'), dict) else payload
+    task_type = draft.get('task_type') or ''
+    target_type = draft.get('target_type') or ''
+    task_payload = draft.get('payload') if isinstance(draft.get('payload'), dict) else {}
+    has_targets = bool(draft.get('target_refs') or draft.get('host_ids') or draft.get('resource_ids') or draft.get('k8s_targets'))
+    if not task_type:
+        raise ValidationError({'detail': '建议动作缺少任务类型，不能生成审批草案。'})
+    if not target_type:
+        raise ValidationError({'detail': '建议动作缺少目标类型，不能生成审批草案。'})
+    if not task_payload:
+        raise ValidationError({'detail': '建议动作缺少任务载荷，不能生成审批草案。'})
+    if not has_targets:
+        raise ValidationError({'detail': '建议动作缺少目标资源，不能生成审批草案。'})
+    draft = {
+        **draft,
+        'name': draft.get('name') or incident_action.title or f'Incident #{incident.id} 处置任务',
+        'description': draft.get('description') or f'由 Incident #{incident.id} 建议动作生成的待确认任务。',
+        'risk_level': draft.get('risk_level') or incident_action.risk_level,
+        'request_summary': draft.get('request_summary') or incident_action.title or incident.title,
+        'reason': draft.get('reason') or f'incident_action:{incident_action.id}',
+        'resource_environment': draft.get('resource_environment') or incident.environment,
+        'environment_name': draft.get('environment_name') or incident.environment,
+        'knowledge_environment': draft.get('knowledge_environment') or incident.environment,
+        'incident_id': incident.id,
+        'incident_action_id': incident_action.id,
+    }
+    return _ensure_task_draft_title(draft)
 
 
 class AIOpsModelProviderViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
@@ -440,6 +491,7 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         'retrieve': ['aiops.incident.view'],
         'close': ['aiops.incident.close'],
         'run_action': ['aiops.incident.investigate'],
+        'materialize_action': ['aiops.incident.view', 'aiops.task.generate'],
     }
 
     def get_serializer_class(self):
@@ -449,7 +501,7 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = AIOpsIncident.objects.order_by('-last_seen_at', '-id')
-        if self.action in {'retrieve', 'close', 'run_action'}:
+        if self.action in {'retrieve', 'close', 'run_action', 'materialize_action'}:
             queryset = queryset.prefetch_related(
                 'alert_links__alert',
                 'evidence_items__source_task',
@@ -568,6 +620,76 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
             severity=EventRecord.SEVERITY_INFO,
             correlation_id=f'aiops_incident:{incident.id}',
             metadata={'incident_id': incident.id, 'action_id': incident_action.id, 'task_id': task.id, 'task_public_id': str(task.public_id)},
+        )
+        incident = self.get_queryset().get(id=incident.id)
+        return Response(self.get_serializer(incident).data)
+
+    @action(detail=True, methods=['post'], url_path=r'actions/(?P<action_id>\d+)/materialize')
+    def materialize_action(self, request, pk=None, action_id=None):
+        incident = self.get_object()
+        event_payload = None
+        with transaction.atomic():
+            incident_action = (
+                AIOpsIncidentAction.objects
+                .select_for_update()
+                .select_related('pending_action')
+                .filter(incident=incident, id=action_id)
+                .first()
+            )
+            if not incident_action:
+                return Response({'detail': '建议动作不存在。'}, status=status.HTTP_404_NOT_FOUND)
+            if incident_action.risk_level == AIOpsIncidentAction.RISK_READ_ONLY:
+                return Response({'detail': '只读建议请直接触发只读补查，不需要生成执行审批。'}, status=status.HTTP_400_BAD_REQUEST)
+            if incident_action.status in {AIOpsIncidentAction.STATUS_RUNNING, AIOpsIncidentAction.STATUS_COMPLETED}:
+                return Response({'detail': '该建议动作当前状态不可生成审批。'}, status=status.HTTP_409_CONFLICT)
+            if (
+                incident_action.pending_action_id
+                and incident_action.pending_action
+                and incident_action.pending_action.status != AIOpsPendingAction.STATUS_CANCELED
+            ):
+                incident = self.get_queryset().get(id=incident.id)
+                return Response(self.get_serializer(incident).data)
+
+            draft = _incident_action_task_draft(incident, incident_action)
+            session = _incident_action_approval_session(request.user, incident)
+            pending_action = AIOpsPendingAction.objects.create(
+                session=session,
+                action_type=AIOpsPendingAction.ACTION_EXECUTE_HOST_TASK,
+                title=draft.get('name') or incident_action.title,
+                risk_level=draft.get('risk_level') or incident_action.risk_level,
+                action_payload=draft,
+            )
+            incident_action.pending_action = pending_action
+            incident_action.verification_status = 'approval_pending'
+            incident_action.result_summary = f'已生成审批事项 #{pending_action.id}，等待确认载入并执行。'
+            incident_action.save(update_fields=['pending_action', 'verification_status', 'result_summary', 'updated_at'])
+            event_payload = {
+                'action_id': incident_action.id,
+                'action_title': incident_action.title,
+                'pending_action_id': pending_action.id,
+                'risk_level': incident_action.risk_level,
+            }
+        record_event(
+            request=request,
+            module='aiops',
+            category='incident',
+            action='materialize_incident_action',
+            title='Incident 建议动作生成审批',
+            summary=f'{request.user.username} 为 Incident #{incident.id} 生成审批事项 #{event_payload["pending_action_id"]}',
+            result=EventRecord.RESULT_PENDING,
+            resource_type='aiops_incident_action',
+            resource_id=event_payload['action_id'],
+            resource_name=event_payload['action_title'],
+            environment=incident.environment,
+            application=incident.service,
+            severity=EventRecord.SEVERITY_INFO,
+            correlation_id=f'aiops_incident:{incident.id}',
+            metadata={
+                'incident_id': incident.id,
+                'action_id': event_payload['action_id'],
+                'pending_action_id': event_payload['pending_action_id'],
+                'risk_level': event_payload['risk_level'],
+            },
         )
         incident = self.get_queryset().get(id=incident.id)
         return Response(self.get_serializer(incident).data)

@@ -499,6 +499,7 @@ class AIOpsIncidentActionSerializer(serializers.ModelSerializer):
     risk_level_display = serializers.CharField(source='get_risk_level_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     pending_action_status = serializers.CharField(source='pending_action.status', read_only=True)
+    pending_action_status_display = serializers.CharField(source='pending_action.get_status_display', read_only=True)
     host_task_name = serializers.CharField(source='host_task.name', read_only=True)
     host_task_status = serializers.CharField(source='host_task.status', read_only=True)
 
@@ -509,6 +510,7 @@ class AIOpsIncidentActionSerializer(serializers.ModelSerializer):
             'hypothesis',
             'pending_action',
             'pending_action_status',
+            'pending_action_status_display',
             'host_task',
             'host_task_name',
             'host_task_status',

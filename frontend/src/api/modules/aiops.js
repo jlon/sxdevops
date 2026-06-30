@@ -14,6 +14,7 @@ export const getAIOpsIncidents = (params, config = {}) => request.get('/aiops/in
 export const getAIOpsIncident = (id, config = {}) => request.get(`/aiops/incidents/${id}/`, config)
 export const closeAIOpsIncident = (id) => request.post(`/aiops/incidents/${id}/close/`)
 export const runAIOpsIncidentAction = (incidentId, actionId) => request.post(`/aiops/incidents/${incidentId}/actions/${actionId}/run/`)
+export const materializeAIOpsIncidentAction = (incidentId, actionId) => request.post(`/aiops/incidents/${incidentId}/actions/${actionId}/materialize/`)
 
 export const getAIOpsSessions = (params) => request.get('/aiops/sessions/', { params })
 export const createAIOpsSession = (data) => request.post('/aiops/sessions/', data)

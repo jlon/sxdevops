@@ -171,6 +171,7 @@
               </div>
               <div class="evidence-summary">{{ item.title }}</div>
               <div v-for="step in item.verification_plan || []" :key="step" class="sub-line">- {{ step }}</div>
+              <div v-if="item.pending_action" class="sub-line">审批事项：#{{ item.pending_action }} · {{ item.pending_action_status_display || item.pending_action_status || '待确认' }}</div>
               <div v-if="item.result_summary" class="sub-line">结果：{{ item.result_summary }}</div>
             </div>
             <div class="action-controls">
@@ -183,6 +184,16 @@
                 @click="runIncidentAction(item)"
               >
                 只读补查
+              </el-button>
+              <el-button
+                v-else-if="canMaterializeIncidentAction(item)"
+                type="warning"
+                size="small"
+                plain
+                :loading="runningActionId === item.id"
+                @click="materializeIncidentAction(item)"
+              >
+                生成审批
               </el-button>
             </div>
           </div>
@@ -236,7 +247,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search, Warning } from '@element-plus/icons-vue'
-import { closeAIOpsIncident, getAIOpsIncident, getAIOpsIncidents, runAIOpsIncidentAction } from '@/api/modules/aiops'
+import { closeAIOpsIncident, getAIOpsIncident, getAIOpsIncidents, materializeAIOpsIncidentAction, runAIOpsIncidentAction } from '@/api/modules/aiops'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
@@ -262,6 +273,7 @@ const pagination = reactive({
 
 const canClose = computed(() => authStore.hasPermission('aiops.incident.close'))
 const canInvestigate = computed(() => authStore.hasPermission('aiops.incident.investigate'))
+const canGenerateTask = computed(() => authStore.hasPermission('aiops.task.generate'))
 const criticalCount = computed(() => incidents.value.filter(item => item.severity === 'critical').length)
 const openCount = computed(() => incidents.value.filter(item => !['resolved', 'closed'].includes(item.status)).length)
 const activeAlertCount = computed(() => incidents.value.reduce((sum, item) => sum + Number(item.active_alert_count || 0), 0))
@@ -322,6 +334,13 @@ function canRunIncidentAction(item) {
     && item.action_type === 'investigate'
     && item.risk_level === 'read_only'
     && ['proposed', 'failed'].includes(item.status)
+}
+
+function canMaterializeIncidentAction(item) {
+  return canGenerateTask.value
+    && item.risk_level !== 'read_only'
+    && !item.pending_action
+    && ['proposed', 'failed', 'canceled'].includes(item.status)
 }
 
 async function copyEvidence(item) {
@@ -396,6 +415,18 @@ async function runIncidentAction(item) {
   try {
     selectedIncident.value = await runAIOpsIncidentAction(selectedIncident.value.id, item.id)
     ElMessage.success('只读补查已完成')
+    await fetchIncidents()
+  } finally {
+    runningActionId.value = null
+  }
+}
+
+async function materializeIncidentAction(item) {
+  if (!selectedIncident.value || runningActionId.value) return
+  runningActionId.value = item.id
+  try {
+    selectedIncident.value = await materializeAIOpsIncidentAction(selectedIncident.value.id, item.id)
+    ElMessage.success('审批事项已生成')
     await fetchIncidents()
   } finally {
     runningActionId.value = null
