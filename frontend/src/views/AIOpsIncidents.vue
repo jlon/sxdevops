@@ -164,6 +164,38 @@
                   />
                 </div>
                 <div class="hypothesis-summary">{{ primaryHypothesis.summary || '-' }}</div>
+                <div class="hypothesis-evidence-grid">
+                  <div>
+                    <div class="mini-title">支持证据</div>
+                    <div v-if="primarySupportingEvidence.length" class="evidence-reference-list">
+                      <div
+                        v-for="item in primarySupportingEvidence"
+                        :key="`support-${item.id}`"
+                        class="evidence-reference"
+                        :class="{ 'is-missing': item.missing }"
+                      >
+                        <div class="evidence-reference-title">{{ evidenceReferenceTitle(item) }}</div>
+                        <div class="evidence-reference-summary">{{ item.summary || '-' }}</div>
+                      </div>
+                    </div>
+                    <span v-else class="detail-empty">暂无</span>
+                  </div>
+                  <div>
+                    <div class="mini-title">反证</div>
+                    <div v-if="primaryCounterEvidence.length" class="evidence-reference-list">
+                      <div
+                        v-for="item in primaryCounterEvidence"
+                        :key="`counter-${item.id}`"
+                        class="evidence-reference evidence-reference--counter"
+                        :class="{ 'is-missing': item.missing }"
+                      >
+                        <div class="evidence-reference-title">{{ evidenceReferenceTitle(item) }}</div>
+                        <div class="evidence-reference-summary">{{ item.summary || '-' }}</div>
+                      </div>
+                    </div>
+                    <span v-else class="detail-empty">暂无</span>
+                  </div>
+                </div>
                 <div class="hypothesis-columns">
                   <div>
                     <div class="mini-title">证据缺口</div>
@@ -413,6 +445,11 @@ const primaryHypothesis = computed(() => {
   const hypotheses = selectedIncident.value?.hypotheses || []
   return hypotheses.find(item => item.status === 'primary') || hypotheses[0] || null
 })
+const evidenceById = computed(() => new Map(
+  (selectedIncident.value?.evidence_items || []).map(item => [Number(item.id), item]),
+))
+const primarySupportingEvidence = computed(() => resolveHypothesisEvidence(primaryHypothesis.value?.supporting_evidence_ids))
+const primaryCounterEvidence = computed(() => resolveHypothesisEvidence(primaryHypothesis.value?.counter_evidence_ids))
 
 function formatTime(value) {
   if (!value) return '-'
@@ -469,6 +506,33 @@ function formatEvidenceSource(value) {
     'builtin.alert_snapshot': '告警快照',
     'builtin.event_timeline': '事件时间线',
   }[value] || value || '-')
+}
+
+function normalizeEvidenceIds(ids) {
+  if (!Array.isArray(ids)) return []
+  const normalized = ids
+    .map(item => Number(item))
+    .filter(item => Number.isInteger(item) && item > 0)
+  return [...new Set(normalized)]
+}
+
+function resolveHypothesisEvidence(ids) {
+  return normalizeEvidenceIds(ids).map(id => (
+    evidenceById.value.get(id) || {
+      id,
+      missing: true,
+      kind_display: '未返回',
+      source: '',
+      summary: `证据 #${id} 未在当前详情中返回`,
+    }
+  ))
+}
+
+function evidenceReferenceTitle(item) {
+  if (!item) return '-'
+  const kind = item.kind_display || item.kind || '证据'
+  const source = item.source ? formatEvidenceSource(item.source) : '未知来源'
+  return `#${item.id} ${kind} · ${source}`
 }
 
 function canRunIncidentAction(item) {
@@ -955,6 +1019,53 @@ onMounted(fetchIncidents)
   line-height: 1.6;
 }
 
+.hypothesis-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.evidence-reference-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidence-reference {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(51, 112, 255, 0.18);
+  border-radius: 8px;
+  background: #f7faff;
+}
+
+.evidence-reference--counter {
+  border-color: rgba(245, 158, 11, 0.22);
+  background: #fff9ef;
+}
+
+.evidence-reference.is-missing {
+  border-style: dashed;
+  background: var(--panel-soft-bg);
+}
+
+.evidence-reference-title {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.evidence-reference-summary {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
 .hypothesis-columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -988,6 +1099,7 @@ onMounted(fetchIncidents)
     grid-template-columns: 1fr;
   }
 
+  .hypothesis-evidence-grid,
   .hypothesis-columns {
     grid-template-columns: 1fr;
   }
