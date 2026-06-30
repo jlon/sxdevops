@@ -2243,6 +2243,130 @@ def auto_ingest_review_knowledge(source_session=None, source_task=None, source_r
     )
 
 
+def _incident_review_slug(incident):
+    return f'incident-{incident.id}-review'
+
+
+def _incident_review_evidence(incident):
+    evidence = [
+        {
+            'type': 'incident',
+            'id': incident.id,
+            'title': incident.title,
+            'status': incident.status,
+            'severity': incident.severity,
+            'environment': incident.environment,
+            'cluster': incident.cluster,
+            'namespace': incident.namespace,
+            'service': incident.service,
+            'active_alert_count': incident.active_alert_count,
+            'resolved_at': incident.resolved_at.isoformat() if incident.resolved_at else '',
+        }
+    ]
+    for item in incident.evidence_items.order_by('-collected_at', '-id')[:12]:
+        evidence.append({
+            'type': 'incident_evidence',
+            'id': item.id,
+            'kind': item.kind,
+            'source': item.source,
+            'summary': item.summary,
+        })
+    for hypothesis in incident.hypotheses.order_by('-confidence', '-generated_at', '-id')[:5]:
+        evidence.append({
+            'type': 'hypothesis',
+            'id': hypothesis.id,
+            'title': hypothesis.title,
+            'root_cause_type': hypothesis.root_cause_type,
+            'confidence': str(hypothesis.confidence),
+            'status': hypothesis.status,
+            'summary': hypothesis.summary,
+        })
+    for action in incident.incident_actions.select_related('host_task').order_by('-updated_at', '-id')[:8]:
+        evidence.append({
+            'type': 'incident_action',
+            'id': action.id,
+            'title': action.title,
+            'action_type': action.action_type,
+            'risk_level': action.risk_level,
+            'status': action.status,
+            'verification_status': action.verification_status,
+            'host_task_id': action.host_task_id,
+            'host_task_status': action.host_task.status if action.host_task_id else '',
+            'result_summary': action.result_summary,
+        })
+    return evidence[:80]
+
+
+def _incident_review_summary(incident):
+    primary_hypothesis = incident.hypotheses.order_by('-confidence', '-generated_at', '-id').first()
+    completed_actions = [
+        action.title
+        for action in incident.incident_actions.filter(status=AIOpsIncidentAction.STATUS_COMPLETED).order_by('-updated_at', '-id')[:5]
+    ]
+    lines = [
+        f'Incident：#{incident.id} {incident.title}',
+        f'范围：{incident.environment or "-"} / {incident.cluster or "-"} / {incident.namespace or "-"} / {incident.service or "-"}',
+        f'状态：{incident.get_status_display()}，活跃告警 {incident.active_alert_count} 条。',
+    ]
+    if primary_hypothesis:
+        lines.append(f'主要假设：{primary_hypothesis.title}（{primary_hypothesis.get_root_cause_type_display()}，置信度 {primary_hypothesis.confidence}）。')
+    if completed_actions:
+        lines.append(f'有效处置：{"；".join(completed_actions)}。')
+    else:
+        lines.append('有效处置：暂无已完成动作，请人工补充复盘结论。')
+    lines.append('后续建议：复核告警恢复信号、补充根因结论，并将稳定处置步骤沉淀为 Runbook。')
+    return '\n'.join(lines)
+
+
+def auto_ingest_incident_review_knowledge(incident, user=None, reason=''):
+    if not incident or not getattr(incident, 'id', None):
+        return None
+    slug = _incident_review_slug(incident)
+    existing = AIOpsReviewKnowledge.objects.filter(slug=slug).first()
+    title = f'Incident #{incident.id} 复盘知识'
+    tags = list(dict.fromkeys([
+        'incident',
+        'postmortem',
+        incident.severity or '',
+        incident.environment or '',
+        reason or '',
+    ]))
+    tags = [item for item in tags if item][:24]
+    source_refs = [{
+        'type': 'incident',
+        'id': incident.id,
+        'title': incident.title,
+        'status': incident.status,
+        'reason': reason or '',
+    }]
+    evidence = _incident_review_evidence(incident)
+    summary = _incident_review_summary(incident)
+    if existing:
+        existing.title = title[:160]
+        existing.summary = summary
+        existing.environment = (incident.environment or '')[:128]
+        existing.service = (incident.service or '')[:128]
+        existing.evidence = evidence
+        existing.tags = tags
+        existing.source_refs = source_refs
+        existing.updated_by = getattr(user, 'username', '') or existing.updated_by
+        existing.save(update_fields=['title', 'summary', 'environment', 'service', 'evidence', 'tags', 'source_refs', 'updated_by', 'updated_at'])
+        return existing
+    return AIOpsReviewKnowledge.objects.create(
+        slug=slug,
+        title=title[:160],
+        summary=summary,
+        environment=(incident.environment or '')[:128],
+        service=(incident.service or '')[:128],
+        source_type=AIOpsReviewKnowledge.SOURCE_MANUAL,
+        evidence=evidence,
+        tags=tags,
+        source_refs=source_refs,
+        created_by=getattr(user, 'username', ''),
+        updated_by=getattr(user, 'username', ''),
+    )
+
+
 def build_runbook_draft_from_payload(payload, user=None, source_task=None, source_session=None):
     payload = payload if isinstance(payload, dict) else {}
     title = str(payload.get('title') or payload.get('incident') or 'AIOps Runbook 草案').strip()[:160]
@@ -14740,6 +14864,9 @@ def sync_incident_action_verification_for_task(task, request=None):
             incident_update_fields = ['status', 'updated_at']
         if incident_update_fields:
             incident.save(update_fields=incident_update_fields)
+        review_knowledge = None
+        if verification_status == 'verified_resolved':
+            review_knowledge = auto_ingest_incident_review_knowledge(incident, reason='verified_resolved')
 
         event_result = EventRecord.RESULT_SUCCESS
         event_severity = EventRecord.SEVERITY_INFO
@@ -14771,6 +14898,7 @@ def sync_incident_action_verification_for_task(task, request=None):
                 'task_status': task.status,
                 'verification_status': verification_status,
                 'active_alert_count': incident.active_alert_count,
+                'review_knowledge_id': review_knowledge.id if review_knowledge else None,
             },
         )
         updated_count += 1

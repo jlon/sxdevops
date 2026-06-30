@@ -62,6 +62,7 @@ from .serializers import (
 from .services import (
     _ensure_task_draft_title,
     archive_runbook,
+    auto_ingest_incident_review_knowledge,
     auto_ingest_review_knowledge,
     bind_runtime_resource_to_agents,
     build_action_preflight_contract,
@@ -525,6 +526,7 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         incident.closed_at = timezone.now()
         incident.owner = incident.owner or request.user.username
         incident.save(update_fields=['status', 'closed_at', 'owner', 'updated_at'])
+        review_knowledge = auto_ingest_incident_review_knowledge(incident, user=request.user, reason='manual_close')
         record_event(
             request=request,
             module='aiops',
@@ -539,6 +541,7 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
             application=incident.service,
             severity=EventRecord.SEVERITY_INFO,
             correlation_id=f'aiops_incident:{incident.id}',
+            metadata={'review_knowledge_id': review_knowledge.id if review_knowledge else None},
         )
         return Response(self.get_serializer(incident).data)
 

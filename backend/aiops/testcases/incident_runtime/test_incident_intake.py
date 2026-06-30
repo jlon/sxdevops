@@ -15,6 +15,7 @@ from aiops.models import (
     AIOpsIncidentEvidence,
     AIOpsIncidentHypothesis,
     AIOpsPendingAction,
+    AIOpsReviewKnowledge,
 )
 from aiops.services import sync_incident_action_verification_for_task
 from eventwall.models import EventRecord
@@ -217,6 +218,11 @@ class IncidentApiTests(TestCase):
         self.assertEqual(self.incident.status, AIOpsIncident.STATUS_CLOSED)
         self.assertEqual(self.incident.owner, 'incident-admin')
         self.assertIsNotNone(self.incident.closed_at)
+        knowledge = AIOpsReviewKnowledge.objects.get(slug=f'incident-{self.incident.id}-review')
+        self.assertEqual(knowledge.environment, self.incident.environment)
+        self.assertEqual(knowledge.service, self.incident.service)
+        self.assertEqual(knowledge.source_refs[0]['type'], 'incident')
+        self.assertIn('manual_close', knowledge.tags)
 
     def test_incident_detail_includes_evidence(self):
         AIOpsIncidentEvidence.objects.create(
@@ -483,7 +489,14 @@ class IncidentApiTests(TestCase):
         self.assertIn('已验证恢复', action.result_summary)
         self.assertEqual(self.incident.status, AIOpsIncident.STATUS_RESOLVED)
         self.assertIsNotNone(self.incident.resolved_at)
-        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_SUCCESS).exists())
+        knowledge = AIOpsReviewKnowledge.objects.get(slug=f'incident-{self.incident.id}-review')
+        self.assertEqual(knowledge.source_refs[0]['type'], 'incident')
+        self.assertIn('verified_resolved', knowledge.tags)
+        self.assertTrue(any(item.get('type') == 'incident_action' and item.get('id') == action.id for item in knowledge.evidence))
+        second = sync_incident_action_verification_for_task(task)
+        self.assertEqual(second, 1)
+        self.assertEqual(AIOpsReviewKnowledge.objects.filter(slug=f'incident-{self.incident.id}-review').count(), 1)
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_SUCCESS, metadata__review_knowledge_id=knowledge.id).exists())
 
     def test_verification_sync_keeps_incident_open_when_task_fails(self):
         task = HostTask.objects.create(
