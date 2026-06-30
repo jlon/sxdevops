@@ -100,7 +100,7 @@
       </div>
     </section>
 
-    <el-drawer v-model="detailVisible" size="min(720px, 100vw)" title="Incident 详情" destroy-on-close>
+    <el-drawer v-model="detailVisible" size="min(1120px, 100vw)" title="Incident 工作台" destroy-on-close>
       <template v-if="selectedIncident">
         <div class="incident-detail-head">
           <div>
@@ -123,205 +123,233 @@
           </div>
         </div>
 
-        <el-descriptions :column="1" border size="small">
-          <el-descriptions-item label="环境">{{ selectedIncident.environment || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="集群">{{ selectedIncident.cluster || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="命名空间">{{ selectedIncident.namespace || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="服务">{{ selectedIncident.service || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="资源">{{ selectedIncident.resource || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="影响摘要">{{ selectedIncident.impact_summary || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="首次触发">{{ formatTime(selectedIncident.started_at) }}</el-descriptions-item>
-          <el-descriptions-item label="最近告警">{{ formatTime(selectedIncident.last_seen_at) }}</el-descriptions-item>
-        </el-descriptions>
-
-        <div class="section-head compact">
-          <h3>复盘沉淀</h3>
-          <div class="section-actions">
-            <el-button
-              v-if="canMaterializeSkill"
-              size="small"
-              type="primary"
-              plain
-              :loading="retrospectiveLoading === 'skill'"
-              @click="materializeIncidentSkill"
-            >
-              生成 Skill 草案
-            </el-button>
-            <el-button
-              v-if="canMaterializeRunbook"
-              size="small"
-              plain
-              :loading="retrospectiveLoading === 'runbook'"
-              @click="materializeIncidentRunbook"
-            >
-              生成 Runbook
-            </el-button>
+        <div class="incident-scope-grid">
+          <div class="scope-card scope-card--wide">
+            <span class="scope-label">影响范围</span>
+            <strong>{{ selectedIncident.environment || '-' }} / {{ selectedIncident.cluster || '-' }} / {{ selectedIncident.namespace || '-' }}</strong>
+            <span>{{ selectedIncident.service || '-' }} · {{ selectedIncident.resource || '-' }}</span>
+          </div>
+          <div class="scope-card">
+            <span class="scope-label">活跃告警</span>
+            <strong>{{ selectedIncident.active_alert_count || 0 }}</strong>
+            <span>总告警 {{ selectedIncident.alert_count || 0 }}</span>
+          </div>
+          <div class="scope-card">
+            <span class="scope-label">首次触发</span>
+            <strong>{{ formatTime(selectedIncident.started_at) }}</strong>
+            <span>最近 {{ formatTime(selectedIncident.last_seen_at) }}</span>
           </div>
         </div>
-        <div class="retrospective-panel">
-          <div v-if="selectedIncident.review_knowledge" class="review-summary">
-            <div class="evidence-title-row">
-              <el-tag size="small" type="success">复盘知识</el-tag>
-              <span class="evidence-source">{{ selectedIncident.review_knowledge.title }}</span>
-            </div>
-            <div class="evidence-summary">{{ selectedIncident.review_knowledge.summary }}</div>
-          </div>
-          <div v-else class="detail-empty">关闭或验证恢复后会自动生成复盘知识。</div>
-          <div class="suggestion-list">
-            <div v-for="item in selectedIncident.retrospective_suggestions || []" :key="`${item.type}-${item.title}`" class="suggestion-item">
-              <div class="suggestion-head">
-                <span class="suggestion-title">{{ item.title }}</span>
-                <div class="suggestion-actions">
-                  <el-tag size="small" :type="suggestionStatusType(item.status)" effect="plain">{{ suggestionStatusText(item.status) }}</el-tag>
+
+        <div class="impact-strip">{{ selectedIncident.impact_summary || '暂无影响摘要' }}</div>
+
+        <div class="incident-workbench-grid">
+          <main class="incident-main-column">
+            <section class="incident-section">
+              <div class="section-head compact">
+                <h3>主根因假设</h3>
+                <span class="toolbar-desc">{{ primaryHypothesis ? primaryHypothesis.status_display : '待生成' }}</span>
+              </div>
+              <div v-if="primaryHypothesis" class="hypothesis-panel">
+                <div class="hypothesis-title-row">
+                  <div>
+                    <div class="hypothesis-title">{{ primaryHypothesis.title }}</div>
+                    <div class="sub-line">{{ primaryHypothesis.root_cause_type_display || primaryHypothesis.root_cause_type }} · {{ formatTime(primaryHypothesis.generated_at) }}</div>
+                  </div>
+                  <el-progress
+                    type="circle"
+                    :percentage="hypothesisConfidence(primaryHypothesis)"
+                    :width="48"
+                    :stroke-width="5"
+                  />
+                </div>
+                <div class="hypothesis-summary">{{ primaryHypothesis.summary || '-' }}</div>
+                <div class="hypothesis-columns">
+                  <div>
+                    <div class="mini-title">证据缺口</div>
+                    <div v-for="item in primaryHypothesis.missing_evidence || []" :key="item" class="sub-line">- {{ item }}</div>
+                    <span v-if="!(primaryHypothesis.missing_evidence || []).length" class="detail-empty">暂无</span>
+                  </div>
+                  <div>
+                    <div class="mini-title">下一步检查</div>
+                    <div v-for="item in primaryHypothesis.recommended_next_checks || []" :key="item" class="sub-line">- {{ item }}</div>
+                    <span v-if="!(primaryHypothesis.recommended_next_checks || []).length" class="detail-empty">暂无</span>
+                  </div>
+                </div>
+              </div>
+              <span v-else class="detail-empty">暂无根因假设</span>
+            </section>
+
+            <section class="incident-section">
+              <div class="section-head compact">
+                <h3>处置方案</h3>
+                <span class="toolbar-desc">{{ incidentActionCount }} 条</span>
+              </div>
+              <div class="action-list">
+                <div v-for="item in selectedIncident.incident_actions || []" :key="item.id" class="action-item">
+                  <div class="action-main">
+                    <div class="evidence-title-row">
+                      <el-tag size="small" :type="actionTypeTag(item.action_type)">{{ item.action_type_display || item.action_type }}</el-tag>
+                      <el-tag size="small" :type="riskTag(item.risk_level)" effect="plain">{{ item.risk_level_display || item.risk_level }}</el-tag>
+                      <el-tag size="small" effect="plain">{{ item.status_display || item.status }}</el-tag>
+                    </div>
+                    <div class="evidence-summary">{{ item.title }}</div>
+                    <div v-for="step in item.verification_plan || []" :key="step" class="sub-line">- {{ step }}</div>
+                    <div v-if="item.pending_action" class="sub-line">审批事项：#{{ item.pending_action }} · {{ item.pending_action_status_display || item.pending_action_status || '待确认' }}</div>
+                    <div v-if="item.host_task" class="sub-line">任务中心：#{{ item.host_task }} · {{ item.host_task_name || '未命名任务' }} · {{ item.host_task_status || 'pending' }}</div>
+                    <div v-if="item.result_summary" class="sub-line">结果：{{ item.result_summary }}</div>
+                  </div>
+                  <div class="action-controls">
+                    <el-button
+                      v-if="canRunIncidentAction(item)"
+                      type="primary"
+                      size="small"
+                      plain
+                      :loading="runningActionId === item.id"
+                      @click="runIncidentAction(item)"
+                    >
+                      只读补查
+                    </el-button>
+                    <el-button
+                      v-else-if="canMaterializeIncidentAction(item)"
+                      type="warning"
+                      size="small"
+                      plain
+                      :loading="runningActionId === item.id"
+                      @click="materializeIncidentAction(item)"
+                    >
+                      生成审批
+                    </el-button>
+                  </div>
+                </div>
+                <span v-if="!incidentActionCount" class="detail-empty">暂无建议动作</span>
+              </div>
+            </section>
+
+            <section class="incident-section">
+              <div class="section-head compact">
+                <h3>只读调查证据</h3>
+                <span class="toolbar-desc">{{ evidenceCount }} 条</span>
+              </div>
+              <div class="evidence-list">
+                <div v-for="item in selectedIncident.evidence_items || []" :key="item.id" class="evidence-item">
+                  <div class="evidence-main">
+                    <div class="evidence-title-row">
+                      <el-tag :type="evidenceKindType(item.kind)" size="small">{{ item.kind_display || item.kind }}</el-tag>
+                      <span class="evidence-source">{{ formatEvidenceSource(item.source) }}</span>
+                      <el-tag size="small" effect="plain">{{ item.weight_display || item.weight }}</el-tag>
+                    </div>
+                    <div class="evidence-summary">{{ item.summary }}</div>
+                    <div class="sub-line">
+                      {{ formatTime(item.window_start) }} - {{ formatTime(item.window_end) }}
+                      <template v-if="item.source_task_public_id"> · 任务 {{ item.source_task_public_id }}</template>
+                      <template v-if="item.tool_name"> · 工具 {{ item.tool_name }}</template>
+                    </div>
+                  </div>
+                  <el-button link type="primary" size="small" @click="copyEvidence(item)">复制</el-button>
+                </div>
+                <span v-if="!evidenceCount" class="detail-empty">暂无只读调查证据</span>
+              </div>
+            </section>
+          </main>
+
+          <aside class="incident-side-column">
+            <section class="incident-section">
+              <div class="section-head compact">
+                <h3>时间线</h3>
+                <span class="toolbar-desc">{{ timelineCount }} 条</span>
+              </div>
+              <div class="timeline-list">
+                <div v-for="item in selectedIncident.timeline || []" :key="`${item.type}-${item.occurred_at}-${item.resource_id || ''}`" class="timeline-item">
+                  <div class="timeline-dot" :class="`timeline-dot--${timelineResultType(item.result)}`"></div>
+                  <div class="timeline-main">
+                    <div class="suggestion-head">
+                      <span class="suggestion-title">{{ item.title }}</span>
+                      <span class="sub-line">{{ formatTime(item.occurred_at) }}</span>
+                    </div>
+                    <div class="sub-line">{{ item.summary || '-' }}</div>
+                    <div class="sub-line">{{ item.actor || '-' }} · {{ item.result || '-' }}</div>
+                  </div>
+                </div>
+                <span v-if="!timelineCount" class="detail-empty">暂无时间线</span>
+              </div>
+            </section>
+
+            <section class="incident-section">
+              <div class="section-head compact">
+                <h3>关联告警</h3>
+                <span class="toolbar-desc">{{ selectedIncident.alert_count }} 条</span>
+              </div>
+              <div class="alert-link-list">
+                <div v-for="item in selectedIncident.alert_links || []" :key="item.id" class="alert-link-item">
+                  <div>
+                    <div class="alert-link-title">#{{ item.alert_id }} {{ item.alert_title }}</div>
+                    <div class="sub-line">{{ item.alert_service || item.alert_resource || '-' }} · {{ formatTime(item.alert_last_received_at) }}</div>
+                  </div>
+                  <el-tag size="small">{{ item.role_display || item.role }}</el-tag>
+                </div>
+                <span v-if="!(selectedIncident.alert_links || []).length" class="detail-empty">暂无关联告警</span>
+              </div>
+            </section>
+
+            <section class="incident-section">
+              <div class="section-head compact">
+                <h3>复盘沉淀</h3>
+                <div class="section-actions">
                   <el-button
-                    v-if="item.target_route"
+                    v-if="canMaterializeSkill"
                     size="small"
-                    link
                     type="primary"
-                    @click="openRetrospectiveTarget(item)"
+                    plain
+                    :loading="retrospectiveLoading === 'skill'"
+                    @click="materializeIncidentSkill"
                   >
-                    {{ item.next_step || '去处理' }}
+                    生成 Skill 草案
+                  </el-button>
+                  <el-button
+                    v-if="canMaterializeRunbook"
+                    size="small"
+                    plain
+                    :loading="retrospectiveLoading === 'runbook'"
+                    @click="materializeIncidentRunbook"
+                  >
+                    生成 Runbook
                   </el-button>
                 </div>
               </div>
-              <div class="sub-line">{{ item.summary }}</div>
-              <div v-for="requirement in item.requirements || []" :key="requirement" class="sub-line">- {{ requirement }}</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="section-head compact">
-          <h3>主根因假设</h3>
-          <span class="toolbar-desc">{{ primaryHypothesis ? primaryHypothesis.status_display : '待生成' }}</span>
-        </div>
-        <div v-if="primaryHypothesis" class="hypothesis-panel">
-          <div class="hypothesis-title-row">
-            <div>
-              <div class="hypothesis-title">{{ primaryHypothesis.title }}</div>
-              <div class="sub-line">{{ primaryHypothesis.root_cause_type_display || primaryHypothesis.root_cause_type }} · {{ formatTime(primaryHypothesis.generated_at) }}</div>
-            </div>
-            <el-progress
-              type="circle"
-              :percentage="hypothesisConfidence(primaryHypothesis)"
-              :width="48"
-              :stroke-width="5"
-            />
-          </div>
-          <div class="hypothesis-summary">{{ primaryHypothesis.summary || '-' }}</div>
-          <div class="hypothesis-columns">
-            <div>
-              <div class="mini-title">证据缺口</div>
-              <div v-for="item in primaryHypothesis.missing_evidence || []" :key="item" class="sub-line">- {{ item }}</div>
-              <span v-if="!(primaryHypothesis.missing_evidence || []).length" class="detail-empty">暂无</span>
-            </div>
-            <div>
-              <div class="mini-title">下一步检查</div>
-              <div v-for="item in primaryHypothesis.recommended_next_checks || []" :key="item" class="sub-line">- {{ item }}</div>
-              <span v-if="!(primaryHypothesis.recommended_next_checks || []).length" class="detail-empty">暂无</span>
-            </div>
-          </div>
-        </div>
-        <span v-else class="detail-empty">暂无根因假设</span>
-
-        <div class="section-head compact">
-          <h3>时间线</h3>
-          <span class="toolbar-desc">{{ timelineCount }} 条</span>
-        </div>
-        <div class="timeline-list">
-          <div v-for="item in selectedIncident.timeline || []" :key="`${item.type}-${item.occurred_at}-${item.resource_id || ''}`" class="timeline-item">
-            <div class="timeline-dot" :class="`timeline-dot--${timelineResultType(item.result)}`"></div>
-            <div class="timeline-main">
-              <div class="suggestion-head">
-                <span class="suggestion-title">{{ item.title }}</span>
-                <span class="sub-line">{{ formatTime(item.occurred_at) }}</span>
-              </div>
-              <div class="sub-line">{{ item.summary || '-' }}</div>
-              <div class="sub-line">{{ item.actor || '-' }} · {{ item.result || '-' }}</div>
-            </div>
-          </div>
-          <span v-if="!timelineCount" class="detail-empty">暂无时间线</span>
-        </div>
-
-        <div class="section-head compact">
-          <h3>建议动作</h3>
-          <span class="toolbar-desc">{{ incidentActionCount }} 条</span>
-        </div>
-        <div class="action-list">
-          <div v-for="item in selectedIncident.incident_actions || []" :key="item.id" class="action-item">
-            <div class="action-main">
-              <div class="evidence-title-row">
-                <el-tag size="small" :type="actionTypeTag(item.action_type)">{{ item.action_type_display || item.action_type }}</el-tag>
-                <el-tag size="small" :type="riskTag(item.risk_level)" effect="plain">{{ item.risk_level_display || item.risk_level }}</el-tag>
-                <el-tag size="small" effect="plain">{{ item.status_display || item.status }}</el-tag>
-              </div>
-              <div class="evidence-summary">{{ item.title }}</div>
-              <div v-for="step in item.verification_plan || []" :key="step" class="sub-line">- {{ step }}</div>
-              <div v-if="item.pending_action" class="sub-line">审批事项：#{{ item.pending_action }} · {{ item.pending_action_status_display || item.pending_action_status || '待确认' }}</div>
-              <div v-if="item.host_task" class="sub-line">任务中心：#{{ item.host_task }} · {{ item.host_task_name || '未命名任务' }} · {{ item.host_task_status || 'pending' }}</div>
-              <div v-if="item.result_summary" class="sub-line">结果：{{ item.result_summary }}</div>
-            </div>
-            <div class="action-controls">
-              <el-button
-                v-if="canRunIncidentAction(item)"
-                type="primary"
-                size="small"
-                plain
-                :loading="runningActionId === item.id"
-                @click="runIncidentAction(item)"
-              >
-                只读补查
-              </el-button>
-              <el-button
-                v-else-if="canMaterializeIncidentAction(item)"
-                type="warning"
-                size="small"
-                plain
-                :loading="runningActionId === item.id"
-                @click="materializeIncidentAction(item)"
-              >
-                生成审批
-              </el-button>
-            </div>
-          </div>
-          <span v-if="!incidentActionCount" class="detail-empty">暂无建议动作</span>
-        </div>
-
-        <div class="section-head compact">
-          <h3>只读调查证据</h3>
-          <span class="toolbar-desc">{{ evidenceCount }} 条</span>
-        </div>
-        <div class="evidence-list">
-          <div v-for="item in selectedIncident.evidence_items || []" :key="item.id" class="evidence-item">
-            <div class="evidence-main">
-              <div class="evidence-title-row">
-                <el-tag :type="evidenceKindType(item.kind)" size="small">{{ item.kind_display || item.kind }}</el-tag>
-                <span class="evidence-source">{{ formatEvidenceSource(item.source) }}</span>
-                <el-tag size="small" effect="plain">{{ item.weight_display || item.weight }}</el-tag>
-              </div>
-              <div class="evidence-summary">{{ item.summary }}</div>
-              <div class="sub-line">
-                {{ formatTime(item.window_start) }} - {{ formatTime(item.window_end) }}
-                <template v-if="item.source_task_public_id"> · 任务 {{ item.source_task_public_id }}</template>
+              <div class="retrospective-panel">
+                <div v-if="selectedIncident.review_knowledge" class="review-summary">
+                  <div class="evidence-title-row">
+                    <el-tag size="small" type="success">复盘知识</el-tag>
+                    <span class="evidence-source">{{ selectedIncident.review_knowledge.title }}</span>
+                  </div>
+                  <div class="evidence-summary">{{ selectedIncident.review_knowledge.summary }}</div>
+                </div>
+                <div v-else class="detail-empty">关闭或验证恢复后会自动生成复盘知识。</div>
+                <div class="suggestion-list">
+                  <div v-for="item in selectedIncident.retrospective_suggestions || []" :key="`${item.type}-${item.title}`" class="suggestion-item">
+                    <div class="suggestion-head">
+                      <span class="suggestion-title">{{ item.title }}</span>
+                      <div class="suggestion-actions">
+                        <el-tag size="small" :type="suggestionStatusType(item.status)" effect="plain">{{ suggestionStatusText(item.status) }}</el-tag>
+                        <el-button
+                          v-if="item.target_route"
+                          size="small"
+                          link
+                          type="primary"
+                          @click="openRetrospectiveTarget(item)"
+                        >
+                          {{ item.next_step || '去处理' }}
+                        </el-button>
+                      </div>
+                    </div>
+                    <div class="sub-line">{{ item.summary }}</div>
+                    <div v-for="requirement in item.requirements || []" :key="requirement" class="sub-line">- {{ requirement }}</div>
+                  </div>
               </div>
             </div>
-            <el-button link type="primary" size="small" @click="copyEvidence(item)">复制</el-button>
-          </div>
-          <span v-if="!evidenceCount" class="detail-empty">暂无只读调查证据</span>
-        </div>
-
-        <div class="section-head compact">
-          <h3>关联告警</h3>
-          <span class="toolbar-desc">{{ selectedIncident.alert_count }} 条</span>
-        </div>
-        <div class="alert-link-list">
-          <div v-for="item in selectedIncident.alert_links || []" :key="item.id" class="alert-link-item">
-            <div>
-              <div class="alert-link-title">#{{ item.alert_id }} {{ item.alert_title }}</div>
-              <div class="sub-line">{{ item.alert_service || item.alert_resource || '-' }} · {{ formatTime(item.alert_last_received_at) }}</div>
-            </div>
-            <el-tag size="small">{{ item.role_display || item.role }}</el-tag>
-          </div>
-          <span v-if="!(selectedIncident.alert_links || []).length" class="detail-empty">暂无关联告警</span>
+            </section>
+          </aside>
         </div>
       </template>
     </el-drawer>
@@ -643,8 +671,82 @@ onMounted(fetchIncidents)
   gap: 6px;
 }
 
-.compact {
-  margin-top: 18px;
+.incident-scope-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(160px, 0.75fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.scope-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--panel-soft-bg);
+}
+
+.scope-card strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.scope-card span:last-child {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.scope-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.impact-strip {
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(51, 112, 255, 0.16);
+  border-radius: 8px;
+  background: #f6f9ff;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.incident-workbench-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.9fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.incident-main-column,
+.incident-side-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.incident-section {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--panel-bg);
+}
+
+.incident-section .compact {
+  margin-top: 0;
+  margin-bottom: 10px;
 }
 
 .section-actions {
@@ -658,10 +760,6 @@ onMounted(fetchIncidents)
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--panel-soft-bg);
 }
 
 .review-summary {
@@ -834,10 +932,7 @@ onMounted(fetchIncidents)
 }
 
 .hypothesis-panel {
-  padding: 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--panel-soft-bg);
+  padding: 2px 0 0;
 }
 
 .hypothesis-title-row {
@@ -886,6 +981,11 @@ onMounted(fetchIncidents)
 @media (max-width: 900px) {
   .incident-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .incident-scope-grid,
+  .incident-workbench-grid {
+    grid-template-columns: 1fr;
   }
 
   .hypothesis-columns {
