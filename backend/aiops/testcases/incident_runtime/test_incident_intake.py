@@ -330,6 +330,15 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertFalse(k8s_evidence.payload['summary']['cluster_found'])
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
+        actions = list(AIOpsIncidentAction.objects.filter(incident=incident).order_by('action_type'))
+        self.assertEqual({item.action_type for item in actions}, {AIOpsIncidentAction.ACTION_INVESTIGATE, AIOpsIncidentAction.ACTION_VERIFY})
+        verify_action = AIOpsIncidentAction.objects.get(incident=incident, action_type=AIOpsIncidentAction.ACTION_VERIFY)
+        self.assertEqual(verify_action.risk_level, AIOpsIncidentAction.RISK_LOW)
+        self.assertEqual(verify_action.action_payload['task_type'], HostTask.TASK_REFRESH_METRICS)
+        self.assertEqual(verify_action.action_payload['target_type'], HostTask.TARGET_HOST)
+        self.assertEqual(set(verify_action.action_payload['resource_ids']), set(TaskResource.objects.values_list('id', flat=True)))
+        self.assertEqual(verify_action.action_payload['host_count'], 4)
+        self.assertIn('执行仍需用户确认', verify_action.action_payload['reason'])
         task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
         topology_item = next(item for item in task.orchestration_state['rca_input']['evidence'] if item['source'] == 'builtin.task_resource_scope')
         rca_inventory = topology_item['key_facts']['cluster_inventory']
@@ -383,6 +392,45 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertTrue(any(item.get('phase') == 'collect_k8s' for item in task.react_trace))
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
+
+    def test_remediation_planner_keeps_verify_proposal_when_followup_exists(self):
+        env = TaskResourceGroup.objects.create(name='prod', code='prod', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        TaskResource.objects.create(
+            name='order-host-01',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            metadata={'service': 'order-center'},
+        )
+        alert = Alert.objects.create(
+            title='Order Error High',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='order errors are high',
+            environment='prod',
+            cluster='prod',
+            namespace='production',
+            service='order-center',
+            resource_type='service',
+            resource='order-center',
+            fingerprint='order-followup-existing',
+            group_key='order-followup-existing',
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='first_pass')
+        followup = AIOpsIncidentAction.objects.get(incident=incident, action_type=AIOpsIncidentAction.ACTION_INVESTIGATE)
+        followup.status = AIOpsIncidentAction.STATUS_COMPLETED
+        followup.verification_status = 'readonly_completed'
+        followup.save(update_fields=['status', 'verification_status'])
+
+        run_readonly_investigation(incident, reason='second_pass')
+
+        self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident, action_type=AIOpsIncidentAction.ACTION_INVESTIGATE).count(), 1)
+        self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident, action_type=AIOpsIncidentAction.ACTION_VERIFY).count(), 1)
 
     @patch('aiops.incident_investigation.execute_promql_query')
     def test_incident_investigation_collects_metric_evidence(self, mocked_promql):
@@ -1072,6 +1120,57 @@ class IncidentApiTests(TestCase):
         self.assertEqual(response_action['pending_action_status'], AIOpsPendingAction.STATUS_PENDING)
         self.assertEqual(response_action['pending_action_status_display'], '待确认')
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='materialize_incident_action').exists())
+
+    def test_materialize_auto_verification_action_creates_low_risk_pending_action(self):
+        env = TaskResourceGroup.objects.create(name='prod', code='prod', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        resource = TaskResource.objects.create(
+            name='order-host-01',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            ip_address='10.0.1.21',
+            metadata={'service': 'order-center'},
+        )
+        hypothesis = AIOpsIncidentHypothesis.objects.create(
+            incident=self.incident,
+            title='order-center 出现告警症状',
+            root_cause_type=AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM,
+            confidence=0.45,
+            status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+        )
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            hypothesis=hypothesis,
+            title='验证 order-center 资源状态',
+            action_type=AIOpsIncidentAction.ACTION_VERIFY,
+            risk_level=AIOpsIncidentAction.RISK_LOW,
+            status=AIOpsIncidentAction.STATUS_PROPOSED,
+            action_payload={
+                'name': '验证 order-center 资源状态',
+                'target_type': HostTask.TARGET_HOST,
+                'task_type': HostTask.TASK_REFRESH_METRICS,
+                'payload': {'check_scope': 'host_metrics'},
+                'resource_ids': [resource.id],
+                'target_refs': [{'source': 'task_resource', 'id': resource.id}],
+                'host_count': 1,
+                'execution_mode': HostTask.EXECUTION_MODE_SSH,
+                'execution_strategy': HostTask.STRATEGY_CONTINUE,
+                'risk_level': AIOpsIncidentAction.RISK_LOW,
+            },
+            preconditions=['资源底座已匹配到目标主机。'],
+            rollback_plan=['低风险验证任务不修改目标资源，无需回滚。'],
+            verification_plan=['确认任务中心执行成功。'],
+        )
+
+        response = self.client.post(f'/api/aiops/incidents/{self.incident.id}/actions/{action.id}/materialize/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        action.refresh_from_db()
+        pending_action = AIOpsPendingAction.objects.get(id=action.pending_action_id)
+        self.assertEqual(pending_action.risk_level, AIOpsPendingAction.RISK_LOW)
+        self.assertEqual(pending_action.action_payload['task_type'], HostTask.TASK_REFRESH_METRICS)
+        self.assertEqual(pending_action.action_payload['target_refs'], [{'source': 'task_resource', 'id': resource.id}])
+        self.assertEqual(action.verification_status, 'approval_pending')
 
     @patch('aiops.services.start_host_task')
     def test_confirm_materialized_incident_action_syncs_task_link(self, mocked_start_host_task):

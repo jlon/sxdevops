@@ -12,7 +12,7 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from ops.log_views import _merge_config as merge_log_config
 from ops.log_views import _run_query as run_log_provider_query
-from ops.models import Alert, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TracingDataSource
+from ops.models import Alert, HostTask, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TracingDataSource
 from ops.observability_views import execute_promql_query
 from ops.tracing_providers import search_tracing
 
@@ -1637,11 +1637,107 @@ def generate_root_cause_hypothesis(incident, task=None):
     return hypothesis
 
 
+def _resource_evidence_host_targets(incident):
+    evidence = _evidence_by_source(incident).get('builtin.task_resource_scope')
+    payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
+    resources = payload.get('resources') if isinstance(payload.get('resources'), list) else []
+    target_refs = []
+    resource_ids = []
+    for item in resources:
+        if not isinstance(item, dict):
+            continue
+        if item.get('resource_type') != TaskResource.RESOURCE_HOST:
+            continue
+        resource_id = _safe_int(item.get('id'))
+        if not resource_id:
+            continue
+        target_refs.append({'source': 'task_resource', 'id': resource_id})
+        resource_ids.append(resource_id)
+    return target_refs, resource_ids
+
+
+def _verification_task_payload(incident, hypothesis, target_refs, resource_ids):
+    target_name = incident.service or incident.resource or incident.title
+    return {
+        'name': f'验证 {target_name} 资源状态',
+        'description': f'由 Incident #{incident.id} 根因假设生成的低风险验证任务草案。',
+        'target_type': HostTask.TARGET_HOST,
+        'task_type': HostTask.TASK_REFRESH_METRICS,
+        'payload': {
+            'check_scope': 'host_metrics',
+            'service': incident.service,
+            'resource': incident.resource,
+            'hypothesis_id': hypothesis.id,
+        },
+        'resource_ids': resource_ids,
+        'target_refs': target_refs,
+        'host_count': len(target_refs),
+        'execution_mode': HostTask.EXECUTION_MODE_SSH,
+        'execution_strategy': HostTask.STRATEGY_CONTINUE,
+        'timeout_seconds': 30,
+        'risk_level': AIOpsIncidentAction.RISK_LOW,
+        'request_summary': f'验证 Incident #{incident.id} 的资源状态和基础指标。',
+        'reason': '自动调查已匹配到资源底座，生成低风险验证任务草案；执行仍需用户确认。',
+        'resource_environment': incident.environment,
+        'environment_name': incident.environment,
+        'knowledge_environment': incident.environment,
+        'incident_id': incident.id,
+    }
+
+
+def generate_verification_task_proposal(incident, hypothesis):
+    target_refs, resource_ids = _resource_evidence_host_targets(incident)
+    if not target_refs:
+        return None
+    action_payload = _verification_task_payload(incident, hypothesis, target_refs, resource_ids)
+    defaults = {
+        'title': action_payload['name'],
+        'risk_level': AIOpsIncidentAction.RISK_LOW,
+        'action_payload': action_payload,
+        'preconditions': [
+            '资源底座已匹配到目标主机。',
+            '该任务只采集 CPU、内存、磁盘等基础状态，不执行重启、扩缩容、发布或配置变更。',
+        ],
+        'rollback_plan': ['低风险验证任务不修改目标资源，无需回滚。'],
+        'verification_plan': [
+            '确认任务中心执行成功。',
+            '确认活跃告警数量、日志错误数和资源状态快照。',
+        ],
+        'created_by': INVESTIGATION_SOURCE_AGENT,
+    }
+    existing = AIOpsIncidentAction.objects.filter(
+        incident=incident,
+        hypothesis=hypothesis,
+        action_type=AIOpsIncidentAction.ACTION_VERIFY,
+    ).first()
+    reusable_statuses = {
+        AIOpsIncidentAction.STATUS_PROPOSED,
+        AIOpsIncidentAction.STATUS_FAILED,
+        AIOpsIncidentAction.STATUS_CANCELED,
+    }
+    if existing and existing.status not in reusable_statuses:
+        return existing
+    if not existing or existing.status in {AIOpsIncidentAction.STATUS_FAILED, AIOpsIncidentAction.STATUS_CANCELED}:
+        defaults.update({
+            'status': AIOpsIncidentAction.STATUS_PROPOSED,
+            'verification_status': '',
+            'result_summary': '',
+        })
+    proposal, _ = AIOpsIncidentAction.objects.update_or_create(
+        incident=incident,
+        hypothesis=hypothesis,
+        action_type=AIOpsIncidentAction.ACTION_VERIFY,
+        defaults=defaults,
+    )
+    return proposal
+
+
 def generate_remediation_proposals(incident, hypothesis):
     next_checks = hypothesis.recommended_next_checks if isinstance(hypothesis.recommended_next_checks, list) else []
     if not next_checks:
         next_checks = _recommended_next_checks(incident, 0)
-    payload = {
+    proposals = []
+    followup_payload = {
         'mode': 'readonly_followup',
         'incident_id': incident.id,
         'hypothesis_id': hypothesis.id,
@@ -1651,7 +1747,7 @@ def generate_remediation_proposals(incident, hypothesis):
     defaults = {
         'title': f'补充 {incident.service or incident.title} 只读证据',
         'risk_level': AIOpsIncidentAction.RISK_READ_ONLY,
-        'action_payload': payload,
+        'action_payload': followup_payload,
         'preconditions': ['仅允许调用只读查询工具，不执行变更、重启、扩缩容或命令。'],
         'rollback_plan': ['只读动作无需回滚；若查询失败，只记录失败原因并保留现有 Incident 状态。'],
         'verification_plan': next_checks,
@@ -1668,20 +1764,25 @@ def generate_remediation_proposals(incident, hypothesis):
         AIOpsIncidentAction.STATUS_CANCELED,
     }
     if existing and existing.status not in reusable_statuses:
-        return [existing]
-    if not existing or existing.status in {AIOpsIncidentAction.STATUS_FAILED, AIOpsIncidentAction.STATUS_CANCELED}:
-        defaults.update({
-            'status': AIOpsIncidentAction.STATUS_PROPOSED,
-            'verification_status': '',
-            'result_summary': '',
-        })
-    proposal, _ = AIOpsIncidentAction.objects.update_or_create(
-        incident=incident,
-        hypothesis=hypothesis,
-        action_type=AIOpsIncidentAction.ACTION_INVESTIGATE,
-        defaults=defaults,
-    )
-    return [proposal]
+        proposal = existing
+    else:
+        if not existing or existing.status in {AIOpsIncidentAction.STATUS_FAILED, AIOpsIncidentAction.STATUS_CANCELED}:
+            defaults.update({
+                'status': AIOpsIncidentAction.STATUS_PROPOSED,
+                'verification_status': '',
+                'result_summary': '',
+            })
+        proposal, _ = AIOpsIncidentAction.objects.update_or_create(
+            incident=incident,
+            hypothesis=hypothesis,
+            action_type=AIOpsIncidentAction.ACTION_INVESTIGATE,
+            defaults=defaults,
+        )
+    proposals.append(proposal)
+    verification_proposal = generate_verification_task_proposal(incident, hypothesis)
+    if verification_proposal:
+        proposals.append(verification_proposal)
+    return proposals
 
 
 def create_investigation_task(incident, reason='alert_changed'):
