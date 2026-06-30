@@ -226,7 +226,18 @@
                       <el-tag size="small" effect="plain">{{ item.status_display || item.status }}</el-tag>
                     </div>
                     <div class="evidence-summary">{{ item.title }}</div>
-                    <div v-for="step in item.verification_plan || []" :key="step" class="sub-line">- {{ step }}</div>
+                    <div v-if="(item.preconditions || []).length" class="action-plan-block">
+                      <div class="mini-title">前置条件</div>
+                      <div v-for="step in item.preconditions || []" :key="`pre-${item.id}-${step}`" class="sub-line">- {{ step }}</div>
+                    </div>
+                    <div v-if="(item.rollback_plan || []).length" class="action-plan-block">
+                      <div class="mini-title">回滚方案</div>
+                      <div v-for="step in item.rollback_plan || []" :key="`rollback-${item.id}-${step}`" class="sub-line">- {{ step }}</div>
+                    </div>
+                    <div v-if="(item.verification_plan || []).length" class="action-plan-block">
+                      <div class="mini-title">验证计划</div>
+                      <div v-for="step in item.verification_plan || []" :key="`verify-${item.id}-${step}`" class="sub-line">- {{ step }}</div>
+                    </div>
                     <div v-if="item.pending_action" class="sub-line">审批事项：#{{ item.pending_action }} · {{ item.pending_action_status_display || item.pending_action_status || '待确认' }}</div>
                     <div v-if="item.host_task" class="sub-line">任务中心：#{{ item.host_task }} · {{ item.host_task_name || '未命名任务' }} · {{ item.host_task_status || 'pending' }}</div>
                     <div v-if="item.result_summary" class="sub-line">结果：{{ item.result_summary }}</div>
@@ -972,6 +983,10 @@ onMounted(fetchIncidents)
   display: flex;
   align-items: flex-start;
   flex-shrink: 0;
+}
+
+.action-plan-block {
+  margin-top: 8px;
 }
 
 .evidence-title-row {
