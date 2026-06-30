@@ -25,6 +25,19 @@
       </el-tabs>
     </section>
 
+    <section v-if="retrospectiveDraft" class="retrospective-hint">
+      <div>
+        <strong>Incident #{{ retrospectiveDraft.incident_id }} 复盘建议</strong>
+        <span>{{ retrospectiveDraft.reason }}</span>
+      </div>
+      <div class="retrospective-hint-meta">
+        <span v-if="retrospectiveDraft.environment">环境：{{ retrospectiveDraft.environment }}</span>
+        <span v-if="retrospectiveDraft.cluster">集群：{{ retrospectiveDraft.cluster }}</span>
+        <span v-if="retrospectiveDraft.namespace">命名空间：{{ retrospectiveDraft.namespace }}</span>
+        <span v-if="retrospectiveDraft.service">服务：{{ retrospectiveDraft.service }}</span>
+      </div>
+    </section>
+
     <section class="panel tabs-panel">
       <template v-if="activeTab === 'graph'">
             <section class="topology-toolbar">
@@ -329,6 +342,7 @@ const adoptionDocVisible = ref(false)
 const traceTopologyDialogVisible = ref(false)
 const traceTopologyDialogReady = ref(false)
 const activeTab = ref(route.query.tab === 'config' ? 'config' : 'graph')
+const retrospectiveDraft = ref(null)
 const filters = reactive({ environment: '', system: '', service: '' })
 const DEFAULT_GRAPH_ZOOM = 0.84
 const MIN_GRAPH_ZOOM = 0.5
@@ -350,6 +364,21 @@ const graphDrag = reactive({ active: false, moved: false, x: 0, y: 0, scrollLeft
 const legendPosition = reactive({ x: null, y: null })
 const legendDrag = reactive({ active: false, offsetX: 0, offsetY: 0 })
 let chart = null
+
+function loadRetrospectiveDraft() {
+  const raw = sessionStorage.getItem('sxdevops.aiops.retrospective-draft')
+  if (!raw) return
+  try {
+    const draft = JSON.parse(raw)
+    if (draft?.type === 'knowledge_environment_review' || draft?.type === 'topology_review') {
+      retrospectiveDraft.value = draft
+    }
+  } catch {
+    retrospectiveDraft.value = null
+  } finally {
+    sessionStorage.removeItem('sxdevops.aiops.retrospective-draft')
+  }
+}
 
 const graphNodes = computed(() => (graph.value.nodes || []).filter(node => {
   if (hiddenNodeKinds.has(node.kind)) return false
@@ -1328,6 +1357,7 @@ watch(
 )
 
 onMounted(() => {
+  loadRetrospectiveDraft()
   window.addEventListener('resize', resizeGraph)
   if (activeTab.value === 'graph') loadGraph()
 })
@@ -1370,6 +1400,37 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
   box-shadow: 0 12px 26px rgba(15, 23, 42, 0.04);
+}
+
+.retrospective-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid rgba(51, 112, 255, 0.18);
+  border-radius: 8px;
+  background: #f6f9ff;
+  color: #334155;
+  font-size: 12px;
+}
+
+.retrospective-hint > div:first-child {
+  min-width: 0;
+}
+
+.retrospective-hint strong {
+  margin-right: 8px;
+  color: #1e40af;
+}
+
+.retrospective-hint-meta {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #64748b;
 }
 
 .tabs-panel :deep(.el-tabs__header) {

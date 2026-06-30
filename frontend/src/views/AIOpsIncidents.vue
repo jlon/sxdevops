@@ -171,7 +171,18 @@
             <div v-for="item in selectedIncident.retrospective_suggestions || []" :key="`${item.type}-${item.title}`" class="suggestion-item">
               <div class="suggestion-head">
                 <span class="suggestion-title">{{ item.title }}</span>
-                <el-tag size="small" :type="suggestionStatusType(item.status)" effect="plain">{{ suggestionStatusText(item.status) }}</el-tag>
+                <div class="suggestion-actions">
+                  <el-tag size="small" :type="suggestionStatusType(item.status)" effect="plain">{{ suggestionStatusText(item.status) }}</el-tag>
+                  <el-button
+                    v-if="item.target_route"
+                    size="small"
+                    link
+                    type="primary"
+                    @click="openRetrospectiveTarget(item)"
+                  >
+                    {{ item.next_step || '去处理' }}
+                  </el-button>
+                </div>
               </div>
               <div class="sub-line">{{ item.summary }}</div>
               <div v-for="requirement in item.requirements || []" :key="requirement" class="sub-line">- {{ requirement }}</div>
@@ -586,6 +597,16 @@ async function openIncidentChat() {
   }
 }
 
+function openRetrospectiveTarget(item) {
+  const routeTarget = item?.target_route || {}
+  if (!routeTarget.path) return
+  if (item.draft_payload) {
+    sessionStorage.setItem('sxdevops.aiops.retrospective-draft', JSON.stringify(item.draft_payload))
+  }
+  router.push({ path: routeTarget.path, query: routeTarget.query || {} })
+  detailVisible.value = false
+}
+
 onMounted(fetchIncidents)
 </script>
 
@@ -667,6 +688,14 @@ onMounted(fetchIncidents)
   gap: 10px;
   align-items: center;
   margin-bottom: 4px;
+}
+
+.suggestion-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .suggestion-title {

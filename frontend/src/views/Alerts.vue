@@ -922,6 +922,17 @@ const activeTab = ref('events')
 const notifyTab = ref('rules')
 const policyTab = ref('aggregation')
 const eventMode = ref('list')
+
+function routeTabValue() {
+  const value = String(route.query.tab || '').trim()
+  return ['events', 'policies', 'notify', 'logs', 'integrations'].includes(value) ? value : ''
+}
+
+function routePolicyValue() {
+  const value = String(route.query.policy || '').trim()
+  return ['aggregation', 'inhibition', 'mute', 'escalation'].includes(value) ? value : ''
+}
+
 const eventModeOptions = [
   { label: '\u5217\u8868', value: 'list' },
   { label: '\u5206\u7EC4', value: 'group' },
@@ -1441,6 +1452,11 @@ function ensureTabAccess() {
 
 async function switchTab(tab) {
   activeTab.value = tab
+  const query = { ...route.query }
+  if (tab === 'events') delete query.tab
+  else query.tab = tab
+  if (tab !== 'policies') delete query.policy
+  router.replace({ path: route.path, query }).catch(() => {})
   await refreshAll()
 }
 
@@ -1451,6 +1467,8 @@ async function changeNotifyTab(tab) {
 
 async function changePolicyTab(tab) {
   policyTab.value = tab
+  const query = { ...route.query, tab: 'policies', policy: tab }
+  router.replace({ path: route.path, query }).catch(() => {})
   await loadPolicyTab()
 }
 
@@ -1746,6 +1764,34 @@ function openInhibitionRule(row = null) {
   policyDialog.visible = true
 }
 
+function applyRetrospectiveDraft() {
+  const raw = sessionStorage.getItem('sxdevops.aiops.retrospective-draft')
+  if (!raw) return
+  let draft = null
+  try {
+    draft = JSON.parse(raw)
+  } catch {
+    sessionStorage.removeItem('sxdevops.aiops.retrospective-draft')
+    return
+  }
+  if (!draft || draft.type !== 'alert_policy_review') return
+  sessionStorage.removeItem('sxdevops.aiops.retrospective-draft')
+  activeTab.value = 'policies'
+  policyTab.value = 'inhibition'
+  policyDialog.kind = 'inhibition'
+  policyDialog.title = '\u6291\u5236\u89C4\u5219'
+  policyDialog.form = {
+    ...emptyInhibitionRule(),
+    name: `Incident #${draft.incident_id} 告警抑制复核`,
+    source_matchers: clone(draft.matchers),
+    target_matchers: clone(draft.matchers),
+    equal_labels: clone(draft.group_by || ['service', 'resource']),
+    description: draft.reason || '',
+  }
+  policyDialog.visible = true
+  ElMessage.info('已带入 Incident 复盘建议，请复核后保存策略。')
+}
+
 function openMuteRule(row = null) {
   policyDialog.kind = 'mute'
   policyDialog.title = '\u5C4F\u853D\u89C4\u5219'
@@ -1805,6 +1851,10 @@ async function removeEscalationPolicy(id) {
 }
 
 function applyRouteFilters() {
+  const tab = routeTabValue()
+  if (tab) activeTab.value = tab
+  const policy = routePolicyValue()
+  if (policy) policyTab.value = policy
   filters.search = typeof route.query.search === 'string' ? route.query.search.trim() : ''
   filters.level = typeof route.query.level === 'string' ? route.query.level.trim() : ''
   if (route.query.claimed === '0' || route.query.ack === '0') filters.claimed = '0'
@@ -1813,7 +1863,7 @@ function applyRouteFilters() {
 }
 
 watch(
-  () => [route.query.search || '', route.query.level || '', route.query.claimed || '', route.query.ack || ''].join('|'),
+  () => [route.query.search || '', route.query.level || '', route.query.claimed || '', route.query.ack || '', route.query.tab || '', route.query.policy || ''].join('|'),
   async () => {
     applyRouteFilters()
     page.value = 1
@@ -1825,6 +1875,7 @@ onMounted(async () => {
   applyRouteFilters()
   users.value = listOf(await getUsers())
   await refreshAll()
+  applyRetrospectiveDraft()
 })
 </script>
 

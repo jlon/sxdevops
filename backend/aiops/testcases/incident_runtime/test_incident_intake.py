@@ -290,6 +290,9 @@ class IncidentApiTests(TestCase):
         self.assertEqual(response.data['incident_actions'][0]['risk_level_display'], '只读')
 
     def test_incident_detail_includes_retrospective_suggestions_and_review_knowledge(self):
+        self.incident.alert_count = 2
+        self.incident.active_alert_count = 2
+        self.incident.save(update_fields=['alert_count', 'active_alert_count'])
         AIOpsReviewKnowledge.objects.create(
             slug=f'incident-{self.incident.id}-review',
             title=f'Incident #{self.incident.id} 复盘知识',
@@ -324,6 +327,12 @@ class IncidentApiTests(TestCase):
         suggestion_types = {item['type'] for item in response.data['retrospective_suggestions']}
         self.assertIn('skill', suggestion_types)
         self.assertIn('runbook', suggestion_types)
+        self.assertIn('alert_suppression', suggestion_types)
+        suggestion_by_type = {item['type']: item for item in response.data['retrospective_suggestions']}
+        self.assertEqual(suggestion_by_type['alert_suppression']['target_route']['query']['policy'], 'inhibition')
+        self.assertEqual(suggestion_by_type['alert_suppression']['draft_payload']['matchers'][0]['key'], 'environment')
+        self.assertEqual(suggestion_by_type['knowledge_environment']['target_route']['path'], '/aiops/knowledge')
+        self.assertEqual(suggestion_by_type['knowledge_environment']['draft_payload']['incident_id'], self.incident.id)
         timeline_types = [item['type'] for item in response.data['timeline']]
         self.assertIn('incident_created', timeline_types)
         self.assertIn('investigate_incident', timeline_types)

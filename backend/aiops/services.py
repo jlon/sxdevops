@@ -2557,6 +2557,16 @@ def _incident_review_common_tags(incident):
     return [item for item in dict.fromkeys(str(value or '').strip() for value in values) if item][:24]
 
 
+def _incident_scope_matchers(incident):
+    pairs = [
+        ('environment', incident.environment),
+        ('cluster', incident.cluster),
+        ('namespace', incident.namespace),
+        ('service', incident.service),
+    ]
+    return [{'key': key, 'op': '==', 'value': value} for key, value in pairs if value]
+
+
 def build_incident_retrospective_suggestions(incident):
     if not incident or not getattr(incident, 'id', None):
         return []
@@ -2567,6 +2577,8 @@ def build_incident_retrospective_suggestions(incident):
     root_cause_title = primary_hypothesis.title if primary_hypothesis else '当前 Incident 排障路径'
     scope_parts = [incident.environment, incident.cluster, incident.namespace, incident.service]
     scope_text = ' / '.join([part for part in scope_parts if part]) or incident.title
+    scope_matchers = _incident_scope_matchers(incident)
+    scope_group_by = [item['key'] for item in scope_matchers]
 
     suggestions.append({
         'type': 'skill',
@@ -2574,6 +2586,7 @@ def build_incident_retrospective_suggestions(incident):
         'summary': f'把 #{incident.id} 的证据、根因判断和只读检查路径沉淀为可复用 Skill。',
         'status': 'ready' if primary_hypothesis else 'needs_review',
         'action': 'materialize_skill',
+        'next_step': '生成 Skill 草案审批事项',
         'requirements': [
             '根因假设已有证据 ID 支撑' if primary_hypothesis else '补充主根因假设和证据 ID',
             '只读工具覆盖告警、日志、指标或资源查询',
@@ -2586,6 +2599,7 @@ def build_incident_retrospective_suggestions(incident):
         'summary': f'把 #{incident.id} 的处置步骤、风险、回滚和验证计划整理成 Runbook 草案。',
         'status': 'ready' if completed_actions else 'needs_review',
         'action': 'materialize_runbook',
+        'next_step': '生成 Runbook 草案',
         'requirements': [
             f'主要根因：{root_cause_title}',
             '已存在完成动作' if completed_actions else '补充已验证有效的处置动作',
@@ -2599,6 +2613,15 @@ def build_incident_retrospective_suggestions(incident):
             'summary': '该 Incident 关联多条告警，建议复核 Alertmanager group_by、维护窗口和噪音抑制策略。',
             'status': 'needs_review',
             'action': 'review_alert_rule',
+            'next_step': '前往告警策略配置',
+            'target_route': {'path': '/alerts', 'query': {'tab': 'policies', 'policy': 'inhibition'}},
+            'draft_payload': {
+                'type': 'alert_policy_review',
+                'incident_id': incident.id,
+                'matchers': scope_matchers,
+                'group_by': scope_group_by,
+                'reason': f'Incident #{incident.id} 关联 {incident.alert_count} 条告警，需复核归并/抑制策略。',
+            },
             'requirements': [
                 '核对 fingerprint、groupKey、service、namespace 标签是否稳定',
                 '确认是否存在维护窗口或重复告警源',
@@ -2611,6 +2634,17 @@ def build_incident_retrospective_suggestions(incident):
             'summary': '把本次范围中的环境、集群、命名空间、服务和可观测数据源绑定到知识环境，便于后续 Agent 自动带入上下文。',
             'status': 'needs_review',
             'action': 'review_knowledge_environment',
+            'next_step': '前往知识图谱配置',
+            'target_route': {'path': '/aiops/knowledge', 'query': {'tab': 'config'}},
+            'draft_payload': {
+                'type': 'knowledge_environment_review',
+                'incident_id': incident.id,
+                'environment': incident.environment,
+                'cluster': incident.cluster,
+                'namespace': incident.namespace,
+                'service': incident.service,
+                'reason': f'Incident #{incident.id} 需要补齐知识环境绑定。',
+            },
             'requirements': [
                 f'环境：{incident.environment or "-"}',
                 f'集群/命名空间：{incident.cluster or "-"} / {incident.namespace or "-"}',
@@ -2624,6 +2658,18 @@ def build_incident_retrospective_suggestions(incident):
             'summary': '补充服务与集群、资源、上下游依赖关系，减少下次排障时的范围确认成本。',
             'status': 'needs_review',
             'action': 'review_topology',
+            'next_step': '前往知识图谱配置',
+            'target_route': {'path': '/aiops/knowledge', 'query': {'tab': 'config'}},
+            'draft_payload': {
+                'type': 'topology_review',
+                'incident_id': incident.id,
+                'service': incident.service,
+                'cluster': incident.cluster,
+                'namespace': incident.namespace,
+                'resource_type': incident.resource_type,
+                'resource': incident.resource,
+                'reason': f'Incident #{incident.id} 需要补充服务拓扑关系。',
+            },
             'requirements': [
                 f'服务：{incident.service}',
                 f'资源：{incident.resource_type or "-"} / {incident.resource or "-"}',
