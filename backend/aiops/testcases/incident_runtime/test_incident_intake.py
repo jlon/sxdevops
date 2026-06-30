@@ -19,6 +19,7 @@ from aiops.models import (
     AIOpsReviewKnowledge,
     AIOpsRunbook,
     AIOpsSkill,
+    AIOpsToolInvocation,
 )
 from aiops.services import sync_incident_action_verification_for_task, sync_session_to_demo_if_needed
 from eventwall.models import EventRecord
@@ -83,10 +84,22 @@ class IncidentAlertIntakeTests(TestCase):
         link = AIOpsIncidentAlert.objects.get(incident=incident, alert=alert)
         self.assertEqual(link.role, AIOpsIncidentAlert.ROLE_PRIMARY)
         self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 2)
-        self.assertTrue(AIOpsIncidentEvidence.objects.filter(incident=incident, source='builtin.alert_snapshot').exists())
+        alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
+        event_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.event_timeline')
+        self.assertIsNotNone(alert_evidence.tool_invocation)
+        self.assertIsNotNone(event_evidence.tool_invocation)
+        self.assertEqual(alert_evidence.tool_invocation.tool_name, 'builtin.alert_snapshot')
+        self.assertEqual(event_evidence.tool_invocation.tool_name, 'builtin.event_timeline')
+        self.assertEqual(
+            set(AIOpsToolInvocation.objects.filter(session__context__source='incident_background_investigation').values_list('tool_name', flat=True)),
+            {'builtin.alert_snapshot', 'builtin.event_timeline'},
+        )
         task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['incident_id'], incident.id)
+        self.assertEqual(len(task.result_payload['tool_invocation_ids']), 2)
+        self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 2)
+        self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:2]))
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
         self.assertTrue(hypothesis.supporting_evidence_ids)

@@ -1,6 +1,8 @@
 import logging
+import time
 from datetime import timedelta
 
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 
@@ -8,12 +10,21 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from ops.models import Alert
 
-from .models import AIOpsExternalTask, AIOpsIncident, AIOpsIncidentAction, AIOpsIncidentEvidence, AIOpsIncidentHypothesis
+from .models import (
+    AIOpsChatSession,
+    AIOpsExternalTask,
+    AIOpsIncident,
+    AIOpsIncidentAction,
+    AIOpsIncidentEvidence,
+    AIOpsIncidentHypothesis,
+    AIOpsToolInvocation,
+)
 
 
 logger = logging.getLogger(__name__)
 INVESTIGATION_ACTION_CODE = 'incident.investigate'
 INVESTIGATION_SOURCE_AGENT = 'sxdevops-incident-intake'
+INVESTIGATION_AUDIT_USERNAME = 'aiops-system'
 
 
 def _safe_dict(value):
@@ -35,6 +46,82 @@ def investigation_window(incident, minutes=60):
     started_at = incident.started_at or incident.detected_at or timezone.now()
     last_seen_at = incident.last_seen_at or started_at
     return started_at - timedelta(minutes=minutes), last_seen_at + timedelta(minutes=minutes)
+
+
+def _investigation_audit_user():
+    user_model = get_user_model()
+    user, created = user_model.objects.get_or_create(
+        username=INVESTIGATION_AUDIT_USERNAME,
+        defaults={'is_active': False},
+    )
+    if created:
+        user.set_unusable_password()
+        user.save(update_fields=['password'])
+    return user
+
+
+def _investigation_audit_session(incident):
+    user = _investigation_audit_user()
+    title = f'Incident #{incident.id} 自动调查'
+    context = {
+        'source': 'incident_background_investigation',
+        'incident_id': incident.id,
+        'environment': incident.environment,
+        'cluster': incident.cluster,
+        'namespace': incident.namespace,
+        'service': incident.service,
+        'resource_type': incident.resource_type,
+        'resource': incident.resource,
+    }
+    session = (
+        AIOpsChatSession.objects
+        .filter(user=user, title=title, mirror_source__isnull=True)
+        .order_by('id')
+        .first()
+    )
+    if session:
+        session.context = context
+        session.last_message_at = timezone.now()
+        session.save(update_fields=['context', 'last_message_at', 'updated_at'])
+        return session
+    return AIOpsChatSession.objects.create(user=user, title=title, context=context)
+
+
+def _finish_tool_invocation(invocation, started_at, response_summary, success=True):
+    invocation.status = AIOpsToolInvocation.STATUS_SUCCESS if success else AIOpsToolInvocation.STATUS_FAILED
+    invocation.latency_ms = max(int((time.time() - started_at) * 1000), 1)
+    invocation.response_summary = response_summary
+    invocation.save(update_fields=['status', 'latency_ms', 'response_summary'])
+
+
+def _collect_evidence_with_audit(incident, task, session, tool_name, collector):
+    started_at = time.time()
+    invocation = AIOpsToolInvocation.objects.create(
+        session=session,
+        tool_name=tool_name,
+        request_payload={
+            'incident_id': incident.id,
+            'task_id': task.id if task else None,
+            'scope': incident_scope(incident),
+        },
+    )
+    try:
+        evidence = collector(incident, task=task, tool_invocation=invocation)
+    except Exception as exc:
+        _finish_tool_invocation(invocation, started_at, {'error': str(exc)[:300]}, success=False)
+        raise
+    _finish_tool_invocation(
+        invocation,
+        started_at,
+        {
+            'evidence_id': evidence.id,
+            'kind': evidence.kind,
+            'source': evidence.source,
+            'summary': evidence.summary,
+        },
+        success=True,
+    )
+    return evidence, invocation
 
 
 def _alert_payload(alert):
@@ -72,7 +159,7 @@ def _alert_evidence_summary(incident, alert_links):
     return f'关联 {len(alert_links)} 条告警，活跃 {active_count} 条；主信号：{primary_title}'
 
 
-def collect_alert_evidence(incident, task=None):
+def collect_alert_evidence(incident, task=None, tool_invocation=None):
     alert_links = list(
         incident.alert_links
         .select_related('alert')
@@ -105,6 +192,7 @@ def collect_alert_evidence(incident, task=None):
         source='builtin.alert_snapshot',
         defaults={
             'source_task': task,
+            'tool_invocation': tool_invocation,
             'scope': incident_scope(incident),
             'window_start': window_start,
             'window_end': window_end,
@@ -129,7 +217,7 @@ def _event_matches_incident(incident, event):
     return False
 
 
-def collect_event_evidence(incident, task=None, limit=20):
+def collect_event_evidence(incident, task=None, tool_invocation=None, limit=20):
     window_start, window_end = investigation_window(incident)
     candidates = (
         EventRecord.objects
@@ -166,6 +254,7 @@ def collect_event_evidence(incident, task=None, limit=20):
         source='builtin.event_timeline',
         defaults={
             'source_task': task,
+            'tool_invocation': tool_invocation,
             'scope': incident_scope(incident),
             'window_start': window_start,
             'window_end': window_end,
@@ -363,10 +452,23 @@ def create_investigation_task(incident, reason='alert_changed'):
 def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
     incident = AIOpsIncident.objects.select_for_update().get(id=incident.id)
     task = create_investigation_task(incident, reason=reason)
-    evidence_items = [
-        collect_alert_evidence(incident, task=task),
-        collect_event_evidence(incident, task=task),
-    ]
+    audit_session = _investigation_audit_session(incident)
+    alert_evidence, alert_invocation = _collect_evidence_with_audit(
+        incident,
+        task,
+        audit_session,
+        'builtin.alert_snapshot',
+        collect_alert_evidence,
+    )
+    event_evidence, event_invocation = _collect_evidence_with_audit(
+        incident,
+        task,
+        audit_session,
+        'builtin.event_timeline',
+        collect_event_evidence,
+    )
+    evidence_items = [alert_evidence, event_evidence]
+    tool_invocation_ids = [alert_invocation.id, event_invocation.id]
     hypothesis = generate_root_cause_hypothesis(incident, task=task)
     proposals = generate_remediation_proposals(incident, hypothesis)
     now = timezone.now()
@@ -380,6 +482,8 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         **(task.orchestration_state or {}),
         'completed_at': now.isoformat(),
         'evidence_count': len(evidence_items),
+        'audit_session_id': audit_session.id,
+        'tool_invocation_ids': tool_invocation_ids,
     }
     task.agent_results = [
         {
@@ -391,14 +495,15 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         }
     ]
     task.react_trace = [
-        {'phase': 'collect_alerts', 'status': 'completed', 'evidence_id': evidence_items[0].id},
-        {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[1].id},
+        {'phase': 'collect_alerts', 'status': 'completed', 'evidence_id': evidence_items[0].id, 'tool_invocation_id': alert_invocation.id},
+        {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[1].id, 'tool_invocation_id': event_invocation.id},
         {'phase': 'terminate', 'status': 'completed', 'stop_condition': '只读证据快照已刷新'},
     ]
     task.result_payload = {
         'mode': 'incident_readonly_investigation',
         'incident_id': incident.id,
         'evidence_ids': [item.id for item in evidence_items],
+        'tool_invocation_ids': tool_invocation_ids,
         'hypothesis_id': hypothesis.id,
         'proposal_ids': [item.id for item in proposals],
         'summary': '已刷新 Incident 只读调查证据、主根因假设和只读处置建议。',
@@ -429,6 +534,7 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         metadata={
             'task_id': task.id,
             'evidence_ids': [item.id for item in evidence_items],
+            'tool_invocation_ids': tool_invocation_ids,
             'hypothesis_id': hypothesis.id,
             'proposal_ids': [item.id for item in proposals],
             'reason': reason,
