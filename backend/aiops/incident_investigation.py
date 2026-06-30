@@ -687,8 +687,8 @@ def _log_sample(item):
     }
 
 
-def collect_log_evidence(incident, task=None, tool_invocation=None, limit=8):
-    window_start, window_end = investigation_window(incident)
+def build_log_snapshot_payload(incident, limit=8, window_minutes=60):
+    window_start, window_end = investigation_window(incident, minutes=window_minutes)
     start_ms = int(window_start.timestamp() * 1000)
     end_ms = int(window_end.timestamp() * 1000)
     datasources = list(LogDataSource.objects.filter(is_enabled=True).order_by('-is_default', 'provider', 'name')[:2])
@@ -746,14 +746,20 @@ def collect_log_evidence(incident, task=None, tool_invocation=None, limit=8):
         'errors': errors,
         'logs': [_log_sample(item) for item in logs],
     }
-    if not datasources:
+    return payload, window_start, window_end
+
+
+def collect_log_evidence(incident, task=None, tool_invocation=None, limit=8):
+    payload, window_start, window_end = build_log_snapshot_payload(incident, limit=limit)
+    summary_payload = payload['summary']
+    if summary_payload['datasource_count'] == 0:
         summary = '未配置启用的日志数据源，已跳过日志取证'
         weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
-    elif logs:
-        summary = f"日志取证命中 {len(logs)} 条日志，ERROR {payload['summary']['error_count']} 条，WARNING {payload['summary']['warning_count']} 条"
+    elif summary_payload['log_count']:
+        summary = f"日志取证命中 {summary_payload['log_count']} 条日志，ERROR {summary_payload['error_count']} 条，WARNING {summary_payload['warning_count']} 条"
         weight = AIOpsIncidentEvidence.WEIGHT_SUPPORTING
     else:
-        summary = f"日志取证未命中日志，查询数据源 {len(datasource_results)} 个，失败 {len(errors)} 个"
+        summary = f"日志取证未命中日志，查询数据源 {summary_payload['queried_datasource_count']} 个，失败 {summary_payload['failed_count']} 个"
         weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
     evidence, _ = AIOpsIncidentEvidence.objects.update_or_create(
         incident=incident,
@@ -996,8 +1002,8 @@ def _workload_sample(item, workload_type):
     }
 
 
-def collect_k8s_evidence(incident, task=None, tool_invocation=None, limit=8):
-    window_start, window_end = investigation_window(incident)
+def build_k8s_snapshot_payload(incident, limit=8, window_minutes=60):
+    window_start, window_end = investigation_window(incident, minutes=window_minutes)
     cluster = _select_incident_k8s_cluster(incident) if _incident_has_k8s_scope(incident) else None
     if not cluster:
         payload = {
@@ -1013,8 +1019,6 @@ def collect_k8s_evidence(incident, task=None, tool_invocation=None, limit=8):
             'pods': [],
             'workloads': [],
         }
-        summary = 'Incident 未匹配到 K8s 集群范围，已跳过 K8s 运行态取证'
-        weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
     else:
         from ops.k8s_views import get_k8s_pods_snapshot, get_k8s_resource_snapshot, get_k8s_summary_snapshot
 
@@ -1054,12 +1058,32 @@ def collect_k8s_evidence(incident, task=None, tool_invocation=None, limit=8):
             'pods': [_pod_sample(pod) for pod in pod_samples[:limit]],
             'workloads': workloads[:limit],
         }
-        if error:
-            summary = f'K8s 运行态取证失败：{error}'
-            weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
-        else:
-            summary = f"K8s 运行态：Pod {len(pods)} 个，异常 {len(abnormal_pods)} 个，重启 {len(restarting_pods)} 个，降级工作负载 {len(workloads)} 个"
-            weight = AIOpsIncidentEvidence.WEIGHT_SUPPORTING if (abnormal_pods or restarting_pods or workloads) else AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    return payload, window_start, window_end
+
+
+def collect_k8s_evidence(incident, task=None, tool_invocation=None, limit=8):
+    payload, window_start, window_end = build_k8s_snapshot_payload(incident, limit=limit)
+    summary_payload = payload['summary']
+    if not summary_payload['cluster_found']:
+        summary = 'Incident 未匹配到 K8s 集群范围，已跳过 K8s 运行态取证'
+        weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    elif summary_payload['error']:
+        summary = f"K8s 运行态取证失败：{summary_payload['error']}"
+        weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    else:
+        summary = (
+            f"K8s 运行态：Pod {summary_payload['pods_total']} 个，异常 {summary_payload['pods_abnormal']} 个，"
+            f"重启 {summary_payload['pods_restarting']} 个，降级工作负载 {summary_payload['workloads_degraded']} 个"
+        )
+        weight = (
+            AIOpsIncidentEvidence.WEIGHT_SUPPORTING
+            if (
+                summary_payload['pods_abnormal']
+                or summary_payload['pods_restarting']
+                or summary_payload['workloads_degraded']
+            )
+            else AIOpsIncidentEvidence.WEIGHT_CONTEXT
+        )
     evidence, _ = AIOpsIncidentEvidence.objects.update_or_create(
         incident=incident,
         kind=AIOpsIncidentEvidence.KIND_K8S,
@@ -1381,6 +1405,27 @@ def build_rca_evidence_package(incident, evidence_items=None, hypothesis=None):
             'missing_evidence': hypothesis.missing_evidence,
         }
     return package
+
+
+def build_verification_observation(incident, log_limit=5, window_minutes=30):
+    window_start, window_end = investigation_window(incident, minutes=window_minutes)
+    observation = {
+        'generated_at': timezone.now().isoformat(),
+        'window': {
+            'start': _iso_or_none(window_start),
+            'end': _iso_or_none(window_end),
+        },
+        'scope': incident_scope(incident),
+        'alerts': {
+            'alert_count': incident.alert_count,
+            'active_alert_count': incident.active_alert_count,
+        },
+    }
+    log_payload, _log_start, _log_end = build_log_snapshot_payload(incident, limit=log_limit, window_minutes=window_minutes)
+    observation['logs'] = _rca_log_facts(log_payload)
+    k8s_payload, _k8s_start, _k8s_end = build_k8s_snapshot_payload(incident, window_minutes=window_minutes)
+    observation['k8s'] = _rca_k8s_facts(k8s_payload)
+    return observation
 
 
 def _evidence_ids(*items):

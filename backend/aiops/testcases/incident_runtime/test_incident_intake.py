@@ -1188,8 +1188,23 @@ class IncidentApiTests(TestCase):
         self.assertFalse(AIOpsPendingAction.objects.exists())
 
     def test_verification_sync_marks_action_resolved_when_task_succeeds_without_active_alerts(self):
+        LogDataSource.objects.create(
+            name='demo-loki-verification',
+            provider='loki',
+            is_default=True,
+            config={'demo_mode': True},
+        )
+        K8sCluster.objects.create(
+            name='dev-k8s-cluster',
+            kubeconfig='demo',
+            status='connected',
+        )
+        self.incident.cluster = 'dev-k8s-cluster'
+        self.incident.namespace = 'production'
+        self.incident.resource_type = 'deployment'
+        self.incident.resource = 'api-server'
         self.incident.active_alert_count = 0
-        self.incident.save(update_fields=['active_alert_count'])
+        self.incident.save(update_fields=['cluster', 'namespace', 'resource_type', 'resource', 'active_alert_count'])
         task = HostTask.objects.create(
             name='重启 order-center',
             task_type=HostTask.TASK_RUN_COMMAND,
@@ -1235,6 +1250,14 @@ class IncidentApiTests(TestCase):
         self.assertEqual(evidence.payload['verification_status'], 'verified_resolved')
         self.assertEqual(evidence.payload['task_id'], task.id)
         self.assertEqual(evidence.payload['executions'][0]['output_preview'], 'ok')
+        observation = evidence.payload['observation']
+        self.assertEqual(observation['alerts']['active_alert_count'], 0)
+        self.assertGreaterEqual(observation['logs']['datasource_count'], 1)
+        self.assertGreaterEqual(observation['logs']['log_count'], 0)
+        self.assertTrue(observation['k8s']['cluster_found'])
+        self.assertEqual(observation['k8s']['cluster_name'], 'dev-k8s-cluster')
+        self.assertFalse(AIOpsIncidentEvidence.objects.filter(incident=self.incident, source='builtin.log_snapshot').exists())
+        self.assertFalse(AIOpsIncidentEvidence.objects.filter(incident=self.incident, source='builtin.k8s_snapshot').exists())
         knowledge = AIOpsReviewKnowledge.objects.get(slug=f'incident-{self.incident.id}-review')
         self.assertEqual(knowledge.source_refs[0]['type'], 'incident')
         self.assertIn('verified_resolved', knowledge.tags)

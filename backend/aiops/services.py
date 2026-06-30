@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import logging
 import os
 import queue
 import re
@@ -116,6 +117,7 @@ from .models import (
 )
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 class AIOpsModelCallError(ValueError):
@@ -15107,11 +15109,36 @@ def _host_task_execution_sample(execution):
     }
 
 
+def _build_incident_verification_observation(incident):
+    try:
+        from .incident_investigation import build_verification_observation
+        return build_verification_observation(incident)
+    except Exception as exc:
+        logger.exception('Failed to build verification observation for incident %s', incident.id)
+        return {
+            'generated_at': timezone.now().isoformat(),
+            'scope': {
+                'environment': incident.environment,
+                'cluster': incident.cluster,
+                'namespace': incident.namespace,
+                'service': incident.service,
+                'resource_type': incident.resource_type,
+                'resource': incident.resource,
+            },
+            'alerts': {
+                'alert_count': incident.alert_count,
+                'active_alert_count': incident.active_alert_count,
+            },
+            'error': str(exc)[:240],
+        }
+
+
 def upsert_incident_action_verification_evidence(incident_action, task, verification_status):
     if not incident_action or not task or not verification_status:
         return None
     incident = incident_action.incident
     executions = list(task.executions.order_by('id')[:8])
+    observation = _build_incident_verification_observation(incident)
     payload = {
         'incident_id': incident.id,
         'incident_action_id': incident_action.id,
@@ -15128,6 +15155,7 @@ def upsert_incident_action_verification_evidence(incident_action, task, verifica
         'skipped_count': task.skipped_count,
         'task_summary': task.summary,
         'verification_plan': incident_action.verification_plan or [],
+        'observation': observation,
         'executions': [_host_task_execution_sample(item) for item in executions],
     }
     evidence, _ = AIOpsIncidentEvidence.objects.update_or_create(
