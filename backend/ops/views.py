@@ -9,6 +9,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from aiops.models import AIOpsPendingAction
+from aiops.services import sync_incident_actions_for_pending_task
 from eventwall.mixins import EventWallModelViewSetMixin
 from eventwall.models import EventRecord
 from eventwall.services import build_json_preview, build_resource, record_event
@@ -694,10 +695,12 @@ class HostTaskViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             'created_task_id': task.id,
             'task_name': task.name,
             'materialized_in_task_center': True,
+            'execution_started': True,
         }
         if action.status != AIOpsPendingAction.STATUS_EXECUTED:
             action.status = AIOpsPendingAction.STATUS_EXECUTED
         action.save(update_fields=['status', 'result_payload', 'updated_at'])
+        sync_incident_actions_for_pending_task(action, task, request=self.request)
 
     def destroy(self, request, *args, **kwargs):
         task = self.get_object()

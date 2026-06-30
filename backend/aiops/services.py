@@ -99,6 +99,7 @@ from .models import (
     AIOpsChatMessage,
     AIOpsChatSession,
     AIOpsExternalTask,
+    AIOpsIncidentAction,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelInvocation,
@@ -14269,6 +14270,8 @@ def _build_task_center_draft_from_aiops_draft(draft, action=None):
     request_summary = payload.get('request_summary', '')
     session_id = action.session_id if action else None
     pending_action_id = action.id if action else None
+    incident_id = payload.get('incident_id')
+    incident_action_id = payload.get('incident_action_id')
     return {
         'name': payload.get('name') or 'AIOps 智能任务',
         'description': payload.get('description', ''),
@@ -14286,11 +14289,15 @@ def _build_task_center_draft_from_aiops_draft(draft, action=None):
         'host_count': payload.get('host_count') or (len(k8s_targets) if target_type == HostTask.TARGET_K8S else len(target_refs)),
         'risk_level': payload.get('risk_level') or HostTask.RISK_LOW,
         'request_summary': request_summary,
+        'incident_id': incident_id,
+        'incident_action_id': incident_action_id,
         'trigger_source': HostTask.TRIGGER_SOURCE_AIOPS,
         'source_context': {
             'source': 'aiops',
             'session_id': session_id,
             'pending_action_id': pending_action_id,
+            'incident_id': incident_id,
+            'incident_action_id': incident_action_id,
             'request_summary': request_summary,
             'reason': payload.get('reason', ''),
             'resource_environment': target_environment,
@@ -14453,6 +14460,8 @@ def _task_source_context_for_action(action, task_draft, agent, authorization):
         'session_id': action.session_id,
         'message_id': action.message_id,
         'pending_action_id': action.id,
+        'incident_id': task_draft.get('incident_id') or base_context.get('incident_id'),
+        'incident_action_id': task_draft.get('incident_action_id') or base_context.get('incident_action_id'),
         'agent_slug': agent.slug if agent else '',
         'agent_name': agent.name if agent else '',
         'execution_policy': agent.execution_policy if agent else AIOpsAgentProfile.EXECUTION_MANUAL_CONFIRM,
@@ -14499,6 +14508,8 @@ def _create_and_start_task_center_task_from_action(action, user, task_draft, age
             'source': 'aiops',
             'session_id': action.session_id,
             'pending_action_id': action.id,
+            'incident_id': task_draft.get('incident_id'),
+            'incident_action_id': task_draft.get('incident_action_id'),
             'request_summary': task_draft.get('request_summary') or '',
             'target_refs': task_draft.get('target_refs') or [],
             'resource_ids': task_draft.get('resource_ids') or [],
@@ -14573,6 +14584,67 @@ def _create_and_start_task_center_task_from_action(action, user, task_draft, age
     return task
 
 
+def sync_incident_actions_for_pending_task(action, task, request=None):
+    if not action or not task:
+        return 0
+    incident_actions = list(
+        AIOpsIncidentAction.objects
+        .select_related('incident')
+        .filter(pending_action=action)
+    )
+    if not incident_actions:
+        return 0
+
+    updated_count = 0
+    result_summary = f'已确认载入任务中心并开始执行，任务 #{task.id} {task.name}。'
+    for incident_action in incident_actions:
+        update_fields = ['host_task', 'updated_at']
+        original_status = incident_action.status
+        can_mark_started = original_status in {
+            AIOpsIncidentAction.STATUS_PROPOSED,
+            AIOpsIncidentAction.STATUS_APPROVED,
+        }
+        incident_action.host_task = task
+        if can_mark_started:
+            incident_action.status = AIOpsIncidentAction.STATUS_RUNNING
+            update_fields.append('status')
+        if can_mark_started and incident_action.verification_status in {'', 'approval_pending'}:
+            incident_action.verification_status = 'execution_started'
+            update_fields.append('verification_status')
+        if can_mark_started and (
+            not incident_action.result_summary
+            or incident_action.result_summary.startswith('已生成审批事项')
+        ):
+            incident_action.result_summary = result_summary
+            update_fields.append('result_summary')
+        incident_action.save(update_fields=update_fields)
+        updated_count += 1
+        record_event(
+            request=request,
+            module='aiops',
+            category='incident',
+            action='incident_action_task_started',
+            title='Incident 建议动作已进入任务中心',
+            summary=f'Incident #{incident_action.incident_id} 建议动作已启动任务 {task.name}',
+            result=EventRecord.RESULT_PENDING,
+            resource_type='aiops_incident_action',
+            resource_id=incident_action.id,
+            resource_name=incident_action.title,
+            environment=incident_action.incident.environment,
+            application=incident_action.incident.service,
+            severity=EventRecord.SEVERITY_INFO,
+            correlation_id=f'aiops_incident:{incident_action.incident_id}',
+            metadata={
+                'incident_id': incident_action.incident_id,
+                'incident_action_id': incident_action.id,
+                'pending_action_id': action.id,
+                'task_id': task.id,
+                'task_status': task.status,
+            },
+        )
+    return updated_count
+
+
 def _execute_pending_action_in_task_center(action, user, agent, mode='manual_confirm', request=None):
     task_draft = _build_task_center_draft_from_aiops_draft(action.action_payload or {}, action=action)
     authorization = _authorization_snapshot_for_action(action, user, agent, mode=mode)
@@ -14597,6 +14669,7 @@ def _execute_pending_action_in_task_center(action, user, agent, mode='manual_con
         'task_draft': task_draft,
     }
     action.save(update_fields=['status', 'result_payload', 'updated_at'])
+    sync_incident_actions_for_pending_task(action, task, request=request)
     return task_draft, task, authorization
 
 

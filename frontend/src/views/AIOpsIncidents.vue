@@ -172,6 +172,7 @@
               <div class="evidence-summary">{{ item.title }}</div>
               <div v-for="step in item.verification_plan || []" :key="step" class="sub-line">- {{ step }}</div>
               <div v-if="item.pending_action" class="sub-line">审批事项：#{{ item.pending_action }} · {{ item.pending_action_status_display || item.pending_action_status || '待确认' }}</div>
+              <div v-if="item.host_task" class="sub-line">任务中心：#{{ item.host_task }} · {{ item.host_task_name || '未命名任务' }} · {{ item.host_task_status || 'pending' }}</div>
               <div v-if="item.result_summary" class="sub-line">结果：{{ item.result_summary }}</div>
             </div>
             <div class="action-controls">

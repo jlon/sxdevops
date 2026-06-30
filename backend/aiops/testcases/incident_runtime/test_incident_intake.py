@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.authtoken.models import Token
@@ -357,6 +359,50 @@ class IncidentApiTests(TestCase):
         self.assertEqual(response_action['pending_action_status'], AIOpsPendingAction.STATUS_PENDING)
         self.assertEqual(response_action['pending_action_status_display'], '待确认')
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='materialize_incident_action').exists())
+
+    @patch('aiops.services.start_host_task')
+    def test_confirm_materialized_incident_action_syncs_task_link(self, mocked_start_host_task):
+        host = Host.objects.create(hostname='order-host-03', ip_address='10.0.1.23', environment='prod', status='online')
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            title='重启 order-center',
+            action_type=AIOpsIncidentAction.ACTION_FIX,
+            risk_level=AIOpsIncidentAction.RISK_HIGH,
+            status=AIOpsIncidentAction.STATUS_PROPOSED,
+            action_payload={
+                'name': '重启 order-center',
+                'target_type': HostTask.TARGET_HOST,
+                'task_type': HostTask.TASK_RUN_COMMAND,
+                'payload': {'command': 'systemctl restart order-center'},
+                'target_refs': [{'source': 'host', 'id': host.id}],
+                'host_count': 1,
+                'execution_mode': HostTask.EXECUTION_MODE_SSH,
+                'execution_strategy': HostTask.STRATEGY_STOP_ON_ERROR,
+            },
+            verification_plan=['确认服务恢复'],
+        )
+        materialize_response = self.client.post(f'/api/aiops/incidents/{self.incident.id}/actions/{action.id}/materialize/')
+        self.assertEqual(materialize_response.status_code, 200, materialize_response.data)
+        action.refresh_from_db()
+
+        confirm_response = self.client.post(f'/api/aiops/actions/{action.pending_action_id}/confirm/', {}, format='json')
+
+        self.assertEqual(confirm_response.status_code, 200, confirm_response.data)
+        action.refresh_from_db()
+        pending_action = action.pending_action
+        pending_action.refresh_from_db()
+        task = HostTask.objects.get(id=pending_action.result_payload['task_id'])
+        self.assertEqual(action.host_task_id, task.id)
+        self.assertEqual(action.status, AIOpsIncidentAction.STATUS_RUNNING)
+        self.assertEqual(action.verification_status, 'execution_started')
+        self.assertIn(f'任务 #{task.id}', action.result_summary)
+        self.assertEqual(task.source_context['incident_id'], self.incident.id)
+        self.assertEqual(task.source_context['incident_action_id'], action.id)
+        self.assertEqual(task.selection_filters['incident_id'], self.incident.id)
+        self.assertEqual(task.selection_filters['incident_action_id'], action.id)
+        self.assertTrue(pending_action.result_payload['execution_started'])
+        mocked_start_host_task.assert_called_once()
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_task_started').exists())
 
     def test_materialize_incident_action_is_idempotent(self):
         host = Host.objects.create(hostname='order-host-02', ip_address='10.0.1.22', environment='prod', status='online')
