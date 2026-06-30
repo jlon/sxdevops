@@ -23,7 +23,7 @@ from aiops.models import (
 )
 from aiops.services import sync_incident_action_verification_for_task, sync_session_to_demo_if_needed
 from eventwall.models import EventRecord
-from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution, TaskResource, TaskResourceGroup
+from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution, MetricDataSource, TaskResource, TaskResourceGroup
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -83,7 +83,7 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 1)
         link = AIOpsIncidentAlert.objects.get(incident=incident, alert=alert)
         self.assertEqual(link.role, AIOpsIncidentAlert.ROLE_PRIMARY)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 3)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 4)
         alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
         event_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.event_timeline')
         resource_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.task_resource_scope')
@@ -95,14 +95,14 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(resource_evidence.tool_invocation.tool_name, 'builtin.task_resource_scope')
         self.assertEqual(
             set(AIOpsToolInvocation.objects.filter(session__context__source='incident_background_investigation').values_list('tool_name', flat=True)),
-            {'builtin.alert_snapshot', 'builtin.event_timeline', 'builtin.task_resource_scope'},
+            {'builtin.alert_snapshot', 'builtin.metric_snapshot', 'builtin.event_timeline', 'builtin.task_resource_scope'},
         )
         task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['incident_id'], incident.id)
-        self.assertEqual(len(task.result_payload['tool_invocation_ids']), 3)
-        self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 3)
-        self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:3]))
+        self.assertEqual(len(task.result_payload['tool_invocation_ids']), 4)
+        self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 4)
+        self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:4]))
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
         self.assertTrue(hypothesis.supporting_evidence_ids)
@@ -137,7 +137,7 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 2)
         self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_CRITICAL)
         self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident).count(), 2)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 3)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 4)
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 2)
         alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
         self.assertEqual(len(alert_evidence.payload['alerts']), 2)
@@ -162,7 +162,7 @@ class IncidentAlertIntakeTests(TestCase):
         lifecycle_events = EventRecord.objects.filter(module='aiops', category='incident').exclude(action='investigate_incident')
         self.assertEqual(lifecycle_events.count(), 1)
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 1)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 3)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 4)
         self.assertEqual(AIOpsIncidentHypothesis.objects.filter(incident=incident).count(), 1)
         self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident).count(), 1)
 
@@ -297,6 +297,97 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(set(inventory['node_names']), {'hbase-master', 'hbase-regionserver-1', 'hbase-regionserver-2', 'rs-backup-3'})
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
+
+    @patch('aiops.incident_investigation.execute_promql_query')
+    def test_incident_investigation_collects_metric_evidence(self, mocked_promql):
+        metric_source = MetricDataSource.objects.create(
+            name='hbase-prometheus',
+            environment='本地 HBase 集群',
+            is_default=True,
+            config={'query_url': 'http://prometheus.local:9090'},
+        )
+        alert = Alert.objects.create(
+            title='HBase RegionServer RPC Latency High',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='RegionServer latency is high',
+            environment='本地 HBase 集群',
+            cluster='hbase-local',
+            namespace='middleware',
+            service='hbase',
+            resource_type='service',
+            resource='hbase-regionserver',
+            metric_name='http_requests_total',
+            fingerprint='hbase-rs-latency-metric-scope',
+            group_key='hbase-regionserver-metric-scope',
+            labels={'service': 'hbase', 'namespace': 'middleware'},
+        )
+        mocked_promql.return_value = {
+            'query': 'mock',
+            'range': True,
+            'source': 'metric_datasource',
+            'metric_datasource': {'id': metric_source.id, 'name': metric_source.name},
+            'series_count': 1,
+            'result': [{
+                'metric': {'service': 'hbase', 'namespace': 'middleware'},
+                'values': [
+                    [1710000000, '1'],
+                    [1710000060, '1'],
+                    [1710000120, '5'],
+                ],
+            }],
+            'sample': [],
+        }
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='test_metric_scope')
+
+        evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.metric_snapshot')
+        self.assertEqual(evidence.kind, AIOpsIncidentEvidence.KIND_METRIC)
+        self.assertEqual(evidence.tool_invocation.tool_name, 'builtin.metric_snapshot')
+        self.assertEqual(evidence.payload['summary']['alert_id'], alert.id)
+        self.assertGreaterEqual(evidence.payload['summary']['planned_count'], 1)
+        self.assertGreaterEqual(evidence.payload['summary']['abnormal_count'], 1)
+        self.assertEqual(evidence.payload['summary']['metric_datasource_id'], metric_source.id)
+        mocked_promql.assert_called()
+        self.assertTrue(mocked_promql.call_args.kwargs['prefer_metric_datasource'])
+        self.assertEqual(mocked_promql.call_args.kwargs['metric_datasource_id'], metric_source.id)
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
+
+    @patch('aiops.incident_investigation.execute_promql_query')
+    def test_incident_investigation_skips_metric_query_without_datasource(self, mocked_promql):
+        alert = Alert.objects.create(
+            title='HBase RegionServer RPC Latency High',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='RegionServer latency is high',
+            environment='本地 HBase 集群',
+            cluster='hbase-local',
+            namespace='middleware',
+            service='hbase',
+            resource_type='service',
+            resource='hbase-regionserver',
+            metric_name='http_requests_total',
+            fingerprint='hbase-rs-latency-no-ds',
+            group_key='hbase-regionserver-no-ds',
+            labels={'service': 'hbase', 'namespace': 'middleware'},
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='test_metric_no_datasource')
+
+        evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.metric_snapshot')
+        self.assertGreaterEqual(evidence.payload['summary']['planned_count'], 1)
+        self.assertEqual(evidence.payload['summary']['failed_count'], evidence.payload['summary']['planned_count'])
+        self.assertIn('未配置启用的指标数据源', evidence.payload['evidence'][0]['error'])
+        mocked_promql.assert_not_called()
 
     def test_alert_detail_can_link_existing_incident(self):
         user = User.objects.create_user(username='alert-linker', password='Passw0rd!123')
@@ -649,7 +740,7 @@ class IncidentApiTests(TestCase):
         task = AIOpsExternalTask.objects.filter(action_code='incident.investigate').order_by('-id').first()
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['reason'], 'manual_followup')
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident).count(), 3)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident).count(), 4)
         self.assertTrue(AIOpsIncidentEvidence.objects.filter(incident=self.incident, source='builtin.task_resource_scope').exists())
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='run_incident_action').exists())
         response_action = next(item for item in response.data['incident_actions'] if item['id'] == action.id)

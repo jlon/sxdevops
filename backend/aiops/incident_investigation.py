@@ -10,8 +10,10 @@ from django.utils import timezone
 
 from eventwall.models import EventRecord
 from eventwall.services import record_event
-from ops.models import Alert, TaskResource
+from ops.models import Alert, MetricDataSource, TaskResource
+from ops.observability_views import execute_promql_query
 
+from . import metric_evidence
 from .models import (
     AIOpsChatSession,
     AIOpsExternalTask,
@@ -459,6 +461,139 @@ def collect_task_resource_evidence(incident, task=None, tool_invocation=None, li
     return evidence
 
 
+def _primary_alert_for_metric_evidence(incident):
+    primary_link = (
+        incident.alert_links
+        .select_related('alert')
+        .filter(role='primary')
+        .order_by('created_at', 'id')
+        .first()
+    )
+    if primary_link:
+        return primary_link.alert
+    fallback_link = (
+        incident.alert_links
+        .select_related('alert')
+        .order_by('created_at', 'id')
+        .first()
+    )
+    return fallback_link.alert if fallback_link else None
+
+
+def _select_incident_metric_datasource_id(incident):
+    queryset = MetricDataSource.objects.filter(is_enabled=True)
+    if incident.environment:
+        datasource = queryset.filter(environment=incident.environment).order_by('-is_default', 'name').first()
+        if datasource:
+            return datasource.id
+    datasource = queryset.filter(is_default=True).order_by('environment', 'name').first()
+    if datasource:
+        return datasource.id
+    datasource = queryset.order_by('environment', '-is_default', 'name').first()
+    return datasource.id if datasource else ''
+
+
+def _metric_failure(plan_item, error):
+    return {
+        'name': plan_item.get('name'),
+        'category': plan_item.get('category'),
+        'intent': plan_item.get('intent'),
+        'weight': plan_item.get('weight'),
+        'promql': plan_item.get('promql'),
+        'status': 'failed',
+        'trend': 'unknown',
+        'series_count': 0,
+        'series': [],
+        'error': str(error)[:240],
+    }
+
+
+def collect_metric_evidence(incident, task=None, tool_invocation=None, budget=2, step=60):
+    alert = _primary_alert_for_metric_evidence(incident)
+    window_start, window_end = investigation_window(incident)
+    if not alert:
+        payload = {
+            'summary': {
+                'alert_id': None,
+                'planned_count': 0,
+                'executed_count': 0,
+                'abnormal_count': 0,
+                'missing_count': 0,
+                'failed_count': 0,
+                'metric_datasource_id': '',
+            },
+            'plan': [],
+            'evidence': [],
+        }
+        summary = '未找到关联告警，已跳过指标取证'
+        weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    else:
+        plan = metric_evidence.build_alert_metric_query_plan(alert, budget=budget)
+        datasource_id = _select_incident_metric_datasource_id(incident)
+        collected = []
+        failures = []
+        for item in plan:
+            if not datasource_id:
+                failure = _metric_failure(item, '未配置启用的指标数据源')
+                collected.append(failure)
+                failures.append(failure)
+                continue
+            try:
+                payload = execute_promql_query(
+                    item['promql'],
+                    range_query=True,
+                    start_time=window_start,
+                    end_time=window_end,
+                    step=step,
+                    metric_datasource_id=datasource_id or '',
+                    environment=incident.environment or alert.environment or '',
+                    prefer_metric_datasource=True,
+                )
+                collected.append(metric_evidence.summarize_metric_query_result(item, payload))
+            except Exception as exc:
+                failure = _metric_failure(item, exc)
+                collected.append(failure)
+                failures.append(failure)
+        abnormal_count = len([item for item in collected if item.get('status') == 'abnormal'])
+        missing_count = len([item for item in collected if item.get('status') == 'missing'])
+        failed_count = len(failures)
+        payload = {
+            'summary': {
+                'alert_id': alert.id,
+                'fingerprint': alert.fingerprint,
+                'planned_count': len(plan),
+                'executed_count': len(collected),
+                'abnormal_count': abnormal_count,
+                'missing_count': missing_count,
+                'failed_count': failed_count,
+                'metric_datasource_id': datasource_id or '',
+                'step': step,
+                'window': {'start': window_start.isoformat(), 'end': window_end.isoformat()},
+            },
+            'plan': plan,
+            'evidence': collected,
+        }
+        summary = f'指标取证计划 {len(plan)} 项，执行 {len(collected)} 项，异常 {abnormal_count} 项，无数据 {missing_count} 项，失败 {failed_count} 项'
+        weight = AIOpsIncidentEvidence.WEIGHT_SUPPORTING if collected else AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    evidence, _ = AIOpsIncidentEvidence.objects.update_or_create(
+        incident=incident,
+        kind=AIOpsIncidentEvidence.KIND_METRIC,
+        source='builtin.metric_snapshot',
+        defaults={
+            'source_task': task,
+            'tool_invocation': tool_invocation,
+            'scope': incident_scope(incident),
+            'window_start': window_start,
+            'window_end': window_end,
+            'summary': summary,
+            'payload': payload,
+            'weight': weight,
+            'collected_at': timezone.now(),
+        },
+    )
+    return evidence
+
+
 def _evidence_by_source(incident):
     return {
         evidence.source: evidence
@@ -489,6 +624,23 @@ def _task_resource_count(evidence):
         return int(summary.get('count') or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _metric_summary(evidence):
+    payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
+    summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+    def _int_value(key):
+        try:
+            return int(summary.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return {
+        'planned_count': _int_value('planned_count'),
+        'executed_count': _int_value('executed_count'),
+        'abnormal_count': _int_value('abnormal_count'),
+        'missing_count': _int_value('missing_count'),
+        'failed_count': _int_value('failed_count'),
+    }
 
 
 def _primary_alert_title(evidence, incident):
@@ -522,31 +674,39 @@ def generate_root_cause_hypothesis(incident, task=None):
     alert_evidence = evidence.get('builtin.alert_snapshot')
     event_evidence = evidence.get('builtin.event_timeline')
     resource_evidence = evidence.get('builtin.task_resource_scope')
+    metric_evidence_item = evidence.get('builtin.metric_snapshot')
     event_count = _event_count(event_evidence)
     alert_count = _alert_count(alert_evidence)
     resource_count = _task_resource_count(resource_evidence)
+    metric_summary = _metric_summary(metric_evidence_item)
     if event_count:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_CHANGE_REGRESSION
         title = f'{incident.service or incident.title} 可能受近期事件或变更影响'
         summary = f'Incident 时间窗内存在 {event_count} 条相关事件，需要结合告警、日志和变更内容验证是否为直接诱因。'
         confidence = 0.62 if alert_count else 0.48
-        supporting_ids = _evidence_ids(alert_evidence, event_evidence, resource_evidence)
+        supporting_ids = _evidence_ids(alert_evidence, event_evidence, metric_evidence_item, resource_evidence)
         missing = ['缺少事件详情与异常指标之间的直接因果证据。']
     elif alert_count:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM
         primary_alert = _primary_alert_title(alert_evidence, incident)
         title = f'{incident.service or incident.resource or incident.title} 出现 {primary_alert} 告警症状'
         summary = f'当前主要证据来自 {alert_count} 条关联告警，尚不足以判定底层根因。'
-        confidence = 0.45
-        supporting_ids = _evidence_ids(alert_evidence, resource_evidence)
-        missing = ['缺少指标、日志、Trace、K8s 或变更证据，暂不能确认根因类型。']
+        confidence = 0.55 if metric_summary['abnormal_count'] else 0.45
+        supporting_ids = _evidence_ids(alert_evidence, metric_evidence_item, resource_evidence)
+        missing = ['缺少日志、Trace、K8s 或变更证据，暂不能确认根因类型。']
     else:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_UNKNOWN
         title = f'{incident.title} 根因待确认'
         summary = '当前 Incident 尚缺少可用证据，只能保持未知根因。'
         confidence = 0.2
-        supporting_ids = _evidence_ids(resource_evidence)
+        supporting_ids = _evidence_ids(metric_evidence_item, resource_evidence)
         missing = ['缺少告警、指标、日志、Trace、K8s 和变更证据。']
+    if metric_summary['planned_count'] == 0:
+        missing.append('未生成可执行指标查询计划，需补充告警指标名或服务/资源标签。')
+    elif metric_summary['executed_count'] == 0:
+        missing.append('指标查询未执行成功，需确认 Prometheus 或指标数据源配置。')
+    elif metric_summary['missing_count'] or metric_summary['failed_count']:
+        missing.append('部分指标无数据或查询失败，需确认指标标签、PromQL 和数据源状态。')
     if resource_count == 0:
         missing.append('缺少当前 Incident 范围的资源底座映射，影响后续执行目标确认。')
     recommended = _recommended_next_checks(incident, event_count, resource_count)
@@ -643,6 +803,7 @@ def create_investigation_task(incident, reason='alert_changed'):
         input_payload=payload,
         plan_steps=[
             {'tool': 'builtin.alert_snapshot', 'title': '采集关联告警快照', 'risk_level': 'read_only', 'status': 'running'},
+            {'tool': 'builtin.metric_snapshot', 'title': '采集指标趋势快照', 'risk_level': 'read_only', 'status': 'pending'},
             {'tool': 'builtin.event_timeline', 'title': '采集相关事件时间线', 'risk_level': 'read_only', 'status': 'pending'},
             {'tool': 'builtin.task_resource_scope', 'title': '采集资源底座范围', 'risk_level': 'read_only', 'status': 'pending'},
         ],
@@ -656,34 +817,56 @@ def create_investigation_task(incident, reason='alert_changed'):
     )
 
 
-@transaction.atomic
-def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
-    incident = AIOpsIncident.objects.select_for_update().get(id=incident.id)
+def _mark_investigation_task_failed(task, error):
+    task.status = AIOpsExternalTask.STATUS_FAILED
+    task.error_message = str(error)[:255]
+    task.result_payload = {
+        'mode': 'incident_readonly_investigation',
+        'incident_id': task.input_payload.get('incident_id') if isinstance(task.input_payload, dict) else None,
+        'error': str(error),
+    }
+    task.save(update_fields=['status', 'error_message', 'result_payload', 'updated_at'])
+    return task
+
+
+def _run_readonly_investigation_internal(incident, reason='alert_changed'):
+    incident = AIOpsIncident.objects.get(id=incident.id)
     task = create_investigation_task(incident, reason=reason)
     audit_session = _investigation_audit_session(incident)
-    alert_evidence, alert_invocation = _collect_evidence_with_audit(
-        incident,
-        task,
-        audit_session,
-        'builtin.alert_snapshot',
-        collect_alert_evidence,
-    )
-    event_evidence, event_invocation = _collect_evidence_with_audit(
-        incident,
-        task,
-        audit_session,
-        'builtin.event_timeline',
-        collect_event_evidence,
-    )
-    resource_evidence, resource_invocation = _collect_evidence_with_audit(
-        incident,
-        task,
-        audit_session,
-        'builtin.task_resource_scope',
-        collect_task_resource_evidence,
-    )
-    evidence_items = [alert_evidence, event_evidence, resource_evidence]
-    tool_invocation_ids = [alert_invocation.id, event_invocation.id, resource_invocation.id]
+    try:
+        alert_evidence, alert_invocation = _collect_evidence_with_audit(
+            incident,
+            task,
+            audit_session,
+            'builtin.alert_snapshot',
+            collect_alert_evidence,
+        )
+        metric_evidence_item, metric_invocation = _collect_evidence_with_audit(
+            incident,
+            task,
+            audit_session,
+            'builtin.metric_snapshot',
+            collect_metric_evidence,
+        )
+        event_evidence, event_invocation = _collect_evidence_with_audit(
+            incident,
+            task,
+            audit_session,
+            'builtin.event_timeline',
+            collect_event_evidence,
+        )
+        resource_evidence, resource_invocation = _collect_evidence_with_audit(
+            incident,
+            task,
+            audit_session,
+            'builtin.task_resource_scope',
+            collect_task_resource_evidence,
+        )
+    except Exception as exc:
+        _mark_investigation_task_failed(task, exc)
+        raise
+    evidence_items = [alert_evidence, metric_evidence_item, event_evidence, resource_evidence]
+    tool_invocation_ids = [alert_invocation.id, metric_invocation.id, event_invocation.id, resource_invocation.id]
     hypothesis = generate_root_cause_hypothesis(incident, task=task)
     proposals = generate_remediation_proposals(incident, hypothesis)
     now = timezone.now()
@@ -711,8 +894,9 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
     ]
     task.react_trace = [
         {'phase': 'collect_alerts', 'status': 'completed', 'evidence_id': evidence_items[0].id, 'tool_invocation_id': alert_invocation.id},
-        {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[1].id, 'tool_invocation_id': event_invocation.id},
-        {'phase': 'collect_task_resources', 'status': 'completed', 'evidence_id': evidence_items[2].id, 'tool_invocation_id': resource_invocation.id},
+        {'phase': 'collect_metrics', 'status': 'completed', 'evidence_id': evidence_items[1].id, 'tool_invocation_id': metric_invocation.id},
+        {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[2].id, 'tool_invocation_id': event_invocation.id},
+        {'phase': 'collect_task_resources', 'status': 'completed', 'evidence_id': evidence_items[3].id, 'tool_invocation_id': resource_invocation.id},
         {'phase': 'terminate', 'status': 'completed', 'stop_condition': '只读证据快照已刷新'},
     ]
     task.result_payload = {
@@ -759,22 +943,8 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
     return task
 
 
-def _record_failed_investigation_task(incident, reason, error):
-    incident = AIOpsIncident.objects.get(id=incident.id)
-    task = create_investigation_task(incident, reason=reason)
-    task.status = AIOpsExternalTask.STATUS_FAILED
-    task.error_message = str(error)[:255]
-    task.result_payload = {'mode': 'incident_readonly_investigation', 'incident_id': incident.id, 'error': str(error)}
-    task.save(update_fields=['status', 'error_message', 'result_payload', 'updated_at'])
-    return task
-
-
 def run_readonly_investigation(incident, reason='alert_changed'):
-    try:
-        return _run_readonly_investigation_atomic(incident, reason=reason)
-    except Exception as exc:
-        _record_failed_investigation_task(incident, reason, exc)
-        raise
+    return _run_readonly_investigation_internal(incident, reason=reason)
 
 
 def schedule_readonly_investigation(incident, reason='alert_changed'):
