@@ -16519,6 +16519,64 @@ def _request_model_completion(provider, payload, *, session=None, message=None, 
     raise AIOpsModelCallError(detail)
 
 
+def _parse_json_object_from_model_text(text):
+    value = str(text or '').strip()
+    if not value:
+        return {}
+    if value.startswith('```'):
+        value = re.sub(r'^```(?:json)?\s*', '', value, flags=re.IGNORECASE)
+        value = re.sub(r'\s*```$', '', value).strip()
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        match = re.search(r'\{[\s\S]*\}', value)
+        if not match:
+            return {}
+        try:
+            parsed = json.loads(match.group(0))
+        except ValueError:
+            return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def generate_incident_llm_root_cause(incident, rca_input, task=None):
+    provider = get_active_provider(get_agent_config())
+    if not _provider_is_ready(provider):
+        return None
+    allowed_types = [key for key, _label in AIOpsIncidentHypothesis.ROOT_CAUSE_TYPE_CHOICES]
+    evidence_ids = [
+        item.get('id')
+        for item in (rca_input.get('evidence') or [])
+        if isinstance(item, dict) and item.get('id')
+    ]
+    prompt = (
+        '你是 SxDevOps 的 AIOps RCA Planner。只能基于输入 JSON 中的事实生成根因假设，不得编造未观测事实。\n'
+        '必须输出严格 JSON 对象，不要输出 Markdown。\n'
+        f'root_cause_type 只能是：{", ".join(allowed_types)}。\n'
+        f'supporting_evidence_ids 和 counter_evidence_ids 只能使用这些证据 ID：{evidence_ids}。\n'
+        'JSON 字段：title, root_cause_type, confidence, supporting_evidence_ids, counter_evidence_ids, '
+        'missing_evidence, recommended_next_checks, summary。\n'
+        '证据不足时使用 root_cause_type=unknown，并把缺口写入 missing_evidence。\n\n'
+        f'RCA_INPUT:\n{json.dumps(rca_input, ensure_ascii=False)}'
+    )
+    completion = _request_model_completion(
+        provider,
+        {
+            'model': provider.default_model,
+            'temperature': 0,
+            'max_tokens': min(provider.max_tokens or 1200, 1600),
+            'messages': [
+                {'role': 'system', 'content': '你是严谨的智能运维根因分析器，只输出 JSON。'},
+                {'role': 'user', 'content': prompt},
+            ],
+        },
+        purpose=AIOpsModelInvocation.PURPOSE_CHAT_PLANNING,
+    )
+    choice = ((completion or {}).get('choices') or [{}])[0]
+    message = choice.get('message') or {}
+    return _parse_json_object_from_model_text(_extract_message_content(message))
+
+
 def test_model_provider_connection(provider):
     if not _provider_is_ready(provider):
         return {'status': 'failed', 'message': get_model_provider_setup_hint(provider) or '请完善 Base URL、模型和 API Key'}

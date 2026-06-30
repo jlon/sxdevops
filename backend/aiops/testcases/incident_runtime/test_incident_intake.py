@@ -5,7 +5,7 @@ from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from aiops.incident_investigation import run_readonly_investigation
+from aiops.incident_investigation import register_llm_rca_planner, run_readonly_investigation
 from aiops.conversation_context import build_session_memory_snapshot
 from aiops.models import (
     AIOpsChatSession,
@@ -34,12 +34,16 @@ User = get_user_model()
 class IncidentAlertIntakeTests(TestCase):
     def setUp(self):
         ensure_builtin_rbac()
+        register_llm_rca_planner(None)
         self.integration = AlertIntegration.objects.create(
             name='Prometheus',
             provider=Alert.SOURCE_PROMETHEUS,
             default_labels={'environment': 'prod'},
         )
         self.client = APIClient()
+
+    def tearDown(self):
+        register_llm_rca_planner(None)
 
     def post_alertmanager(self, alerts, group_key='service=order'):
         with self.captureOnCommitCallbacks(execute=True):
@@ -431,6 +435,118 @@ class IncidentAlertIntakeTests(TestCase):
 
         self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident, action_type=AIOpsIncidentAction.ACTION_INVESTIGATE).count(), 1)
         self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident, action_type=AIOpsIncidentAction.ACTION_VERIFY).count(), 1)
+
+    def test_llm_rca_planner_can_promote_structured_primary_hypothesis(self):
+        captured = {}
+
+        def fake_planner(incident, rca_input, task=None):
+            captured['rca_input'] = rca_input
+            alert_item = next(item for item in rca_input['evidence'] if item['source'] == 'builtin.alert_snapshot')
+            return {
+                'title': 'order-center 可能存在依赖错误',
+                'root_cause_type': AIOpsIncidentHypothesis.TYPE_DEPENDENCY_FAILURE,
+                'confidence': 0.71,
+                'supporting_evidence_ids': [alert_item['id']],
+                'counter_evidence_ids': [],
+                'missing_evidence': ['缺少下游依赖 Trace 详情'],
+                'recommended_next_checks': ['补查下游依赖错误链路'],
+                'summary': '基于当前告警和证据包，优先怀疑下游依赖失败。',
+            }
+
+        register_llm_rca_planner(fake_planner)
+        alert = Alert.objects.create(
+            title='Order Dependency Error',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='order dependency failed',
+            environment='prod',
+            service='order-center',
+            resource='order-center',
+            fingerprint='order-llm-rca',
+            group_key='order-llm-rca',
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='test_llm_rca')
+
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertEqual(hypothesis.generated_by, 'llm_rca_planner')
+        self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_DEPENDENCY_FAILURE)
+        self.assertEqual(float(hypothesis.confidence), 0.71)
+        self.assertTrue(hypothesis.supporting_evidence_ids)
+        self.assertEqual(captured['rca_input']['incident']['id'], incident.id)
+        task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
+        self.assertEqual(task.orchestration_state['rca_input']['hypothesis']['id'], hypothesis.id)
+
+    def test_llm_rca_planner_rejects_unobserved_evidence_ids(self):
+        def fake_planner(incident, rca_input, task=None):
+            return {
+                'title': 'order-center 可能存在依赖错误',
+                'root_cause_type': AIOpsIncidentHypothesis.TYPE_DEPENDENCY_FAILURE,
+                'confidence': 0.91,
+                'supporting_evidence_ids': [999999],
+                'counter_evidence_ids': [],
+                'missing_evidence': [],
+                'recommended_next_checks': [],
+                'summary': '这个结论引用了不存在的证据。',
+            }
+
+        register_llm_rca_planner(fake_planner)
+        alert = Alert.objects.create(
+            title='Order Error High',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='order errors are high',
+            environment='prod',
+            service='order-center',
+            resource='order-center',
+            fingerprint='order-llm-invalid-rca',
+            group_key='order-llm-invalid-rca',
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='test_invalid_llm_rca')
+
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertEqual(hypothesis.generated_by, 'rule_based')
+        self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
+
+    def test_llm_rca_planner_failure_falls_back_to_rule_hypothesis(self):
+        def failing_planner(incident, rca_input, task=None):
+            raise RuntimeError('model timeout')
+
+        register_llm_rca_planner(failing_planner)
+        alert = Alert.objects.create(
+            title='Order Error High',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='order errors are high',
+            environment='prod',
+            service='order-center',
+            resource='order-center',
+            fingerprint='order-llm-timeout-rca',
+            group_key='order-llm-timeout-rca',
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        with self.assertLogs('aiops.incident_investigation', level='ERROR') as logs:
+            run_readonly_investigation(incident, reason='test_failed_llm_rca')
+
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
+        self.assertIn('LLM RCA planner failed', '\n'.join(logs.output))
+        self.assertEqual(hypothesis.generated_by, 'rule_based')
+        self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
+        self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
 
     @patch('aiops.incident_investigation.execute_promql_query')
     def test_incident_investigation_collects_metric_evidence(self, mocked_promql):

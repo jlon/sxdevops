@@ -59,6 +59,9 @@ RCA_EVIDENCE_SOURCE_ORDER = (
     'builtin.event_timeline',
     'builtin.task_resource_scope',
 )
+LLM_RCA_GENERATED_BY = 'llm_rca_planner'
+RULE_RCA_GENERATED_BY = 'rule_based'
+_LLM_RCA_PLANNER = None
 
 
 def _safe_dict(value):
@@ -79,6 +82,11 @@ def _short_text(value, limit=RCA_TEXT_LIMIT):
 
 def _iso_or_none(value):
     return value.isoformat() if value else None
+
+
+def register_llm_rca_planner(planner):
+    global _LLM_RCA_PLANNER
+    _LLM_RCA_PLANNER = planner
 
 
 def incident_scope(incident):
@@ -1542,6 +1550,98 @@ def _recommended_next_checks(incident, event_count, resource_count=None):
     return checks
 
 
+def _safe_float(value, default=0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_string_list(value, limit=8):
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value[:limit]:
+        text = _short_text(item, 220)
+        if text:
+            result.append(text)
+    return result
+
+
+def _safe_evidence_id_list(value, allowed_ids, limit=12):
+    if not isinstance(value, list):
+        return []
+    result = []
+    seen = set()
+    for item in value[:limit]:
+        evidence_id = _safe_int(item)
+        if evidence_id and evidence_id in allowed_ids and evidence_id not in seen:
+            seen.add(evidence_id)
+            result.append(evidence_id)
+    return result
+
+
+def _normalize_llm_hypothesis_payload(payload, rca_input):
+    if not isinstance(payload, dict):
+        return None
+    allowed_types = {key for key, _label in AIOpsIncidentHypothesis.ROOT_CAUSE_TYPE_CHOICES}
+    root_cause_type = str(payload.get('root_cause_type') or '').strip()
+    if root_cause_type not in allowed_types:
+        return None
+    evidence_items = rca_input.get('evidence') if isinstance(rca_input, dict) else []
+    allowed_ids = {
+        _safe_int(item.get('id'))
+        for item in evidence_items
+        if isinstance(item, dict) and _safe_int(item.get('id'))
+    }
+    supporting_ids = _safe_evidence_id_list(payload.get('supporting_evidence_ids'), allowed_ids)
+    if not supporting_ids and root_cause_type != AIOpsIncidentHypothesis.TYPE_UNKNOWN:
+        return None
+    confidence = max(0, min(_safe_float(payload.get('confidence'), 0), 1))
+    title = _short_text(payload.get('title'), 256)
+    summary = _short_text(payload.get('summary'), 1200)
+    if not title or not summary:
+        return None
+    return {
+        'title': title,
+        'root_cause_type': root_cause_type,
+        'confidence': confidence,
+        'supporting_evidence_ids': supporting_ids,
+        'counter_evidence_ids': _safe_evidence_id_list(payload.get('counter_evidence_ids'), allowed_ids),
+        'missing_evidence': _safe_string_list(payload.get('missing_evidence')),
+        'recommended_next_checks': _safe_string_list(payload.get('recommended_next_checks')),
+        'summary': summary,
+    }
+
+
+def _generate_llm_root_cause_hypothesis(incident, rca_input, task=None):
+    if not _LLM_RCA_PLANNER:
+        return None
+    try:
+        payload = _LLM_RCA_PLANNER(incident=incident, rca_input=rca_input, task=task)
+    except Exception:
+        logger.exception('LLM RCA planner failed for incident %s', incident.id)
+        return None
+    normalized = _normalize_llm_hypothesis_payload(payload, rca_input)
+    if not normalized:
+        return None
+    AIOpsIncidentHypothesis.objects.filter(
+        incident=incident,
+        status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+    ).exclude(generated_by=LLM_RCA_GENERATED_BY).update(status=AIOpsIncidentHypothesis.STATUS_REJECTED)
+    hypothesis, _ = AIOpsIncidentHypothesis.objects.update_or_create(
+        incident=incident,
+        status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+        generated_by=LLM_RCA_GENERATED_BY,
+        defaults={
+            **normalized,
+            'source_task': task,
+            'generated_at': timezone.now(),
+        },
+    )
+    return hypothesis
+
+
 def generate_root_cause_hypothesis(incident, task=None):
     incident = AIOpsIncident.objects.prefetch_related('evidence_items').get(id=incident.id)
     evidence = _evidence_by_source(incident)
@@ -1615,12 +1715,12 @@ def generate_root_cause_hypothesis(incident, task=None):
     AIOpsIncidentHypothesis.objects.filter(
         incident=incident,
         status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
-        generated_by='rule_based',
+        generated_by=RULE_RCA_GENERATED_BY,
     ).exclude(root_cause_type=root_cause_type).update(status=AIOpsIncidentHypothesis.STATUS_REJECTED)
     hypothesis, _ = AIOpsIncidentHypothesis.objects.update_or_create(
         incident=incident,
         status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
-        generated_by='rule_based',
+        generated_by=RULE_RCA_GENERATED_BY,
         defaults={
             'title': title[:256],
             'root_cause_type': root_cause_type,
@@ -1634,7 +1734,8 @@ def generate_root_cause_hypothesis(incident, task=None):
             'generated_at': timezone.now(),
         },
     )
-    return hypothesis
+    rca_input = build_rca_evidence_package(incident, hypothesis=hypothesis)
+    return _generate_llm_root_cause_hypothesis(incident, rca_input, task=task) or hypothesis
 
 
 def _resource_evidence_host_targets(incident):
