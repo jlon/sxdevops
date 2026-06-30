@@ -2757,7 +2757,7 @@ def build_incident_skill_draft(incident, user=None):
     })
 
 
-def build_incident_runbook_draft_payload(incident):
+def build_incident_runbook_draft_payload(incident, review_knowledge=None):
     primary_hypothesis = _incident_primary_hypothesis(incident)
     completed_actions = _incident_completed_actions(incident)
     evidence = _incident_review_evidence(incident)
@@ -2803,6 +2803,21 @@ def build_incident_runbook_draft_payload(incident):
         '## 复盘来源',
         f'- Incident：#{incident.id} {incident.title}',
     ])
+    if review_knowledge:
+        content_lines.append(f'- 复盘知识：{review_knowledge.title}（{review_knowledge.slug}）')
+    source_refs = [{
+        'type': 'incident',
+        'id': incident.id,
+        'title': incident.title,
+        'status': incident.status,
+    }]
+    if review_knowledge:
+        source_refs.append({
+            'type': 'review_knowledge',
+            'id': review_knowledge.id,
+            'slug': review_knowledge.slug,
+            'title': review_knowledge.title,
+        })
     return {
         'title': f'{incident.service or incident.resource or "Incident"} 处置 Runbook',
         'environment': incident.environment or '',
@@ -2810,12 +2825,7 @@ def build_incident_runbook_draft_payload(incident):
         'content': '\n'.join(content_lines),
         'evidence': evidence,
         'tags': _incident_review_common_tags(incident),
-        'source_refs': [{
-            'type': 'incident',
-            'id': incident.id,
-            'title': incident.title,
-            'status': incident.status,
-        }],
+        'source_refs': source_refs,
     }
 
 
@@ -2825,7 +2835,11 @@ def build_incident_runbook_draft(incident, user=None):
         source_refs = candidate.source_refs if isinstance(candidate.source_refs, list) else []
         if any(ref.get('type') == 'incident' and ref.get('id') == incident.id for ref in source_refs if isinstance(ref, dict)):
             return candidate, False
-    runbook = build_runbook_draft_from_payload(build_incident_runbook_draft_payload(incident), user=user)
+    review_knowledge = auto_ingest_incident_review_knowledge(incident, user=user, reason='runbook_draft')
+    runbook = build_runbook_draft_from_payload(
+        build_incident_runbook_draft_payload(incident, review_knowledge=review_knowledge),
+        user=user,
+    )
     return runbook, True
 
 

@@ -1079,7 +1079,10 @@ class IncidentApiTests(TestCase):
         self.assertEqual(runbook.environment, self.incident.environment)
         self.assertEqual(runbook.service, self.incident.service)
         self.assertEqual(runbook.source_refs[0]['type'], 'incident')
+        review_knowledge = AIOpsReviewKnowledge.objects.get(slug=f'incident-{self.incident.id}-review')
+        self.assertTrue(any(ref.get('type') == 'review_knowledge' and ref.get('id') == review_knowledge.id for ref in runbook.source_refs))
         self.assertIn('回滚 order-center', runbook.content)
+        self.assertIn(review_knowledge.slug, runbook.content)
         self.assertTrue(any(item.get('type') == 'incident_action' and item.get('id') == action.id for item in runbook.evidence))
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='materialize_incident_runbook').exists())
 
