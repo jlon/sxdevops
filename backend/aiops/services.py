@@ -101,6 +101,7 @@ from .models import (
     AIOpsExternalTask,
     AIOpsIncident,
     AIOpsIncidentAction,
+    AIOpsIncidentEvidence,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelInvocation,
@@ -15319,6 +15320,85 @@ def _incident_action_task_result_summary(task, verification_status):
     return base
 
 
+def _incident_action_verification_evidence_summary(task, incident_action, verification_status):
+    action_label = incident_action.title or f'Incident 动作 #{incident_action.id}'
+    if verification_status == 'verified_resolved':
+        return f'{action_label} 验证通过：任务成功且活跃告警已清零。'
+    if verification_status == 'task_success_alerts_active':
+        return f'{action_label} 任务成功，但仍有 {incident_action.incident.active_alert_count} 条活跃告警。'
+    if verification_status == 'partially_improved':
+        return f'{action_label} 部分成功，需要继续验证失败目标。'
+    if verification_status == 'no_improvement':
+        return f'{action_label} 执行失败，未形成恢复证据。'
+    if verification_status == 'verification_canceled':
+        return f'{action_label} 已取消，验证中止。'
+    return f'{action_label} 已完成一次任务中心验证。'
+
+
+def _host_task_execution_sample(execution):
+    target = execution.target_name or execution.host_name or execution.host_ip or execution.target_id
+    return {
+        'id': execution.id,
+        'target': target or '',
+        'target_type': execution.target_type,
+        'target_kind': execution.target_kind,
+        'namespace': execution.target_namespace,
+        'status': execution.status,
+        'command_preview': str(execution.command or '')[:300],
+        'output_preview': str(execution.output or '')[:500],
+        'error_preview': str(execution.error_message or '')[:500],
+        'duration_ms': execution.duration_ms,
+    }
+
+
+def upsert_incident_action_verification_evidence(incident_action, task, verification_status):
+    if not incident_action or not task or not verification_status:
+        return None
+    incident = incident_action.incident
+    executions = list(task.executions.order_by('id')[:8])
+    payload = {
+        'incident_id': incident.id,
+        'incident_action_id': incident_action.id,
+        'task_id': task.id,
+        'task_name': task.name,
+        'task_type': task.task_type,
+        'task_status': task.status,
+        'task_lifecycle_status': task.lifecycle_status,
+        'verification_status': verification_status,
+        'active_alert_count': incident.active_alert_count,
+        'target_count': task.target_count,
+        'success_count': task.success_count,
+        'failed_count': task.failed_count,
+        'skipped_count': task.skipped_count,
+        'task_summary': task.summary,
+        'verification_plan': incident_action.verification_plan or [],
+        'executions': [_host_task_execution_sample(item) for item in executions],
+    }
+    evidence, _ = AIOpsIncidentEvidence.objects.update_or_create(
+        incident=incident,
+        kind=AIOpsIncidentEvidence.KIND_TASK,
+        source=f'builtin.verification.{incident_action.id}',
+        defaults={
+            'source_task': None,
+            'tool_invocation': None,
+            'scope': {
+                'task_id': task.id,
+                'incident_action_id': incident_action.id,
+                'verification_status': verification_status,
+            },
+            'summary': _incident_action_verification_evidence_summary(task, incident_action, verification_status)[:512],
+            'payload': payload,
+            'weight': (
+                AIOpsIncidentEvidence.WEIGHT_PRIMARY
+                if verification_status == 'verified_resolved'
+                else AIOpsIncidentEvidence.WEIGHT_SUPPORTING
+            ),
+            'collected_at': timezone.now(),
+        },
+    )
+    return evidence
+
+
 def sync_incident_action_verification_for_task(task, request=None):
     if not task or task.status in {HostTask.STATUS_PENDING, HostTask.STATUS_RUNNING}:
         return 0
@@ -15375,6 +15455,13 @@ def sync_incident_action_verification_for_task(task, request=None):
         if incident_update_fields:
             incident.save(update_fields=incident_update_fields)
             changed = True
+        verification_evidence = None
+        if verification_status and changed:
+            verification_evidence = upsert_incident_action_verification_evidence(
+                incident_action,
+                task,
+                verification_status,
+            )
         review_knowledge = None
         if verification_status == 'verified_resolved':
             review_exists = AIOpsReviewKnowledge.objects.filter(slug=_incident_review_slug(incident)).exists()
@@ -15414,6 +15501,7 @@ def sync_incident_action_verification_for_task(task, request=None):
                 'task_status': task.status,
                 'verification_status': verification_status,
                 'active_alert_count': incident.active_alert_count,
+                'verification_evidence_id': verification_evidence.id if verification_evidence else None,
                 'review_knowledge_id': review_knowledge.id if review_knowledge else None,
             },
         )

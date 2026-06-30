@@ -669,6 +669,15 @@ class IncidentApiTests(TestCase):
         self.assertIn('已验证恢复', action.result_summary)
         self.assertEqual(self.incident.status, AIOpsIncident.STATUS_RESOLVED)
         self.assertIsNotNone(self.incident.resolved_at)
+        evidence = AIOpsIncidentEvidence.objects.get(
+            incident=self.incident,
+            kind=AIOpsIncidentEvidence.KIND_TASK,
+            source=f'builtin.verification.{action.id}',
+        )
+        self.assertEqual(evidence.weight, AIOpsIncidentEvidence.WEIGHT_PRIMARY)
+        self.assertEqual(evidence.payload['verification_status'], 'verified_resolved')
+        self.assertEqual(evidence.payload['task_id'], task.id)
+        self.assertEqual(evidence.payload['executions'][0]['output_preview'], 'ok')
         knowledge = AIOpsReviewKnowledge.objects.get(slug=f'incident-{self.incident.id}-review')
         self.assertEqual(knowledge.source_refs[0]['type'], 'incident')
         self.assertIn('verified_resolved', knowledge.tags)
@@ -678,8 +687,16 @@ class IncidentApiTests(TestCase):
         second = sync_incident_action_verification_for_task(task)
         self.assertEqual(second, 0)
         self.assertEqual(AIOpsReviewKnowledge.objects.filter(slug=f'incident-{self.incident.id}-review').count(), 1)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident, source=f'builtin.verification.{action.id}').count(), 1)
         self.assertEqual(verification_events.count(), 1)
-        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_SUCCESS, metadata__review_knowledge_id=knowledge.id).exists())
+        self.assertTrue(EventRecord.objects.filter(
+            module='aiops',
+            category='incident',
+            action='incident_action_verified',
+            result=EventRecord.RESULT_SUCCESS,
+            metadata__review_knowledge_id=knowledge.id,
+            metadata__verification_evidence_id=evidence.id,
+        ).exists())
 
     def test_verification_sync_keeps_incident_open_when_task_fails(self):
         task = HostTask.objects.create(
@@ -717,4 +734,12 @@ class IncidentApiTests(TestCase):
         self.assertEqual(action.verification_status, 'no_improvement')
         self.assertIn('未形成有效恢复证据', action.result_summary)
         self.assertEqual(self.incident.status, AIOpsIncident.STATUS_OPEN)
+        evidence = AIOpsIncidentEvidence.objects.get(
+            incident=self.incident,
+            kind=AIOpsIncidentEvidence.KIND_TASK,
+            source=f'builtin.verification.{action.id}',
+        )
+        self.assertEqual(evidence.weight, AIOpsIncidentEvidence.WEIGHT_SUPPORTING)
+        self.assertEqual(evidence.payload['verification_status'], 'no_improvement')
+        self.assertEqual(evidence.payload['executions'][0]['error_preview'], 'failed')
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_FAILED).exists())
