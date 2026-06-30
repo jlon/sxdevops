@@ -16,6 +16,8 @@ from aiops.models import (
     AIOpsIncidentHypothesis,
     AIOpsPendingAction,
     AIOpsReviewKnowledge,
+    AIOpsRunbook,
+    AIOpsSkill,
 )
 from aiops.services import sync_incident_action_verification_for_task
 from eventwall.models import EventRecord
@@ -286,6 +288,112 @@ class IncidentApiTests(TestCase):
         self.assertEqual(response.data['incident_actions'][0]['action_type_display'], '继续调查')
         self.assertEqual(response.data['incident_actions'][0]['risk_level_display'], '只读')
 
+    def test_incident_detail_includes_retrospective_suggestions_and_review_knowledge(self):
+        AIOpsReviewKnowledge.objects.create(
+            slug=f'incident-{self.incident.id}-review',
+            title=f'Incident #{self.incident.id} 复盘知识',
+            summary='复盘摘要',
+            environment=self.incident.environment,
+            service=self.incident.service,
+            tags=['incident', 'postmortem'],
+            source_refs=[{'type': 'incident', 'id': self.incident.id}],
+        )
+        AIOpsIncidentHypothesis.objects.create(
+            incident=self.incident,
+            title='order-center 发布后错误率升高',
+            root_cause_type=AIOpsIncidentHypothesis.TYPE_CHANGE_REGRESSION,
+            confidence=0.7,
+            supporting_evidence_ids=[1],
+            summary='发布窗口与错误率升高时间一致。',
+            status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+        )
+        EventRecord.objects.create(
+            module='aiops',
+            category='incident',
+            action='investigate_incident',
+            title='Incident 自动调查',
+            summary='已生成证据',
+            correlation_id=f'aiops_incident:{self.incident.id}',
+        )
+
+        response = self.client.get(f'/api/aiops/incidents/{self.incident.id}/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['review_knowledge']['slug'], f'incident-{self.incident.id}-review')
+        suggestion_types = {item['type'] for item in response.data['retrospective_suggestions']}
+        self.assertIn('skill', suggestion_types)
+        self.assertIn('runbook', suggestion_types)
+        timeline_types = [item['type'] for item in response.data['timeline']]
+        self.assertIn('incident_created', timeline_types)
+        self.assertIn('investigate_incident', timeline_types)
+
+    def test_materialize_incident_skill_creates_idempotent_pending_action(self):
+        AIOpsIncidentEvidence.objects.create(
+            incident=self.incident,
+            kind=AIOpsIncidentEvidence.KIND_ALERT,
+            source='builtin.alert_snapshot',
+            summary='错误率超过阈值',
+            weight=AIOpsIncidentEvidence.WEIGHT_PRIMARY,
+        )
+        AIOpsIncidentHypothesis.objects.create(
+            incident=self.incident,
+            title='order-center 发布后错误率升高',
+            root_cause_type=AIOpsIncidentHypothesis.TYPE_CHANGE_REGRESSION,
+            confidence=0.7,
+            supporting_evidence_ids=[1],
+            summary='发布窗口与错误率升高时间一致。',
+            status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+        )
+
+        first = self.client.post(f'/api/aiops/incidents/{self.incident.id}/retrospective/skill/')
+        second = self.client.post(f'/api/aiops/incidents/{self.incident.id}/retrospective/skill/')
+
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertTrue(first.data['created'])
+        self.assertFalse(second.data['created'])
+        self.assertEqual(AIOpsPendingAction.objects.filter(action_type=AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL).count(), 1)
+        pending_action = AIOpsPendingAction.objects.get(action_type=AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL)
+        self.assertEqual(first.data['pending_action']['id'], pending_action.id)
+        self.assertEqual(second.data['pending_action']['id'], pending_action.id)
+        self.assertEqual(pending_action.action_payload['incident_id'], self.incident.id)
+        self.assertEqual(pending_action.action_payload['source'], 'incident_retrospective')
+        self.assertIn('query_alerts', pending_action.action_payload['builtin_tools'])
+        self.assertFalse(pending_action.action_payload['is_enabled'])
+        self.assertFalse(AIOpsSkill.objects.filter(is_builtin=False).exists())
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='materialize_incident_skill').exists())
+
+    def test_materialize_incident_runbook_creates_draft(self):
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            title='回滚 order-center',
+            action_type=AIOpsIncidentAction.ACTION_ROLLBACK,
+            risk_level=AIOpsIncidentAction.RISK_HIGH,
+            status=AIOpsIncidentAction.STATUS_COMPLETED,
+            preconditions=['确认发布窗口一致'],
+            rollback_plan=['恢复到上一版本'],
+            verification_plan=['确认错误率恢复'],
+            result_summary='回滚后告警恢复',
+        )
+
+        response = self.client.post(f'/api/aiops/incidents/{self.incident.id}/retrospective/runbook/')
+        second = self.client.post(f'/api/aiops/incidents/{self.incident.id}/retrospective/runbook/')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertTrue(response.data['created'])
+        self.assertFalse(second.data['created'])
+        self.assertEqual(AIOpsRunbook.objects.count(), 1)
+        runbook = AIOpsRunbook.objects.get(id=response.data['runbook']['id'])
+        self.assertEqual(second.data['runbook']['id'], runbook.id)
+        self.assertEqual(runbook.status, AIOpsRunbook.STATUS_DRAFT)
+        self.assertEqual(runbook.environment, self.incident.environment)
+        self.assertEqual(runbook.service, self.incident.service)
+        self.assertEqual(runbook.source_refs[0]['type'], 'incident')
+        self.assertIn('回滚 order-center', runbook.content)
+        self.assertTrue(any(item.get('type') == 'incident_action' and item.get('id') == action.id for item in runbook.evidence))
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='materialize_incident_runbook').exists())
+
     def test_run_readonly_incident_action_refreshes_evidence(self):
         run_readonly_investigation(self.incident, reason='test_seed')
         action = AIOpsIncidentAction.objects.get(
@@ -493,9 +601,12 @@ class IncidentApiTests(TestCase):
         self.assertEqual(knowledge.source_refs[0]['type'], 'incident')
         self.assertIn('verified_resolved', knowledge.tags)
         self.assertTrue(any(item.get('type') == 'incident_action' and item.get('id') == action.id for item in knowledge.evidence))
+        verification_events = EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_SUCCESS)
+        self.assertEqual(verification_events.count(), 1)
         second = sync_incident_action_verification_for_task(task)
-        self.assertEqual(second, 1)
+        self.assertEqual(second, 0)
         self.assertEqual(AIOpsReviewKnowledge.objects.filter(slug=f'incident-{self.incident.id}-review').count(), 1)
+        self.assertEqual(verification_events.count(), 1)
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='incident_action_verified', result=EventRecord.RESULT_SUCCESS, metadata__review_knowledge_id=knowledge.id).exists())
 
     def test_verification_sync_keeps_incident_open_when_task_fails(self):

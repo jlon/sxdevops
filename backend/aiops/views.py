@@ -66,6 +66,7 @@ from .services import (
     auto_ingest_review_knowledge,
     bind_runtime_resource_to_agents,
     build_action_preflight_contract,
+    build_incident_runbook_draft,
     build_platform_mcp_manifest,
     build_action_registry_summary,
     agent_runtime_payload_for_user,
@@ -79,6 +80,7 @@ from .services import (
     cancel_external_task,
     clone_skill_to_team,
     confirm_action,
+    create_incident_skill_pending_action,
     create_external_task,
     dispatch_chat,
     ensure_default_agent_profile,
@@ -493,6 +495,8 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         'close': ['aiops.incident.close'],
         'run_action': ['aiops.incident.investigate'],
         'materialize_action': ['aiops.incident.view', 'aiops.task.generate'],
+        'materialize_skill': ['aiops.incident.view', 'aiops.config.manage'],
+        'materialize_runbook': ['aiops.incident.view', 'aiops.runbook.manage'],
     }
 
     def get_serializer_class(self):
@@ -502,7 +506,7 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = AIOpsIncident.objects.order_by('-last_seen_at', '-id')
-        if self.action in {'retrieve', 'close', 'run_action', 'materialize_action'}:
+        if self.action in {'retrieve', 'close', 'run_action', 'materialize_action', 'materialize_skill', 'materialize_runbook'}:
             queryset = queryset.prefetch_related(
                 'alert_links__alert',
                 'evidence_items__source_task',
@@ -626,6 +630,71 @@ class AIOpsIncidentViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         )
         incident = self.get_queryset().get(id=incident.id)
         return Response(self.get_serializer(incident).data)
+
+    @action(detail=True, methods=['post'], url_path='retrospective/skill')
+    def materialize_skill(self, request, pk=None):
+        incident = self.get_object()
+        try:
+            pending_action, created = create_incident_skill_pending_action(incident, request.user)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if created:
+            record_event(
+                request=request,
+                module='aiops',
+                category='incident',
+                action='materialize_incident_skill',
+                title='Incident 生成 Skill 草案',
+                summary=f'{request.user.username} 从 Incident #{incident.id} 生成 Skill 审批事项 #{pending_action.id}',
+                result=EventRecord.RESULT_PENDING,
+                resource_type='aiops_pending_action',
+                resource_id=pending_action.id,
+                resource_name=pending_action.title,
+                environment=incident.environment,
+                application=incident.service,
+                severity=EventRecord.SEVERITY_INFO,
+                correlation_id=f'aiops_incident:{incident.id}',
+                metadata={
+                    'incident_id': incident.id,
+                    'pending_action_id': pending_action.id,
+                    'action_type': pending_action.action_type,
+                },
+            )
+        incident = self.get_queryset().get(id=incident.id)
+        return Response({
+            'incident': self.get_serializer(incident).data,
+            'pending_action': AIOpsPendingActionSerializer(pending_action).data,
+            'created': created,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='retrospective/runbook')
+    def materialize_runbook(self, request, pk=None):
+        incident = self.get_object()
+        runbook, created = build_incident_runbook_draft(incident, user=request.user)
+        if created:
+            record_event(
+                request=request,
+                module='aiops',
+                category='incident',
+                action='materialize_incident_runbook',
+                title='Incident 生成 Runbook 草案',
+                summary=f'{request.user.username} 从 Incident #{incident.id} 生成 Runbook 草案《{runbook.title}》',
+                result=EventRecord.RESULT_SUCCESS,
+                resource_type='aiops_runbook',
+                resource_id=runbook.id,
+                resource_name=runbook.title,
+                environment=incident.environment,
+                application=incident.service,
+                severity=EventRecord.SEVERITY_INFO,
+                correlation_id=f'aiops_incident:{incident.id}',
+                metadata={'incident_id': incident.id, 'runbook_id': runbook.id},
+            )
+        incident = self.get_queryset().get(id=incident.id)
+        return Response({
+            'incident': self.get_serializer(incident).data,
+            'runbook': AIOpsRunbookSerializer(runbook).data,
+            'created': created,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path=r'actions/(?P<action_id>\d+)/materialize')
     def materialize_action(self, request, pk=None, action_id=None):

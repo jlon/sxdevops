@@ -2318,6 +2318,369 @@ def _incident_review_summary(incident):
     return '\n'.join(lines)
 
 
+def _incident_review_knowledge_for_incident(incident):
+    if not incident or not getattr(incident, 'id', None):
+        return None
+    return AIOpsReviewKnowledge.objects.filter(slug=_incident_review_slug(incident)).first()
+
+
+def incident_review_knowledge_summary(incident):
+    knowledge = _incident_review_knowledge_for_incident(incident)
+    if not knowledge:
+        return None
+    return {
+        'id': knowledge.id,
+        'slug': knowledge.slug,
+        'title': knowledge.title,
+        'summary': knowledge.summary,
+        'tags': knowledge.tags or [],
+        'updated_at': knowledge.updated_at.isoformat() if knowledge.updated_at else '',
+    }
+
+
+def build_incident_timeline(incident, limit=40):
+    if not incident or not getattr(incident, 'id', None):
+        return []
+    events = list(
+        EventRecord.objects.filter(correlation_id=f'aiops_incident:{incident.id}')
+        .order_by('occurred_at', 'id')[:limit]
+    )
+    timeline = [{
+        'type': 'incident_created',
+        'title': 'Incident 创建',
+        'summary': incident.title,
+        'result': EventRecord.RESULT_SUCCESS,
+        'severity': incident.severity,
+        'occurred_at': incident.created_at.isoformat() if incident.created_at else '',
+        'actor': 'system',
+    }]
+    for event in events:
+        timeline.append({
+            'type': event.action,
+            'title': event.title,
+            'summary': event.summary,
+            'result': event.result,
+            'severity': event.severity,
+            'occurred_at': event.occurred_at.isoformat() if event.occurred_at else '',
+            'actor': event.actor_display or event.actor_username or event.actor_type,
+            'resource_type': event.resource_type,
+            'resource_id': event.resource_id,
+        })
+    if incident.closed_at:
+        has_close_event = any(item.get('type') == 'close_incident' for item in timeline)
+        if not has_close_event:
+            timeline.append({
+                'type': 'close_incident',
+                'title': 'Incident 关闭',
+                'summary': f'Incident #{incident.id} 已关闭',
+                'result': EventRecord.RESULT_SUCCESS,
+                'severity': EventRecord.SEVERITY_INFO,
+                'occurred_at': incident.closed_at.isoformat(),
+                'actor': incident.owner or 'system',
+            })
+    return timeline[:limit]
+
+
+def _incident_primary_hypothesis(incident):
+    return incident.hypotheses.order_by('-confidence', '-generated_at', '-id').first()
+
+
+def _incident_completed_actions(incident):
+    return list(incident.incident_actions.filter(status=AIOpsIncidentAction.STATUS_COMPLETED).order_by('-updated_at', '-id')[:8])
+
+
+def _incident_tool_candidates(incident):
+    tools = ['query_alerts']
+    if incident.cluster or incident.namespace or str(incident.resource_type or '').lower() in {'pod', 'deployment', 'service', 'node'}:
+        tools.extend(['query_k8s_resources', 'query_task_resources'])
+    if incident.service:
+        tools.append('query_logs')
+    if incident.environment:
+        tools.append('query_knowledge_graph')
+    return filter_registered_platform_tools(list(dict.fromkeys(tools)))
+
+
+def _incident_review_common_tags(incident):
+    values = [
+        'incident',
+        'postmortem',
+        incident.severity,
+        incident.environment,
+        incident.cluster,
+        incident.namespace,
+        incident.service,
+    ]
+    return [item for item in dict.fromkeys(str(value or '').strip() for value in values) if item][:24]
+
+
+def build_incident_retrospective_suggestions(incident):
+    if not incident or not getattr(incident, 'id', None):
+        return []
+    suggestions = []
+    primary_hypothesis = _incident_primary_hypothesis(incident)
+    completed_actions = _incident_completed_actions(incident)
+    has_resolved_signal = incident.status in {AIOpsIncident.STATUS_RESOLVED, AIOpsIncident.STATUS_CLOSED} or incident.active_alert_count == 0
+    root_cause_title = primary_hypothesis.title if primary_hypothesis else '当前 Incident 排障路径'
+    scope_parts = [incident.environment, incident.cluster, incident.namespace, incident.service]
+    scope_text = ' / '.join([part for part in scope_parts if part]) or incident.title
+
+    suggestions.append({
+        'type': 'skill',
+        'title': f'{incident.service or incident.resource or "Incident"} 告警排障 Skill',
+        'summary': f'把 #{incident.id} 的证据、根因判断和只读检查路径沉淀为可复用 Skill。',
+        'status': 'ready' if primary_hypothesis else 'needs_review',
+        'action': 'materialize_skill',
+        'requirements': [
+            '根因假设已有证据 ID 支撑' if primary_hypothesis else '补充主根因假设和证据 ID',
+            '只读工具覆盖告警、日志、指标或资源查询',
+            f'适用范围：{scope_text}',
+        ],
+    })
+    suggestions.append({
+        'type': 'runbook',
+        'title': f'{incident.service or incident.resource or "Incident"} 处置 Runbook',
+        'summary': f'把 #{incident.id} 的处置步骤、风险、回滚和验证计划整理成 Runbook 草案。',
+        'status': 'ready' if completed_actions else 'needs_review',
+        'action': 'materialize_runbook',
+        'requirements': [
+            f'主要根因：{root_cause_title}',
+            '已存在完成动作' if completed_actions else '补充已验证有效的处置动作',
+            '验证信号已恢复' if has_resolved_signal else '等待告警或指标恢复后再发布',
+        ],
+    })
+    if incident.alert_count > 1 or incident.active_alert_count > 1:
+        suggestions.append({
+            'type': 'alert_suppression',
+            'title': '告警归并和抑制建议',
+            'summary': '该 Incident 关联多条告警，建议复核 Alertmanager group_by、维护窗口和噪音抑制策略。',
+            'status': 'needs_review',
+            'action': 'review_alert_rule',
+            'requirements': [
+                '核对 fingerprint、groupKey、service、namespace 标签是否稳定',
+                '确认是否存在维护窗口或重复告警源',
+            ],
+        })
+    if incident.environment or incident.cluster or incident.namespace or incident.service:
+        suggestions.append({
+            'type': 'knowledge_environment',
+            'title': '知识环境补充建议',
+            'summary': '把本次范围中的环境、集群、命名空间、服务和可观测数据源绑定到知识环境，便于后续 Agent 自动带入上下文。',
+            'status': 'needs_review',
+            'action': 'review_knowledge_environment',
+            'requirements': [
+                f'环境：{incident.environment or "-"}',
+                f'集群/命名空间：{incident.cluster or "-"} / {incident.namespace or "-"}',
+                f'服务：{incident.service or "-"}',
+            ],
+        })
+    if incident.service and (incident.cluster or incident.resource):
+        suggestions.append({
+            'type': 'topology',
+            'title': '拓扑关系补充建议',
+            'summary': '补充服务与集群、资源、上下游依赖关系，减少下次排障时的范围确认成本。',
+            'status': 'needs_review',
+            'action': 'review_topology',
+            'requirements': [
+                f'服务：{incident.service}',
+                f'资源：{incident.resource_type or "-"} / {incident.resource or "-"}',
+            ],
+        })
+    return suggestions
+
+
+def build_incident_skill_draft(incident, user=None):
+    primary_hypothesis = _incident_primary_hypothesis(incident)
+    evidence_items = list(incident.evidence_items.order_by('-collected_at', '-id')[:8])
+    completed_actions = _incident_completed_actions(incident)
+    trigger_values = [
+        incident.title,
+        incident.service,
+        incident.resource,
+        incident.cluster,
+        incident.namespace,
+        primary_hypothesis.title if primary_hypothesis else '',
+    ]
+    trigger_keywords = [item for item in dict.fromkeys(str(value or '').strip() for value in trigger_values) if item][:12]
+    content_lines = [
+        f'# Incident #{incident.id} 排障 Skill',
+        '',
+        '## 适用场景',
+        f'- 环境：{incident.environment or "待补充"}',
+        f'- 集群/命名空间：{incident.cluster or "待补充"} / {incident.namespace or "待补充"}',
+        f'- 服务/资源：{incident.service or "待补充"} / {incident.resource or "待补充"}',
+        f'- 触发信号：{incident.title}',
+        '',
+        '## 调查原则',
+        '- 先查询告警状态和影响范围，再补充日志、指标、事件或资源状态。',
+        '- 根因结论必须引用证据 ID；证据不足时输出缺口和下一步只读检查。',
+        '- 涉及重启、扩缩容、回滚、批量命令等写操作时，只能生成待确认动作，不允许直接执行。',
+        '',
+        '## 已知证据',
+    ]
+    if evidence_items:
+        for item in evidence_items:
+            content_lines.append(f'- #{item.id} [{item.get_kind_display()}] {item.summary}')
+    else:
+        content_lines.append('- 暂无证据，使用前需补充告警、日志、指标或资源状态。')
+    content_lines.extend(['', '## 根因判断'])
+    if primary_hypothesis:
+        content_lines.append(f'- {primary_hypothesis.title}：{primary_hypothesis.summary or "待补充"}')
+    else:
+        content_lines.append('- 暂无主根因假设，必须先完成只读调查。')
+    content_lines.extend(['', '## 处置和验证'])
+    if completed_actions:
+        for action in completed_actions:
+            content_lines.append(f'- {action.title}：{action.result_summary or action.verification_status or "已完成"}')
+    else:
+        content_lines.append('- 未记录已验证有效的处置动作；只能输出建议和验证计划。')
+    content_lines.extend([
+        '',
+        '## 输出要求',
+        '- 输出结论、依据、风险、下一步动作。',
+        '- 建议动作必须包含前置条件、回滚方式和验证计划。',
+    ])
+    return _build_skill_draft_from_arguments(user, f'从 Incident #{incident.id} 生成 Skill', {
+        'name': f'{incident.service or incident.resource or "Incident"} 告警排障 Skill',
+        'slug': f'incident-{incident.id}-{incident.service or incident.resource or "skill"}',
+        'description': f'基于 Incident #{incident.id} 复盘沉淀的只读排障 Skill。',
+        'category': 'Incident 复盘',
+        'applicable_actions': ['incident.investigate', 'alert.root_cause'],
+        'examples': [
+            f'分析 {incident.service or incident.resource or incident.title} 最近异常',
+            f'复查 Incident #{incident.id} 的根因和证据',
+        ],
+        'builtin_tools': _incident_tool_candidates(incident),
+        'recommended_tools': ['query_logs', 'query_alert_metrics', 'query_recent_changes'],
+        'risk_level': AIOpsSkill.RISK_READ_ONLY,
+        'output_contract': {
+            'trigger_keywords': trigger_keywords,
+            'required_sections': ['结论', '依据', '风险', '下一步动作'],
+            'source_incident_id': incident.id,
+        },
+        'content': '\n'.join(content_lines),
+        'allowed_role_codes': [],
+        'request_summary': f'Incident #{incident.id} 复盘沉淀 Skill',
+        'is_enabled': False,
+    })
+
+
+def build_incident_runbook_draft_payload(incident):
+    primary_hypothesis = _incident_primary_hypothesis(incident)
+    completed_actions = _incident_completed_actions(incident)
+    evidence = _incident_review_evidence(incident)
+    content_lines = [
+        f'# Incident #{incident.id} 处置 Runbook',
+        '',
+        '## 适用范围',
+        f'- 环境：{incident.environment or "待补充"}',
+        f'- 集群/命名空间：{incident.cluster or "待补充"} / {incident.namespace or "待补充"}',
+        f'- 服务/资源：{incident.service or "待补充"} / {incident.resource or "待补充"}',
+        '',
+        '## 触发条件',
+        f'- 告警或异常：{incident.title}',
+        f'- 严重级别：{incident.get_severity_display()}',
+        '',
+        '## 根因摘要',
+    ]
+    if primary_hypothesis:
+        content_lines.append(f'- {primary_hypothesis.title}：{primary_hypothesis.summary or "待补充"}')
+    else:
+        content_lines.append('- 暂无主根因假设，执行前需要先补齐证据。')
+    content_lines.extend(['', '## 处置步骤'])
+    if completed_actions:
+        for index, action in enumerate(completed_actions, start=1):
+            content_lines.append(f'{index}. {action.title}')
+            for condition in action.preconditions or []:
+                content_lines.append(f'   - 前置：{condition}')
+            for rollback in action.rollback_plan or []:
+                content_lines.append(f'   - 回滚：{rollback}')
+            for verification in action.verification_plan or []:
+                content_lines.append(f'   - 验证：{verification}')
+    else:
+        content_lines.append('1. 确认告警状态、影响范围和最近变更。')
+        content_lines.append('2. 根据证据补充低风险缓解或修复动作。')
+        content_lines.append('3. 所有写操作进入审批和任务中心执行。')
+    content_lines.extend([
+        '',
+        '## 验证方式',
+        '- 重新查询告警状态，确认 active_alert_count 为 0 或告警已恢复。',
+        '- 复查关键指标、错误日志和资源状态。',
+        '- 如果无改善，按回滚计划恢复并升级处理。',
+        '',
+        '## 复盘来源',
+        f'- Incident：#{incident.id} {incident.title}',
+    ])
+    return {
+        'title': f'{incident.service or incident.resource or "Incident"} 处置 Runbook',
+        'environment': incident.environment or '',
+        'service': incident.service or '',
+        'content': '\n'.join(content_lines),
+        'evidence': evidence,
+        'tags': _incident_review_common_tags(incident),
+        'source_refs': [{
+            'type': 'incident',
+            'id': incident.id,
+            'title': incident.title,
+            'status': incident.status,
+        }],
+    }
+
+
+def build_incident_runbook_draft(incident, user=None):
+    candidates = AIOpsRunbook.objects.filter(status=AIOpsRunbook.STATUS_DRAFT).order_by('-id')[:200]
+    for candidate in candidates:
+        source_refs = candidate.source_refs if isinstance(candidate.source_refs, list) else []
+        if any(ref.get('type') == 'incident' and ref.get('id') == incident.id for ref in source_refs if isinstance(ref, dict)):
+            return candidate, False
+    runbook = build_runbook_draft_from_payload(build_incident_runbook_draft_payload(incident), user=user)
+    return runbook, True
+
+
+def _incident_skill_session(user, incident):
+    title = f'Incident #{incident.id} Skill 草案'
+    session = AIOpsChatSession.objects.filter(user=user, title=title).order_by('id').first()
+    if session:
+        return session
+    return AIOpsChatSession.objects.create(
+        user=user,
+        title=title,
+        context={
+            'source': 'incident_retrospective',
+            'incident_id': incident.id,
+            'environment': incident.environment,
+            'cluster': incident.cluster,
+            'namespace': incident.namespace,
+            'service': incident.service,
+        },
+    )
+
+
+def create_incident_skill_pending_action(incident, user):
+    draft = build_incident_skill_draft(incident, user=user)
+    if draft.get('error'):
+        raise ValueError(draft['error'])
+    session = _incident_skill_session(user, incident)
+    existing = AIOpsPendingAction.objects.filter(
+        session=session,
+        action_type=AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL,
+        action_payload__incident_id=incident.id,
+    ).exclude(status=AIOpsPendingAction.STATUS_CANCELED).order_by('-id').first()
+    if existing:
+        return existing, False
+    action = AIOpsPendingAction.objects.create(
+        session=session,
+        action_type=AIOpsPendingAction.ACTION_CREATE_AIOPS_SKILL,
+        title=draft.get('name') or f'Incident #{incident.id} Skill 草案',
+        risk_level=draft.get('risk_level') or AIOpsPendingAction.RISK_MEDIUM,
+        action_payload={
+            **draft,
+            'incident_id': incident.id,
+            'source': 'incident_retrospective',
+        },
+    )
+    return action, True
+
+
 def auto_ingest_incident_review_knowledge(incident, user=None, reason=''):
     if not incident or not getattr(incident, 'id', None):
         return None
@@ -14828,7 +15191,7 @@ def sync_incident_action_verification_for_task(task, request=None):
         incident = incident_action.incident
         verification_status = _incident_action_verification_status(task, incident_action)
         action_status = _incident_action_status_for_task(task)
-        update_fields = ['updated_at']
+        update_fields = []
         if action_status and incident_action.status in {
             AIOpsIncidentAction.STATUS_RUNNING,
             AIOpsIncidentAction.STATUS_APPROVED,
@@ -14843,7 +15206,9 @@ def sync_incident_action_verification_for_task(task, request=None):
         if incident_action.result_summary != result_summary:
             incident_action.result_summary = result_summary[:2000]
             update_fields.append('result_summary')
-        incident_action.save(update_fields=update_fields)
+        changed = bool(update_fields)
+        if update_fields:
+            incident_action.save(update_fields=[*update_fields, 'updated_at'])
 
         incident_update_fields = []
         if verification_status == 'verified_resolved' and incident.status in {
@@ -14864,9 +15229,15 @@ def sync_incident_action_verification_for_task(task, request=None):
             incident_update_fields = ['status', 'updated_at']
         if incident_update_fields:
             incident.save(update_fields=incident_update_fields)
+            changed = True
         review_knowledge = None
         if verification_status == 'verified_resolved':
-            review_knowledge = auto_ingest_incident_review_knowledge(incident, reason='verified_resolved')
+            review_exists = AIOpsReviewKnowledge.objects.filter(slug=_incident_review_slug(incident)).exists()
+            if changed or not review_exists:
+                review_knowledge = auto_ingest_incident_review_knowledge(incident, reason='verified_resolved')
+                changed = True
+        if not changed:
+            continue
 
         event_result = EventRecord.RESULT_SUCCESS
         event_severity = EventRecord.SEVERITY_INFO

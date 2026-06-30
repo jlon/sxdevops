@@ -22,7 +22,14 @@ from .models import (
     AIOpsSkill,
     AIOpsToolInvocation,
 )
-from .services import _ensure_task_draft_title, _is_generic_task_title, get_model_provider_setup_hint
+from .services import (
+    _ensure_task_draft_title,
+    _is_generic_task_title,
+    build_incident_timeline,
+    build_incident_retrospective_suggestions,
+    get_model_provider_setup_hint,
+    incident_review_knowledge_summary,
+)
 
 
 class AIOpsModelProviderSerializer(serializers.ModelSerializer):
@@ -589,10 +596,38 @@ class AIOpsIncidentSerializer(AIOpsIncidentListSerializer):
     evidence_items = AIOpsIncidentEvidenceSerializer(many=True, read_only=True)
     hypotheses = AIOpsIncidentHypothesisSerializer(many=True, read_only=True)
     incident_actions = AIOpsIncidentActionSerializer(many=True, read_only=True)
+    review_knowledge = serializers.SerializerMethodField()
+    retrospective_suggestions = serializers.SerializerMethodField()
+    timeline = serializers.SerializerMethodField()
 
     class Meta(AIOpsIncidentListSerializer.Meta):
-        fields = AIOpsIncidentListSerializer.Meta.fields + ['alert_links', 'evidence_items', 'hypotheses', 'incident_actions']
-        read_only_fields = AIOpsIncidentListSerializer.Meta.read_only_fields + ['alert_links', 'evidence_items', 'hypotheses', 'incident_actions']
+        fields = AIOpsIncidentListSerializer.Meta.fields + [
+            'alert_links',
+            'evidence_items',
+            'hypotheses',
+            'incident_actions',
+            'review_knowledge',
+            'retrospective_suggestions',
+            'timeline',
+        ]
+        read_only_fields = AIOpsIncidentListSerializer.Meta.read_only_fields + [
+            'alert_links',
+            'evidence_items',
+            'hypotheses',
+            'incident_actions',
+            'review_knowledge',
+            'retrospective_suggestions',
+            'timeline',
+        ]
+
+    def get_review_knowledge(self, obj):
+        return incident_review_knowledge_summary(obj)
+
+    def get_retrospective_suggestions(self, obj):
+        return build_incident_retrospective_suggestions(obj)
+
+    def get_timeline(self, obj):
+        return build_incident_timeline(obj)
 
 
 class AIOpsPendingActionSerializer(serializers.ModelSerializer):

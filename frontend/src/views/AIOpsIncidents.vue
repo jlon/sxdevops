@@ -100,7 +100,7 @@
       </div>
     </section>
 
-    <el-drawer v-model="detailVisible" size="520px" title="Incident 详情" destroy-on-close>
+    <el-drawer v-model="detailVisible" size="min(720px, 100vw)" title="Incident 详情" destroy-on-close>
       <template v-if="selectedIncident">
         <div class="incident-detail-head">
           <div>
@@ -123,6 +123,51 @@
           <el-descriptions-item label="首次触发">{{ formatTime(selectedIncident.started_at) }}</el-descriptions-item>
           <el-descriptions-item label="最近告警">{{ formatTime(selectedIncident.last_seen_at) }}</el-descriptions-item>
         </el-descriptions>
+
+        <div class="section-head compact">
+          <h3>复盘沉淀</h3>
+          <div class="section-actions">
+            <el-button
+              v-if="canMaterializeSkill"
+              size="small"
+              type="primary"
+              plain
+              :loading="retrospectiveLoading === 'skill'"
+              @click="materializeIncidentSkill"
+            >
+              生成 Skill 草案
+            </el-button>
+            <el-button
+              v-if="canMaterializeRunbook"
+              size="small"
+              plain
+              :loading="retrospectiveLoading === 'runbook'"
+              @click="materializeIncidentRunbook"
+            >
+              生成 Runbook
+            </el-button>
+          </div>
+        </div>
+        <div class="retrospective-panel">
+          <div v-if="selectedIncident.review_knowledge" class="review-summary">
+            <div class="evidence-title-row">
+              <el-tag size="small" type="success">复盘知识</el-tag>
+              <span class="evidence-source">{{ selectedIncident.review_knowledge.title }}</span>
+            </div>
+            <div class="evidence-summary">{{ selectedIncident.review_knowledge.summary }}</div>
+          </div>
+          <div v-else class="detail-empty">关闭或验证恢复后会自动生成复盘知识。</div>
+          <div class="suggestion-list">
+            <div v-for="item in selectedIncident.retrospective_suggestions || []" :key="`${item.type}-${item.title}`" class="suggestion-item">
+              <div class="suggestion-head">
+                <span class="suggestion-title">{{ item.title }}</span>
+                <el-tag size="small" :type="suggestionStatusType(item.status)" effect="plain">{{ suggestionStatusText(item.status) }}</el-tag>
+              </div>
+              <div class="sub-line">{{ item.summary }}</div>
+              <div v-for="requirement in item.requirements || []" :key="requirement" class="sub-line">- {{ requirement }}</div>
+            </div>
+          </div>
+        </div>
 
         <div class="section-head compact">
           <h3>主根因假设</h3>
@@ -156,6 +201,25 @@
           </div>
         </div>
         <span v-else class="detail-empty">暂无根因假设</span>
+
+        <div class="section-head compact">
+          <h3>时间线</h3>
+          <span class="toolbar-desc">{{ timelineCount }} 条</span>
+        </div>
+        <div class="timeline-list">
+          <div v-for="item in selectedIncident.timeline || []" :key="`${item.type}-${item.occurred_at}-${item.resource_id || ''}`" class="timeline-item">
+            <div class="timeline-dot" :class="`timeline-dot--${timelineResultType(item.result)}`"></div>
+            <div class="timeline-main">
+              <div class="suggestion-head">
+                <span class="suggestion-title">{{ item.title }}</span>
+                <span class="sub-line">{{ formatTime(item.occurred_at) }}</span>
+              </div>
+              <div class="sub-line">{{ item.summary || '-' }}</div>
+              <div class="sub-line">{{ item.actor || '-' }} · {{ item.result || '-' }}</div>
+            </div>
+          </div>
+          <span v-if="!timelineCount" class="detail-empty">暂无时间线</span>
+        </div>
 
         <div class="section-head compact">
           <h3>建议动作</h3>
@@ -248,13 +312,22 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search, Warning } from '@element-plus/icons-vue'
-import { closeAIOpsIncident, getAIOpsIncident, getAIOpsIncidents, materializeAIOpsIncidentAction, runAIOpsIncidentAction } from '@/api/modules/aiops'
+import {
+  closeAIOpsIncident,
+  getAIOpsIncident,
+  getAIOpsIncidents,
+  materializeAIOpsIncidentAction,
+  materializeAIOpsIncidentRunbook,
+  materializeAIOpsIncidentSkill,
+  runAIOpsIncidentAction,
+} from '@/api/modules/aiops'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
 const route = useRoute()
 const loading = ref(false)
 const runningActionId = ref(null)
+const retrospectiveLoading = ref('')
 const incidents = ref([])
 const selectedIncident = ref(null)
 const detailVisible = ref(false)
@@ -275,11 +348,14 @@ const pagination = reactive({
 const canClose = computed(() => authStore.hasPermission('aiops.incident.close'))
 const canInvestigate = computed(() => authStore.hasPermission('aiops.incident.investigate'))
 const canGenerateTask = computed(() => authStore.hasPermission('aiops.task.generate'))
+const canMaterializeSkill = computed(() => authStore.hasPermission('aiops.config.manage'))
+const canMaterializeRunbook = computed(() => authStore.hasPermission('aiops.runbook.manage'))
 const criticalCount = computed(() => incidents.value.filter(item => item.severity === 'critical').length)
 const openCount = computed(() => incidents.value.filter(item => !['resolved', 'closed'].includes(item.status)).length)
 const activeAlertCount = computed(() => incidents.value.reduce((sum, item) => sum + Number(item.active_alert_count || 0), 0))
 const evidenceCount = computed(() => (selectedIncident.value?.evidence_items || []).length)
 const incidentActionCount = computed(() => (selectedIncident.value?.incident_actions || []).length)
+const timelineCount = computed(() => (selectedIncident.value?.timeline || []).length)
 const primaryHypothesis = computed(() => {
   const hypotheses = selectedIncident.value?.hypotheses || []
   return hypotheses.find(item => item.status === 'primary') || hypotheses[0] || null
@@ -317,6 +393,18 @@ function actionTypeTag(value) {
 
 function riskTag(value) {
   return ({ read_only: 'success', low: 'success', medium: 'warning', high: 'danger', critical: 'danger' }[value] || 'info')
+}
+
+function suggestionStatusType(value) {
+  return ({ ready: 'success', needs_review: 'warning' }[value] || 'info')
+}
+
+function suggestionStatusText(value) {
+  return ({ ready: '可生成', needs_review: '需复核' }[value] || value || '-')
+}
+
+function timelineResultType(value) {
+  return ({ success: 'success', failed: 'danger', partial: 'warning', pending: 'warning', rejected: 'danger' }[value] || 'info')
 }
 
 function evidenceKindType(value) {
@@ -434,6 +522,32 @@ async function materializeIncidentAction(item) {
   }
 }
 
+async function materializeIncidentSkill() {
+  if (!selectedIncident.value || retrospectiveLoading.value) return
+  await ElMessageBox.confirm('确认从当前 Incident 生成 Skill 草案审批事项？确认后仍需在审批事项中确认创建。', '生成 Skill 草案', { type: 'warning' })
+  retrospectiveLoading.value = 'skill'
+  try {
+    const data = await materializeAIOpsIncidentSkill(selectedIncident.value.id)
+    selectedIncident.value = data.incident || selectedIncident.value
+    ElMessage.success(`${data.created ? 'Skill 草案审批事项已生成' : '已存在 Skill 草案审批事项'} #${data.pending_action?.id || '-'}`)
+  } finally {
+    retrospectiveLoading.value = ''
+  }
+}
+
+async function materializeIncidentRunbook() {
+  if (!selectedIncident.value || retrospectiveLoading.value) return
+  await ElMessageBox.confirm('确认从当前 Incident 生成 Runbook 草案？', '生成 Runbook', { type: 'warning' })
+  retrospectiveLoading.value = 'runbook'
+  try {
+    const data = await materializeAIOpsIncidentRunbook(selectedIncident.value.id)
+    selectedIncident.value = data.incident || selectedIncident.value
+    ElMessage.success(`${data.created ? 'Runbook 草案已生成' : '已存在 Runbook 草案'}：${data.runbook?.title || '-'}`)
+  } finally {
+    retrospectiveLoading.value = ''
+  }
+}
+
 onMounted(fetchIncidents)
 </script>
 
@@ -469,6 +583,94 @@ onMounted(fetchIncidents)
 
 .compact {
   margin-top: 18px;
+}
+
+.section-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.retrospective-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--panel-soft-bg);
+}
+
+.review-summary {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.suggestion-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.suggestion-item {
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--panel-bg);
+}
+
+.suggestion-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.suggestion-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.timeline-dot--success {
+  background: var(--success-color);
+}
+
+.timeline-dot--warning {
+  background: var(--warning-color);
+}
+
+.timeline-dot--danger {
+  background: var(--danger-color);
+}
+
+.timeline-main {
+  min-width: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .alert-link-list {
