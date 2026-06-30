@@ -104,6 +104,7 @@ from .models import (
     AIOpsIncident,
     AIOpsIncidentAction,
     AIOpsIncidentEvidence,
+    AIOpsIncidentHypothesis,
     AIOpsKnowledgeEnvironment,
     AIOpsMCPServer,
     AIOpsModelInvocation,
@@ -2485,6 +2486,76 @@ def incident_review_knowledge_summary(incident):
     }
 
 
+def _timeline_time(value):
+    return value.isoformat() if value else ''
+
+
+def _timeline_sort_key(item):
+    return (item.get('occurred_at') or '', item.get('type') or '', str(item.get('resource_id') or ''))
+
+
+def _incident_object_timeline_items(incident, per_type_limit=12):
+    items = []
+    for evidence in incident.evidence_items.order_by('collected_at', 'id')[:per_type_limit]:
+        items.append({
+            'type': 'evidence_collected',
+            'title': evidence.get_kind_display(),
+            'summary': evidence.summary,
+            'result': EventRecord.RESULT_SUCCESS,
+            'severity': EventRecord.SEVERITY_INFO,
+            'occurred_at': _timeline_time(evidence.collected_at or evidence.created_at),
+            'actor': 'system',
+            'resource_type': 'aiops_incident_evidence',
+            'resource_id': evidence.id,
+            'metadata': {
+                'kind': evidence.kind,
+                'source': evidence.source,
+                'weight': evidence.weight,
+            },
+        })
+    for hypothesis in incident.hypotheses.order_by('generated_at', 'id')[:per_type_limit]:
+        items.append({
+            'type': 'hypothesis_generated',
+            'title': hypothesis.title,
+            'summary': hypothesis.summary or hypothesis.get_root_cause_type_display(),
+            'result': EventRecord.RESULT_SUCCESS if hypothesis.status != AIOpsIncidentHypothesis.STATUS_REJECTED else EventRecord.RESULT_FAILED,
+            'severity': EventRecord.SEVERITY_INFO,
+            'occurred_at': _timeline_time(hypothesis.generated_at or hypothesis.created_at),
+            'actor': hypothesis.generated_by or 'system',
+            'resource_type': 'aiops_incident_hypothesis',
+            'resource_id': hypothesis.id,
+            'metadata': {
+                'status': hypothesis.status,
+                'root_cause_type': hypothesis.root_cause_type,
+                'confidence': str(hypothesis.confidence),
+            },
+        })
+    for action in incident.incident_actions.order_by('created_at', 'id')[:per_type_limit]:
+        result = EventRecord.RESULT_PENDING
+        if action.status == AIOpsIncidentAction.STATUS_COMPLETED:
+            result = EventRecord.RESULT_SUCCESS
+        elif action.status in {AIOpsIncidentAction.STATUS_FAILED, AIOpsIncidentAction.STATUS_CANCELED}:
+            result = EventRecord.RESULT_FAILED
+        items.append({
+            'type': 'incident_action',
+            'title': action.title,
+            'summary': action.result_summary or action.get_action_type_display(),
+            'result': result,
+            'severity': EventRecord.SEVERITY_WARNING if action.risk_level in {AIOpsIncidentAction.RISK_HIGH, AIOpsIncidentAction.RISK_CRITICAL} else EventRecord.SEVERITY_INFO,
+            'occurred_at': _timeline_time(action.created_at),
+            'actor': action.created_by or 'system',
+            'resource_type': 'aiops_incident_action',
+            'resource_id': action.id,
+            'metadata': {
+                'action_type': action.action_type,
+                'risk_level': action.risk_level,
+                'status': action.status,
+                'verification_status': action.verification_status,
+            },
+        })
+    return items
+
+
 def build_incident_timeline(incident, limit=40):
     if not incident or not getattr(incident, 'id', None):
         return []
@@ -2522,10 +2593,15 @@ def build_incident_timeline(incident, limit=40):
                 'summary': f'Incident #{incident.id} 已关闭',
                 'result': EventRecord.RESULT_SUCCESS,
                 'severity': EventRecord.SEVERITY_INFO,
-                'occurred_at': incident.closed_at.isoformat(),
-                'actor': incident.owner or 'system',
-            })
-    return timeline[:limit]
+            'occurred_at': incident.closed_at.isoformat(),
+            'actor': incident.owner or 'system',
+        })
+    timeline.extend(_incident_object_timeline_items(incident))
+    deduped = {}
+    for item in timeline:
+        key = (item.get('type'), item.get('resource_type'), item.get('resource_id'), item.get('occurred_at'))
+        deduped.setdefault(key, item)
+    return sorted(deduped.values(), key=_timeline_sort_key)[:limit]
 
 
 def _incident_primary_hypothesis(incident):

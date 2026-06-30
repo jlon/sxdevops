@@ -972,6 +972,13 @@ class IncidentApiTests(TestCase):
         self.incident.alert_count = 2
         self.incident.active_alert_count = 2
         self.incident.save(update_fields=['alert_count', 'active_alert_count'])
+        evidence = AIOpsIncidentEvidence.objects.create(
+            incident=self.incident,
+            kind=AIOpsIncidentEvidence.KIND_ALERT,
+            source='builtin.alert_snapshot',
+            summary='错误率超过阈值',
+            weight=AIOpsIncidentEvidence.WEIGHT_PRIMARY,
+        )
         AIOpsReviewKnowledge.objects.create(
             slug=f'incident-{self.incident.id}-review',
             title=f'Incident #{self.incident.id} 复盘知识',
@@ -981,14 +988,22 @@ class IncidentApiTests(TestCase):
             tags=['incident', 'postmortem'],
             source_refs=[{'type': 'incident', 'id': self.incident.id}],
         )
-        AIOpsIncidentHypothesis.objects.create(
+        hypothesis = AIOpsIncidentHypothesis.objects.create(
             incident=self.incident,
             title='order-center 发布后错误率升高',
             root_cause_type=AIOpsIncidentHypothesis.TYPE_CHANGE_REGRESSION,
             confidence=0.7,
-            supporting_evidence_ids=[1],
+            supporting_evidence_ids=[evidence.id],
             summary='发布窗口与错误率升高时间一致。',
             status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
+        )
+        action = AIOpsIncidentAction.objects.create(
+            incident=self.incident,
+            hypothesis=hypothesis,
+            title='补查 order-center 错误日志',
+            action_type=AIOpsIncidentAction.ACTION_INVESTIGATE,
+            risk_level=AIOpsIncidentAction.RISK_READ_ONLY,
+            status=AIOpsIncidentAction.STATUS_PROPOSED,
         )
         EventRecord.objects.create(
             module='aiops',
@@ -1015,6 +1030,16 @@ class IncidentApiTests(TestCase):
         timeline_types = [item['type'] for item in response.data['timeline']]
         self.assertIn('incident_created', timeline_types)
         self.assertIn('investigate_incident', timeline_types)
+        self.assertIn('evidence_collected', timeline_types)
+        self.assertIn('hypothesis_generated', timeline_types)
+        self.assertIn('incident_action', timeline_types)
+        timeline_by_resource = {
+            (item.get('resource_type'), item.get('resource_id')): item
+            for item in response.data['timeline']
+        }
+        self.assertIn(('aiops_incident_evidence', evidence.id), timeline_by_resource)
+        self.assertIn(('aiops_incident_hypothesis', hypothesis.id), timeline_by_resource)
+        self.assertIn(('aiops_incident_action', action.id), timeline_by_resource)
 
     def test_materialize_incident_skill_creates_idempotent_pending_action(self):
         AIOpsIncidentEvidence.objects.create(
