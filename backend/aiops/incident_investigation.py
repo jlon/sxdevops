@@ -1,14 +1,16 @@
 import logging
 import time
+from collections import Counter
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from eventwall.models import EventRecord
 from eventwall.services import record_event
-from ops.models import Alert
+from ops.models import Alert, TaskResource
 
 from .models import (
     AIOpsChatSession,
@@ -267,6 +269,196 @@ def collect_event_evidence(incident, task=None, tool_invocation=None, limit=20):
     return evidence
 
 
+def _norm(value):
+    return str(value or '').strip().lower()
+
+
+def _contains_either(left, right):
+    left_text = _norm(left)
+    right_text = _norm(right)
+    return bool(left_text and right_text and (left_text in right_text or right_text in left_text))
+
+
+def _metadata_value(resource, key):
+    metadata = resource.metadata if isinstance(resource.metadata, dict) else {}
+    return metadata.get(key) or ''
+
+
+def _task_resource_broad_filter(incident):
+    query = Q()
+    if incident.environment:
+        query |= Q(environment__name__icontains=incident.environment) | Q(environment__code__icontains=incident.environment)
+    if incident.cluster:
+        query |= (
+            Q(cluster__name__icontains=incident.cluster)
+            | Q(name__icontains=incident.cluster)
+            | Q(description__icontains=incident.cluster)
+            | Q(metadata__cluster__icontains=incident.cluster)
+            | Q(metadata__cluster_name__icontains=incident.cluster)
+        )
+    if incident.namespace:
+        query |= Q(namespace__icontains=incident.namespace)
+    if incident.service:
+        query |= (
+            Q(system__name__icontains=incident.service)
+            | Q(name__icontains=incident.service)
+            | Q(description__icontains=incident.service)
+            | Q(metadata__service__icontains=incident.service)
+            | Q(metadata__role__icontains=incident.service)
+        )
+    if incident.resource:
+        query |= Q(name__icontains=incident.resource) | Q(description__icontains=incident.resource) | Q(metadata__resource__icontains=incident.resource)
+    return query
+
+
+def _has_task_resource_scope(incident):
+    return any([
+        incident.environment,
+        incident.cluster,
+        incident.namespace,
+        incident.service,
+        incident.resource,
+    ])
+
+
+def _task_resource_match_score(resource, incident):
+    score = 0
+    if incident.environment and (
+        _contains_either(incident.environment, resource.environment.name if resource.environment_id else '')
+        or _contains_either(incident.environment, resource.environment.code if resource.environment_id else '')
+    ):
+        score += 2
+    if incident.cluster and (
+        _contains_either(incident.cluster, resource.cluster.name if resource.cluster_id else '')
+        or _contains_either(incident.cluster, resource.name)
+        or _contains_either(incident.cluster, resource.description)
+        or _contains_either(incident.cluster, _metadata_value(resource, 'cluster'))
+        or _contains_either(incident.cluster, _metadata_value(resource, 'cluster_name'))
+    ):
+        score += 8
+    if incident.namespace and _contains_either(incident.namespace, resource.namespace):
+        score += 4
+    if incident.service and (
+        _contains_either(incident.service, resource.name)
+        or _contains_either(incident.service, resource.system.name if resource.system_id else '')
+        or _contains_either(incident.service, resource.description)
+        or _contains_either(incident.service, _metadata_value(resource, 'service'))
+        or _contains_either(incident.service, _metadata_value(resource, 'role'))
+    ):
+        score += 6
+    if incident.resource and (
+        _contains_either(incident.resource, resource.name)
+        or _contains_either(incident.resource, resource.description)
+        or _contains_either(incident.resource, _metadata_value(resource, 'resource'))
+    ):
+        score += 8
+    if resource.status == TaskResource.STATUS_WARNING:
+        score += 1
+    return score
+
+
+def _format_task_resource(resource, score):
+    metadata = resource.metadata if isinstance(resource.metadata, dict) else {}
+    return {
+        'id': resource.id,
+        'name': resource.name,
+        'resource_type': resource.resource_type,
+        'resource_type_display': resource.get_resource_type_display(),
+        'status': resource.status,
+        'status_display': resource.get_status_display(),
+        'environment': resource.environment.name if resource.environment_id else '',
+        'system': resource.system.name if resource.system_id else '',
+        'cluster': resource.cluster.name if resource.cluster_id else '',
+        'namespace': resource.namespace,
+        'ip_address': str(resource.ip_address or ''),
+        'owner': resource.owner,
+        'role': str(metadata.get('role') or ''),
+        'match_score': score,
+    }
+
+
+def _cluster_inventory_for_resources(incident, resources):
+    host_resources = [resource for resource in resources if resource.resource_type == TaskResource.RESOURCE_HOST]
+    if not host_resources:
+        return None
+    roles = Counter(
+        str(_metadata_value(resource, 'role') or 'node')
+        for resource in host_resources
+    )
+    environment_names = [
+        resource.environment.name
+        for resource in host_resources
+        if resource.environment_id and resource.environment.name
+    ]
+    cluster_name = incident.cluster or (environment_names[0] if environment_names else incident.environment)
+    return {
+        'cluster_count': 1 if cluster_name else 0,
+        'cluster_name': cluster_name,
+        'node_count': len(host_resources),
+        'node_names': [resource.name for resource in host_resources],
+        'roles': dict(roles),
+        'source': 'task_resource_base',
+        'resource_type': TaskResource.RESOURCE_HOST,
+        'is_k8s': False,
+    }
+
+
+def collect_task_resource_evidence(incident, task=None, tool_invocation=None, limit=50):
+    window_start, window_end = investigation_window(incident)
+    scored = []
+    if _has_task_resource_scope(incident):
+        queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').filter(_task_resource_broad_filter(incident))
+        scored = [
+            (resource, _task_resource_match_score(resource, incident))
+            for resource in queryset.order_by('environment__sort_order', 'system__sort_order', 'resource_type', 'name', 'id')[:200]
+        ]
+    matched = [
+        (resource, score)
+        for resource, score in scored
+        if score > 0
+    ]
+    matched.sort(key=lambda item: (-item[1], item[0].resource_type, item[0].name, item[0].id))
+    matched = matched[:limit]
+    resources = [resource for resource, _score in matched]
+    cluster_inventory = _cluster_inventory_for_resources(incident, resources)
+    payload = {
+        'summary': {
+            'count': len(resources),
+            'resource_ids': [resource.id for resource in resources],
+            'resource_type_counts': dict(Counter(resource.resource_type for resource in resources)),
+            'status_counts': dict(Counter(resource.status for resource in resources)),
+        },
+        'resources': [
+            _format_task_resource(resource, score)
+            for resource, score in matched
+        ],
+        'cluster_inventory': cluster_inventory,
+    }
+    if cluster_inventory:
+        summary = f"资源底座匹配 {len(resources)} 个执行资源；非 K8s 集群 {cluster_inventory['cluster_name']} 含 {cluster_inventory['node_count']} 个节点"
+    elif resources:
+        summary = f'资源底座匹配 {len(resources)} 个执行资源，可用于确认影响范围和执行目标'
+    else:
+        summary = '资源底座未匹配到当前 Incident 范围，后续处置前需补充或确认资源映射'
+    evidence, _ = AIOpsIncidentEvidence.objects.update_or_create(
+        incident=incident,
+        kind=AIOpsIncidentEvidence.KIND_TOPOLOGY,
+        source='builtin.task_resource_scope',
+        defaults={
+            'source_task': task,
+            'tool_invocation': tool_invocation,
+            'scope': incident_scope(incident),
+            'window_start': window_start,
+            'window_end': window_end,
+            'summary': summary,
+            'payload': payload,
+            'weight': AIOpsIncidentEvidence.WEIGHT_SUPPORTING if resources else AIOpsIncidentEvidence.WEIGHT_CONTEXT,
+            'collected_at': timezone.now(),
+        },
+    )
+    return evidence
+
+
 def _evidence_by_source(incident):
     return {
         evidence.source: evidence
@@ -290,6 +482,15 @@ def _alert_count(evidence):
     return len(alerts)
 
 
+def _task_resource_count(evidence):
+    payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
+    summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+    try:
+        return int(summary.get('count') or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _primary_alert_title(evidence, incident):
     payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
     alerts = payload.get('alerts') if isinstance(payload.get('alerts'), list) else []
@@ -301,7 +502,7 @@ def _primary_alert_title(evidence, incident):
     return incident.title
 
 
-def _recommended_next_checks(incident, event_count):
+def _recommended_next_checks(incident, event_count, resource_count=None):
     checks = [
         '补查同时间窗指标走势，确认告警是否伴随资源或业务指标异常。',
         '补查错误日志或慢调用样本，确认直接错误模式。',
@@ -310,6 +511,8 @@ def _recommended_next_checks(incident, event_count):
         checks.append('补查 K8s Pod、Workload 和 Event 状态。')
     if event_count == 0:
         checks.append('补查发布、工单和任务中心记录，确认是否存在未接入的变更。')
+    if resource_count == 0:
+        checks.append('补充资源底座映射，确认告警对象对应的主机、K8s 或中间件节点。')
     return checks
 
 
@@ -318,14 +521,16 @@ def generate_root_cause_hypothesis(incident, task=None):
     evidence = _evidence_by_source(incident)
     alert_evidence = evidence.get('builtin.alert_snapshot')
     event_evidence = evidence.get('builtin.event_timeline')
+    resource_evidence = evidence.get('builtin.task_resource_scope')
     event_count = _event_count(event_evidence)
     alert_count = _alert_count(alert_evidence)
+    resource_count = _task_resource_count(resource_evidence)
     if event_count:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_CHANGE_REGRESSION
         title = f'{incident.service or incident.title} 可能受近期事件或变更影响'
         summary = f'Incident 时间窗内存在 {event_count} 条相关事件，需要结合告警、日志和变更内容验证是否为直接诱因。'
         confidence = 0.62 if alert_count else 0.48
-        supporting_ids = _evidence_ids(alert_evidence, event_evidence)
+        supporting_ids = _evidence_ids(alert_evidence, event_evidence, resource_evidence)
         missing = ['缺少事件详情与异常指标之间的直接因果证据。']
     elif alert_count:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM
@@ -333,16 +538,18 @@ def generate_root_cause_hypothesis(incident, task=None):
         title = f'{incident.service or incident.resource or incident.title} 出现 {primary_alert} 告警症状'
         summary = f'当前主要证据来自 {alert_count} 条关联告警，尚不足以判定底层根因。'
         confidence = 0.45
-        supporting_ids = _evidence_ids(alert_evidence)
+        supporting_ids = _evidence_ids(alert_evidence, resource_evidence)
         missing = ['缺少指标、日志、Trace、K8s 或变更证据，暂不能确认根因类型。']
     else:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_UNKNOWN
         title = f'{incident.title} 根因待确认'
         summary = '当前 Incident 尚缺少可用证据，只能保持未知根因。'
         confidence = 0.2
-        supporting_ids = []
+        supporting_ids = _evidence_ids(resource_evidence)
         missing = ['缺少告警、指标、日志、Trace、K8s 和变更证据。']
-    recommended = _recommended_next_checks(incident, event_count)
+    if resource_count == 0:
+        missing.append('缺少当前 Incident 范围的资源底座映射，影响后续执行目标确认。')
+    recommended = _recommended_next_checks(incident, event_count, resource_count)
     AIOpsIncidentHypothesis.objects.filter(
         incident=incident,
         status=AIOpsIncidentHypothesis.STATUS_PRIMARY,
@@ -437,6 +644,7 @@ def create_investigation_task(incident, reason='alert_changed'):
         plan_steps=[
             {'tool': 'builtin.alert_snapshot', 'title': '采集关联告警快照', 'risk_level': 'read_only', 'status': 'running'},
             {'tool': 'builtin.event_timeline', 'title': '采集相关事件时间线', 'risk_level': 'read_only', 'status': 'pending'},
+            {'tool': 'builtin.task_resource_scope', 'title': '采集资源底座范围', 'risk_level': 'read_only', 'status': 'pending'},
         ],
         orchestration_state={
             'version': '1.0',
@@ -467,8 +675,15 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
         'builtin.event_timeline',
         collect_event_evidence,
     )
-    evidence_items = [alert_evidence, event_evidence]
-    tool_invocation_ids = [alert_invocation.id, event_invocation.id]
+    resource_evidence, resource_invocation = _collect_evidence_with_audit(
+        incident,
+        task,
+        audit_session,
+        'builtin.task_resource_scope',
+        collect_task_resource_evidence,
+    )
+    evidence_items = [alert_evidence, event_evidence, resource_evidence]
+    tool_invocation_ids = [alert_invocation.id, event_invocation.id, resource_invocation.id]
     hypothesis = generate_root_cause_hypothesis(incident, task=task)
     proposals = generate_remediation_proposals(incident, hypothesis)
     now = timezone.now()
@@ -497,6 +712,7 @@ def _run_readonly_investigation_atomic(incident, reason='alert_changed'):
     task.react_trace = [
         {'phase': 'collect_alerts', 'status': 'completed', 'evidence_id': evidence_items[0].id, 'tool_invocation_id': alert_invocation.id},
         {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[1].id, 'tool_invocation_id': event_invocation.id},
+        {'phase': 'collect_task_resources', 'status': 'completed', 'evidence_id': evidence_items[2].id, 'tool_invocation_id': resource_invocation.id},
         {'phase': 'terminate', 'status': 'completed', 'stop_condition': '只读证据快照已刷新'},
     ]
     task.result_payload = {
