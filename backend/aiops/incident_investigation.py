@@ -47,6 +47,18 @@ K8S_RESOURCE_TYPES = {
     'containers',
 }
 K8S_SCOPE_KEYWORDS = ('k8s', 'kubernetes', 'pod', 'deployment', 'statefulset', 'daemonset', 'replicaset')
+RCA_MAX_EVIDENCE_ITEMS = 12
+RCA_MAX_SAMPLE_ITEMS = 5
+RCA_TEXT_LIMIT = 180
+RCA_EVIDENCE_SOURCE_ORDER = (
+    'builtin.alert_snapshot',
+    'builtin.metric_snapshot',
+    'builtin.log_snapshot',
+    'builtin.trace_snapshot',
+    'builtin.k8s_snapshot',
+    'builtin.event_timeline',
+    'builtin.task_resource_scope',
+)
 
 
 def _safe_dict(value):
@@ -58,6 +70,15 @@ def _safe_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _short_text(value, limit=RCA_TEXT_LIMIT):
+    text = ' '.join(str(value or '').split())
+    return text[:limit]
+
+
+def _iso_or_none(value):
+    return value.isoformat() if value else None
 
 
 def incident_scope(incident):
@@ -1065,6 +1086,303 @@ def _evidence_by_source(incident):
     }
 
 
+def _rca_alert_facts(payload):
+    alerts = payload.get('alerts') if isinstance(payload.get('alerts'), list) else []
+    active = []
+    active_count = 0
+    primary = None
+    for item in alerts:
+        if not isinstance(item, dict):
+            continue
+        alert = item.get('alert') if isinstance(item.get('alert'), dict) else {}
+        fact = {
+            'id': alert.get('id'),
+            'role': item.get('role') or '',
+            'title': _short_text(alert.get('title')),
+            'level': alert.get('level') or '',
+            'status': alert.get('status') or '',
+            'metric_name': alert.get('metric_name') or '',
+            'starts_at': alert.get('starts_at'),
+            'resource': alert.get('resource') or '',
+        }
+        if item.get('role') == 'primary' and primary is None:
+            primary = fact
+        if fact['status'] == Alert.STATUS_ACTIVE:
+            active_count += 1
+            if len(active) < RCA_MAX_SAMPLE_ITEMS:
+                active.append(fact)
+    return {
+        'alert_count': len(alerts),
+        'active_alert_count': active_count,
+        'primary_alert': primary,
+        'active_alerts': active,
+    }
+
+
+def _rca_metric_facts(payload):
+    summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+    evidence = payload.get('evidence') if isinstance(payload.get('evidence'), list) else []
+    samples = []
+    for item in evidence[:RCA_MAX_SAMPLE_ITEMS]:
+        if not isinstance(item, dict):
+            continue
+        samples.append({
+            'name': _short_text(item.get('name'), 80),
+            'category': item.get('category') or '',
+            'intent': _short_text(item.get('intent')),
+            'status': item.get('status') or '',
+            'trend': item.get('trend') or '',
+            'series_count': _safe_int(item.get('series_count')),
+            'error': _short_text(item.get('error')),
+        })
+    return {
+        'planned_count': _safe_int(summary.get('planned_count')),
+        'executed_count': _safe_int(summary.get('executed_count')),
+        'abnormal_count': _safe_int(summary.get('abnormal_count')),
+        'missing_count': _safe_int(summary.get('missing_count')),
+        'failed_count': _safe_int(summary.get('failed_count')),
+        'metric_datasource_id': summary.get('metric_datasource_id') or '',
+        'samples': samples,
+    }
+
+
+def _rca_log_facts(payload):
+    summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+    logs = payload.get('logs') if isinstance(payload.get('logs'), list) else []
+    return {
+        'datasource_count': _safe_int(summary.get('datasource_count')),
+        'queried_datasource_count': _safe_int(summary.get('queried_datasource_count')),
+        'log_count': _safe_int(summary.get('log_count')),
+        'error_count': _safe_int(summary.get('error_count')),
+        'warning_count': _safe_int(summary.get('warning_count')),
+        'failed_count': _safe_int(summary.get('failed_count')),
+        'samples': [
+            {
+                'timestamp': item.get('timestamp') or '',
+                'level': item.get('level') or '',
+                'source': item.get('source') or '',
+                'message': _short_text(item.get('message')),
+                'trace_id': item.get('trace_id') or '',
+            }
+            for item in logs[:RCA_MAX_SAMPLE_ITEMS]
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _rca_trace_facts(payload):
+    summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+    traces = payload.get('traces') if isinstance(payload.get('traces'), list) else []
+    return {
+        'datasource_found': bool(summary.get('datasource_found')),
+        'service_matched': bool(summary.get('service_matched')),
+        'service_name': summary.get('service_name') or '',
+        'match_count': _safe_int(summary.get('match_count')),
+        'error_match_count': _safe_int(summary.get('error_match_count')),
+        'error': _short_text(summary.get('error')),
+        'samples': [
+            {
+                'trace_id': item.get('trace_id') or '',
+                'service_name': item.get('service_name') or '',
+                'duration_ms': _safe_int(item.get('duration_ms')),
+                'state': item.get('state') or '',
+                'is_error': bool(item.get('is_error')),
+                'summary': _short_text(item.get('summary')),
+            }
+            for item in traces[:RCA_MAX_SAMPLE_ITEMS]
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _rca_k8s_facts(payload):
+    summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+    pods = payload.get('pods') if isinstance(payload.get('pods'), list) else []
+    workloads = payload.get('workloads') if isinstance(payload.get('workloads'), list) else []
+    return {
+        'cluster_found': bool(summary.get('cluster_found')),
+        'cluster_name': summary.get('cluster_name') or '',
+        'namespaces': summary.get('namespaces') if isinstance(summary.get('namespaces'), list) else [],
+        'pods_total': _safe_int(summary.get('pods_total')),
+        'pods_abnormal': _safe_int(summary.get('pods_abnormal')),
+        'pods_restarting': _safe_int(summary.get('pods_restarting')),
+        'workloads_degraded': _safe_int(summary.get('workloads_degraded')),
+        'error': _short_text(summary.get('error')),
+        'pod_samples': [
+            {
+                'name': item.get('name') or '',
+                'namespace': item.get('namespace') or '',
+                'status': item.get('status') or '',
+                'node': item.get('node') or '',
+                'restarts': _safe_int(item.get('restarts')),
+            }
+            for item in pods[:RCA_MAX_SAMPLE_ITEMS]
+            if isinstance(item, dict)
+        ],
+        'workload_samples': [
+            {
+                'name': item.get('name') or '',
+                'namespace': item.get('namespace') or '',
+                'workload_type': item.get('workload_type') or '',
+                'replicas': item.get('replicas'),
+                'ready_replicas': item.get('ready_replicas'),
+            }
+            for item in workloads[:RCA_MAX_SAMPLE_ITEMS]
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _rca_event_facts(payload):
+    events = payload.get('events') if isinstance(payload.get('events'), list) else []
+    return {
+        'event_count': len(events),
+        'samples': [
+            {
+                'id': item.get('id'),
+                'module': item.get('module') or '',
+                'category': item.get('category') or '',
+                'action': item.get('action') or '',
+                'result': item.get('result') or '',
+                'title': _short_text(item.get('title')),
+                'occurred_at': item.get('occurred_at'),
+            }
+            for item in events[:RCA_MAX_SAMPLE_ITEMS]
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _rca_cluster_inventory(inventory):
+    if not isinstance(inventory, dict):
+        return None
+    node_names = inventory.get('node_names') if isinstance(inventory.get('node_names'), list) else []
+    return {
+        'cluster_count': _safe_int(inventory.get('cluster_count')),
+        'cluster_name': inventory.get('cluster_name') or '',
+        'node_count': _safe_int(inventory.get('node_count')),
+        'node_name_samples': node_names[:RCA_MAX_SAMPLE_ITEMS],
+        'roles': inventory.get('roles') if isinstance(inventory.get('roles'), dict) else {},
+        'source': inventory.get('source') or '',
+        'resource_type': inventory.get('resource_type') or '',
+        'is_k8s': bool(inventory.get('is_k8s')),
+    }
+
+
+def _rca_topology_facts(payload):
+    summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+    inventory = payload.get('cluster_inventory') if isinstance(payload.get('cluster_inventory'), dict) else None
+    resources = payload.get('resources') if isinstance(payload.get('resources'), list) else []
+    return {
+        'resource_count': _safe_int(summary.get('count')),
+        'resource_type_counts': summary.get('resource_type_counts') if isinstance(summary.get('resource_type_counts'), dict) else {},
+        'status_counts': summary.get('status_counts') if isinstance(summary.get('status_counts'), dict) else {},
+        'cluster_inventory': _rca_cluster_inventory(inventory),
+        'samples': [
+            {
+                'id': item.get('id'),
+                'name': item.get('name') or '',
+                'resource_type': item.get('resource_type') or '',
+                'status': item.get('status') or '',
+                'environment': item.get('environment') or '',
+                'cluster': item.get('cluster') or '',
+                'namespace': item.get('namespace') or '',
+                'role': item.get('role') or '',
+                'match_score': _safe_int(item.get('match_score')),
+            }
+            for item in resources[:RCA_MAX_SAMPLE_ITEMS]
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _rca_key_facts(evidence):
+    payload = evidence.payload if isinstance(evidence.payload, dict) else {}
+    if evidence.kind == AIOpsIncidentEvidence.KIND_ALERT:
+        return _rca_alert_facts(payload)
+    if evidence.kind == AIOpsIncidentEvidence.KIND_METRIC:
+        return _rca_metric_facts(payload)
+    if evidence.kind == AIOpsIncidentEvidence.KIND_LOG:
+        return _rca_log_facts(payload)
+    if evidence.kind == AIOpsIncidentEvidence.KIND_TRACE:
+        return _rca_trace_facts(payload)
+    if evidence.kind == AIOpsIncidentEvidence.KIND_K8S:
+        return _rca_k8s_facts(payload)
+    if evidence.kind == AIOpsIncidentEvidence.KIND_EVENT:
+        return _rca_event_facts(payload)
+    if evidence.kind == AIOpsIncidentEvidence.KIND_TOPOLOGY:
+        return _rca_topology_facts(payload)
+    return {}
+
+
+def _rca_evidence_item(evidence):
+    return {
+        'id': evidence.id,
+        'kind': evidence.kind,
+        'kind_display': evidence.get_kind_display(),
+        'source': evidence.source,
+        'summary': _short_text(evidence.summary, 260),
+        'weight': evidence.weight,
+        'window_start': _iso_or_none(evidence.window_start),
+        'window_end': _iso_or_none(evidence.window_end),
+        'collected_at': _iso_or_none(evidence.collected_at),
+        'tool_invocation_id': evidence.tool_invocation_id,
+        'key_facts': _rca_key_facts(evidence),
+    }
+
+
+def build_rca_evidence_package(incident, evidence_items=None, hypothesis=None):
+    if evidence_items is None:
+        incident = AIOpsIncident.objects.prefetch_related('evidence_items').get(id=incident.id)
+        evidence_items = list(incident.evidence_items.all())
+    source_rank = {source: index for index, source in enumerate(RCA_EVIDENCE_SOURCE_ORDER)}
+    ordered = sorted(
+        evidence_items,
+        key=lambda item: (source_rank.get(item.source, len(source_rank)), item.id),
+    )[:RCA_MAX_EVIDENCE_ITEMS]
+    package = {
+        'version': '1.0',
+        'generated_at': timezone.now().isoformat(),
+        'incident': {
+            'id': incident.id,
+            'title': incident.title,
+            'status': incident.status,
+            'severity': incident.severity,
+            'source_type': incident.source_type,
+            'environment': incident.environment,
+            'cluster': incident.cluster,
+            'namespace': incident.namespace,
+            'service': incident.service,
+            'resource_type': incident.resource_type,
+            'resource': incident.resource,
+            'alert_count': incident.alert_count,
+            'active_alert_count': incident.active_alert_count,
+            'started_at': _iso_or_none(incident.started_at),
+            'last_seen_at': _iso_or_none(incident.last_seen_at),
+        },
+        'evidence': [_rca_evidence_item(item) for item in ordered],
+        'policy': {
+            'scope': 'current_incident_only',
+            'max_evidence_items': RCA_MAX_EVIDENCE_ITEMS,
+            'max_sample_items_per_evidence': RCA_MAX_SAMPLE_ITEMS,
+            'require_supporting_evidence_ids': True,
+            'forbid_unobserved_facts': True,
+            'use_missing_evidence_when_uncertain': True,
+        },
+    }
+    if hypothesis:
+        package['hypothesis'] = {
+            'id': hypothesis.id,
+            'title': hypothesis.title,
+            'root_cause_type': hypothesis.root_cause_type,
+            'confidence': float(hypothesis.confidence),
+            'supporting_evidence_ids': hypothesis.supporting_evidence_ids,
+            'counter_evidence_ids': hypothesis.counter_evidence_ids,
+            'missing_evidence': hypothesis.missing_evidence,
+        }
+    return package
+
+
 def _evidence_ids(*items):
     return [item.id for item in items if item]
 
@@ -1475,6 +1793,7 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         resource_invocation.id,
     ]
     hypothesis = generate_root_cause_hypothesis(incident, task=task)
+    rca_evidence_package = build_rca_evidence_package(incident, evidence_items=evidence_items, hypothesis=hypothesis)
     proposals = generate_remediation_proposals(incident, hypothesis)
     now = timezone.now()
     task.status = AIOpsExternalTask.STATUS_COMPLETED
@@ -1489,6 +1808,7 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         'evidence_count': len(evidence_items),
         'audit_session_id': audit_session.id,
         'tool_invocation_ids': tool_invocation_ids,
+        'rca_input': rca_evidence_package,
     }
     task.agent_results = [
         {
@@ -1515,6 +1835,7 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         'evidence_ids': [item.id for item in evidence_items],
         'tool_invocation_ids': tool_invocation_ids,
         'hypothesis_id': hypothesis.id,
+        'rca_input_version': rca_evidence_package['version'],
         'proposal_ids': [item.id for item in proposals],
         'summary': '已刷新 Incident 只读调查证据、主根因假设和只读处置建议。',
     }

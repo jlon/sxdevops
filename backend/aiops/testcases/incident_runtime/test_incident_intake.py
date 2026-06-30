@@ -113,6 +113,27 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(len(task.result_payload['tool_invocation_ids']), 7)
         self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 7)
         self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:7]))
+        rca_input = task.orchestration_state['rca_input']
+        self.assertEqual(rca_input['version'], '1.0')
+        self.assertEqual(rca_input['incident']['id'], incident.id)
+        self.assertEqual(rca_input['incident']['service'], 'order-center')
+        self.assertTrue(rca_input['policy']['forbid_unobserved_facts'])
+        self.assertEqual(rca_input['hypothesis']['root_cause_type'], AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
+        self.assertEqual(
+            [item['source'] for item in rca_input['evidence']],
+            [
+                'builtin.alert_snapshot',
+                'builtin.metric_snapshot',
+                'builtin.log_snapshot',
+                'builtin.trace_snapshot',
+                'builtin.k8s_snapshot',
+                'builtin.event_timeline',
+                'builtin.task_resource_scope',
+            ],
+        )
+        self.assertTrue(all('key_facts' in item for item in rca_input['evidence']))
+        self.assertTrue(all('payload' not in item for item in rca_input['evidence']))
+        self.assertEqual(task.result_payload['rca_input_version'], '1.0')
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
         self.assertTrue(hypothesis.supporting_evidence_ids)
@@ -309,6 +330,13 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertFalse(k8s_evidence.payload['summary']['cluster_found'])
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
+        task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
+        topology_item = next(item for item in task.orchestration_state['rca_input']['evidence'] if item['source'] == 'builtin.task_resource_scope')
+        rca_inventory = topology_item['key_facts']['cluster_inventory']
+        self.assertEqual(rca_inventory['cluster_count'], 1)
+        self.assertEqual(rca_inventory['node_count'], 4)
+        self.assertEqual(set(rca_inventory['node_name_samples']), {'hbase-master', 'hbase-regionserver-1', 'hbase-regionserver-2', 'rs-backup-3'})
+        self.assertEqual(rca_inventory['roles']['regionserver'], 3)
 
     def test_incident_investigation_collects_k8s_evidence(self):
         cluster = K8sCluster.objects.create(
