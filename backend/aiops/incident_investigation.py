@@ -12,8 +12,9 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from ops.log_views import _merge_config as merge_log_config
 from ops.log_views import _run_query as run_log_provider_query
-from ops.models import Alert, K8sCluster, LogDataSource, MetricDataSource, TaskResource
+from ops.models import Alert, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TracingDataSource
 from ops.observability_views import execute_promql_query
+from ops.tracing_providers import search_tracing
 
 from . import metric_evidence
 from .models import (
@@ -50,6 +51,13 @@ K8S_SCOPE_KEYWORDS = ('k8s', 'kubernetes', 'pod', 'deployment', 'statefulset', '
 
 def _safe_dict(value):
     return value if isinstance(value, dict) else {}
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def incident_scope(incident):
@@ -745,6 +753,148 @@ def collect_log_evidence(incident, task=None, tool_invocation=None, limit=8):
     return evidence
 
 
+def _select_tracing_datasource():
+    queryset = TracingDataSource.objects.filter(is_enabled=True)
+    return (
+        queryset.filter(is_default=True).order_by('id').first()
+        or queryset.order_by('id').first()
+    )
+
+
+def _trace_sample(trace):
+    return {
+        'trace_id': trace.get('trace_id') or '',
+        'service_name': trace.get('service_name') or '',
+        'instance_name': trace.get('instance_name') or '',
+        'endpoint_names': trace.get('endpoint_names') or [],
+        'duration_ms': trace.get('duration_ms') or 0,
+        'start': trace.get('start') or '',
+        'state': trace.get('state') or ('ERROR' if trace.get('is_error') else 'SUCCESS'),
+        'is_error': bool(trace.get('is_error')),
+        'summary': trace.get('summary') or '',
+    }
+
+
+def collect_trace_evidence(incident, task=None, tool_invocation=None, limit=5):
+    window_start, window_end = investigation_window(incident)
+    datasource = _select_tracing_datasource()
+    service_name = str(incident.service or '').strip()
+    if not datasource:
+        payload = {
+            'summary': {
+                'datasource_found': False,
+                'service_matched': False,
+                'match_count': 0,
+                'error_match_count': 0,
+                'error': '',
+            },
+            'tracing': None,
+            'query': {'service': service_name, 'trace_state': 'ERROR', 'limit': limit},
+            'traces': [],
+        }
+        summary = '未配置启用的 Trace 数据源，已跳过链路取证'
+        weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    elif not service_name:
+        payload = {
+            'summary': {
+                'datasource_found': True,
+                'datasource_id': datasource.id,
+                'datasource_name': datasource.name,
+                'provider': datasource.provider,
+                'service_matched': False,
+                'match_count': 0,
+                'error_match_count': 0,
+                'error': '',
+            },
+            'tracing': None,
+            'query': {'service': '', 'trace_state': 'ERROR', 'limit': limit},
+            'traces': [],
+        }
+        summary = 'Incident 未包含明确服务名，已跳过链路取证'
+        weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    else:
+        provider = datasource.provider
+        datasource_id = str(datasource.id)
+        error = ''
+        try:
+            result = search_tracing({
+                'provider': provider,
+                'datasource_id': datasource_id,
+                'service_name': service_name,
+                'trace_state': 'ERROR',
+                'duration_minutes': 120,
+                'limit': limit,
+            })
+            service = result.get('matched_service')
+            traces = result.get('traces') or []
+            tracing_meta = result.get('tracing') or {}
+            result_summary = result.get('summary') or {}
+        except Exception as exc:
+            service = None
+            traces = []
+            tracing_meta = {
+                'provider': provider,
+                'datasource_id': datasource_id,
+                'datasource_name': datasource.name,
+            }
+            result_summary = {}
+            error = str(exc)[:240]
+        match_count = _safe_int(result_summary.get('match_count'), len(traces))
+        error_match_count = _safe_int(result_summary.get('error_match_count'), len([item for item in traces if item.get('is_error')]))
+        payload = {
+            'summary': {
+                'datasource_found': True,
+                'datasource_id': datasource.id,
+                'datasource_name': datasource.name,
+                'provider': provider,
+                'service_matched': bool(service),
+                'service_id': service.get('id') if service else '',
+                'service_name': service.get('name') if service else service_name,
+                'match_count': match_count,
+                'error_match_count': error_match_count,
+                'error': error,
+            },
+            'tracing': tracing_meta,
+            'query': {
+                'service': service_name,
+                'service_id': service.get('id') if service else '',
+                'trace_state': 'ERROR',
+                'limit': limit,
+                'duration_minutes': 120,
+            },
+            'traces': [_trace_sample(item) for item in traces[:limit]],
+        }
+        if error:
+            summary = f'Trace 取证失败：{error}'
+            weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+        elif not service:
+            summary = f'Trace 取证未匹配到服务 {service_name}'
+            weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+        elif traces:
+            summary = f"Trace 取证命中 {match_count} 条异常链路，错误 {error_match_count} 条"
+            weight = AIOpsIncidentEvidence.WEIGHT_SUPPORTING
+        else:
+            summary = f'Trace 取证未命中 {service_name} 的异常链路'
+            weight = AIOpsIncidentEvidence.WEIGHT_CONTEXT
+    evidence, _ = AIOpsIncidentEvidence.objects.update_or_create(
+        incident=incident,
+        kind=AIOpsIncidentEvidence.KIND_TRACE,
+        source='builtin.trace_snapshot',
+        defaults={
+            'source_task': task,
+            'tool_invocation': tool_invocation,
+            'scope': incident_scope(incident),
+            'window_start': window_start,
+            'window_end': window_end,
+            'summary': summary,
+            'payload': payload,
+            'weight': weight,
+            'collected_at': timezone.now(),
+        },
+    )
+    return evidence
+
+
 def _incident_has_k8s_scope(incident):
     resource_type = str(incident.resource_type or '').strip().lower()
     if resource_type in K8S_RESOURCE_TYPES:
@@ -974,6 +1124,18 @@ def _log_summary(evidence):
     }
 
 
+def _trace_summary(evidence):
+    payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
+    summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+    return {
+        'datasource_found': bool(summary.get('datasource_found')),
+        'service_matched': bool(summary.get('service_matched')),
+        'match_count': _safe_int(summary.get('match_count')),
+        'error_match_count': _safe_int(summary.get('error_match_count')),
+        'error': str(summary.get('error') or ''),
+    }
+
+
 def _k8s_summary(evidence):
     payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
     summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
@@ -1025,35 +1187,37 @@ def generate_root_cause_hypothesis(incident, task=None):
     resource_evidence = evidence.get('builtin.task_resource_scope')
     metric_evidence_item = evidence.get('builtin.metric_snapshot')
     log_evidence = evidence.get('builtin.log_snapshot')
+    trace_evidence = evidence.get('builtin.trace_snapshot')
     k8s_evidence = evidence.get('builtin.k8s_snapshot')
     event_count = _event_count(event_evidence)
     alert_count = _alert_count(alert_evidence)
     resource_count = _task_resource_count(resource_evidence)
     metric_summary = _metric_summary(metric_evidence_item)
     log_summary = _log_summary(log_evidence)
+    trace_summary = _trace_summary(trace_evidence)
     k8s_summary = _k8s_summary(k8s_evidence)
     if event_count:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_CHANGE_REGRESSION
         title = f'{incident.service or incident.title} 可能受近期事件或变更影响'
         summary = f'Incident 时间窗内存在 {event_count} 条相关事件，需要结合告警、日志和变更内容验证是否为直接诱因。'
         confidence = 0.62 if alert_count else 0.48
-        supporting_ids = _evidence_ids(alert_evidence, event_evidence, metric_evidence_item, log_evidence, k8s_evidence, resource_evidence)
+        supporting_ids = _evidence_ids(alert_evidence, event_evidence, metric_evidence_item, log_evidence, trace_evidence, k8s_evidence, resource_evidence)
         missing = ['缺少事件详情与异常指标之间的直接因果证据。']
     elif alert_count:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM
         primary_alert = _primary_alert_title(alert_evidence, incident)
         title = f'{incident.service or incident.resource or incident.title} 出现 {primary_alert} 告警症状'
         summary = f'当前主要证据来自 {alert_count} 条关联告警，尚不足以判定底层根因。'
-        has_runtime_signal = any([log_summary['error_count'], k8s_summary['pods_abnormal'], k8s_summary['workloads_degraded']])
+        has_runtime_signal = any([log_summary['error_count'], trace_summary['error_match_count'], k8s_summary['pods_abnormal'], k8s_summary['workloads_degraded']])
         confidence = 0.6 if has_runtime_signal else (0.55 if metric_summary['abnormal_count'] else 0.45)
-        supporting_ids = _evidence_ids(alert_evidence, metric_evidence_item, log_evidence, k8s_evidence, resource_evidence)
-        missing = ['缺少 Trace 或变更证据，暂不能确认根因类型。']
+        supporting_ids = _evidence_ids(alert_evidence, metric_evidence_item, log_evidence, trace_evidence, k8s_evidence, resource_evidence)
+        missing = ['缺少变更证据，暂不能确认根因类型。']
     else:
         root_cause_type = AIOpsIncidentHypothesis.TYPE_UNKNOWN
         title = f'{incident.title} 根因待确认'
         summary = '当前 Incident 尚缺少可用证据，只能保持未知根因。'
         confidence = 0.2
-        supporting_ids = _evidence_ids(metric_evidence_item, log_evidence, k8s_evidence, resource_evidence)
+        supporting_ids = _evidence_ids(metric_evidence_item, log_evidence, trace_evidence, k8s_evidence, resource_evidence)
         missing = ['缺少告警、指标、日志、Trace、K8s 和变更证据。']
     if metric_summary['planned_count'] == 0:
         missing.append('未生成可执行指标查询计划，需补充告警指标名或服务/资源标签。')
@@ -1067,6 +1231,14 @@ def generate_root_cause_hypothesis(incident, task=None):
         missing.append('日志查询未命中样本，需放宽服务、namespace 或时间窗口。')
     elif log_summary['failed_count']:
         missing.append('部分日志数据源查询失败，需确认日志接入配置。')
+    if not trace_summary['datasource_found']:
+        missing.append('未配置启用的 Trace 数据源，无法确认调用链错误或慢调用。')
+    elif trace_summary['error']:
+        missing.append('Trace 查询失败，需确认链路数据源配置。')
+    elif incident.service and not trace_summary['service_matched']:
+        missing.append('Trace 数据源未匹配到 Incident 服务，需确认服务命名映射。')
+    elif incident.service and trace_summary['match_count'] == 0:
+        missing.append('Trace 查询未命中异常链路，需结合日志或放宽时间窗口。')
     if _incident_has_k8s_scope(incident):
         if not k8s_summary['cluster_found']:
             missing.append('Incident 包含 K8s 范围，但未匹配到 K8s 集群配置。')
@@ -1172,6 +1344,7 @@ def create_investigation_task(incident, reason='alert_changed'):
             {'tool': 'builtin.alert_snapshot', 'title': '采集关联告警快照', 'risk_level': 'read_only', 'status': 'running'},
             {'tool': 'builtin.metric_snapshot', 'title': '采集指标趋势快照', 'risk_level': 'read_only', 'status': 'pending'},
             {'tool': 'builtin.log_snapshot', 'title': '采集错误日志快照', 'risk_level': 'read_only', 'status': 'pending'},
+            {'tool': 'builtin.trace_snapshot', 'title': '采集调用链错误快照', 'risk_level': 'read_only', 'status': 'pending'},
             {'tool': 'builtin.k8s_snapshot', 'title': '采集 K8s 运行态快照', 'risk_level': 'read_only', 'status': 'pending'},
             {'tool': 'builtin.event_timeline', 'title': '采集相关事件时间线', 'risk_level': 'read_only', 'status': 'pending'},
             {'tool': 'builtin.task_resource_scope', 'title': '采集资源底座范围', 'risk_level': 'read_only', 'status': 'pending'},
@@ -1224,6 +1397,13 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
             'builtin.log_snapshot',
             collect_log_evidence,
         )
+        trace_evidence, trace_invocation = _collect_evidence_with_audit(
+            incident,
+            task,
+            audit_session,
+            'builtin.trace_snapshot',
+            collect_trace_evidence,
+        )
         k8s_evidence, k8s_invocation = _collect_evidence_with_audit(
             incident,
             task,
@@ -1248,11 +1428,12 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
     except Exception as exc:
         _mark_investigation_task_failed(task, exc)
         raise
-    evidence_items = [alert_evidence, metric_evidence_item, log_evidence, k8s_evidence, event_evidence, resource_evidence]
+    evidence_items = [alert_evidence, metric_evidence_item, log_evidence, trace_evidence, k8s_evidence, event_evidence, resource_evidence]
     tool_invocation_ids = [
         alert_invocation.id,
         metric_invocation.id,
         log_invocation.id,
+        trace_invocation.id,
         k8s_invocation.id,
         event_invocation.id,
         resource_invocation.id,
@@ -1286,9 +1467,10 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         {'phase': 'collect_alerts', 'status': 'completed', 'evidence_id': evidence_items[0].id, 'tool_invocation_id': alert_invocation.id},
         {'phase': 'collect_metrics', 'status': 'completed', 'evidence_id': evidence_items[1].id, 'tool_invocation_id': metric_invocation.id},
         {'phase': 'collect_logs', 'status': 'completed', 'evidence_id': evidence_items[2].id, 'tool_invocation_id': log_invocation.id},
-        {'phase': 'collect_k8s', 'status': 'completed', 'evidence_id': evidence_items[3].id, 'tool_invocation_id': k8s_invocation.id},
-        {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[4].id, 'tool_invocation_id': event_invocation.id},
-        {'phase': 'collect_task_resources', 'status': 'completed', 'evidence_id': evidence_items[5].id, 'tool_invocation_id': resource_invocation.id},
+        {'phase': 'collect_traces', 'status': 'completed', 'evidence_id': evidence_items[3].id, 'tool_invocation_id': trace_invocation.id},
+        {'phase': 'collect_k8s', 'status': 'completed', 'evidence_id': evidence_items[4].id, 'tool_invocation_id': k8s_invocation.id},
+        {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[5].id, 'tool_invocation_id': event_invocation.id},
+        {'phase': 'collect_task_resources', 'status': 'completed', 'evidence_id': evidence_items[6].id, 'tool_invocation_id': resource_invocation.id},
         {'phase': 'terminate', 'status': 'completed', 'stop_condition': '只读证据快照已刷新'},
     ]
     task.result_payload = {

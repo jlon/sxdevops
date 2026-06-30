@@ -1517,6 +1517,45 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['traces'][0]['instance_name'], 'order-prod-02')
         self.assertTrue(any(item['name'] == 'order-prod-02' for item in payload['instances']))
 
+    def test_tracing_search_can_match_demo_service_name(self):
+        response = self.client.post(
+            '/api/observability/tracing/search/',
+            {
+                'provider': 'demo',
+                'service_name': 'order-service',
+                'trace_state': 'ERROR',
+                'limit': 20,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['query']['service_id'], 'svc-order')
+        self.assertEqual(payload['matched_service']['name'], 'order-service')
+        self.assertGreaterEqual(len(payload['traces']), 1)
+        self.assertTrue(all(item['service_name'] == 'order-service' for item in payload['traces']))
+        self.assertTrue(all(item['is_error'] for item in payload['traces']))
+
+    def test_tracing_search_does_not_fallback_when_service_name_unmatched(self):
+        response = self.client.post(
+            '/api/observability/tracing/search/',
+            {
+                'provider': 'demo',
+                'service_name': 'unknown-service',
+                'trace_state': 'ERROR',
+                'limit': 20,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['query']['service_id'], '')
+        self.assertIsNone(payload['matched_service'])
+        self.assertEqual(payload['summary']['match_count'], 0)
+        self.assertEqual(payload['traces'], [])
+
     def test_can_create_tracing_datasource(self):
         response = self.client.post(
             '/api/observability/tracing/datasources/',

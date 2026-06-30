@@ -758,6 +758,25 @@ def _service_name_lookup(services):
     }
 
 
+def _match_service_by_name(services, service_name):
+    query = str(service_name or '').strip().lower()
+    if not query:
+        return None
+    partial = None
+    for item in services or []:
+        names = [
+            str(item.get('id') or '').strip(),
+            str(item.get('name') or '').strip(),
+            str(item.get('short_name') or '').strip(),
+        ]
+        lowered = [name.lower() for name in names if name]
+        if query in lowered:
+            return item
+        if not partial and any(query in name or name in query for name in lowered):
+            partial = item
+    return partial
+
+
 def _trace_matches_service(trace, service_id='', service_name=''):
     if not service_id and not service_name:
         return True
@@ -1829,8 +1848,20 @@ def search_tracing(payload):
     active_provider = catalog['tracing']['provider']
     service_name_by_id = _service_name_lookup(catalog['services'])
     selected_service_id = payload.get('service_id') or ''
+    requested_service_name = str(payload.get('service_name') or '').strip()
+    matched_service = None
+    if not selected_service_id and requested_service_name:
+        matched_service = _match_service_by_name(catalog['services'], requested_service_name)
+        selected_service_id = matched_service.get('id') if matched_service else ''
+        payload = {**payload, 'service_id': selected_service_id}
+    elif selected_service_id:
+        matched_service = next((item for item in catalog['services'] if str(item.get('id') or '') == str(selected_service_id)), None)
     selected_service_name = service_name_by_id.get(str(selected_service_id), '')
-    if catalog['tracing']['source'] == 'demo':
+    service_name_unmatched = bool(requested_service_name and not selected_service_id)
+    if service_name_unmatched:
+        traces = []
+        detail_loader = None
+    elif catalog['tracing']['source'] == 'demo':
         traces = _demo_search_traces(payload)
         detail_loader = None
     else:
@@ -1907,6 +1938,7 @@ def search_tracing(payload):
             'provider': active_provider,
             'datasource_id': payload.get('datasource_id') or catalog['tracing'].get('datasource_id') or '',
             'service_id': payload.get('service_id') or '',
+            'service_name': requested_service_name or selected_service_name,
             'instance_name': requested_instance_name,
             'trace_id': payload.get('trace_id') or '',
             'keyword': payload.get('keyword') or '',
@@ -1916,6 +1948,7 @@ def search_tracing(payload):
             'end_time': payload.get('end_time') or payload.get('endTime') or '',
             'limit': payload.get('limit') or DEFAULT_TRACE_LIMIT,
         },
+        'matched_service': matched_service,
         'traces': traces,
     }
 

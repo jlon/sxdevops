@@ -23,7 +23,7 @@ from aiops.models import (
 )
 from aiops.services import sync_incident_action_verification_for_task, sync_session_to_demo_if_needed
 from eventwall.models import EventRecord
-from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
+from ops.models import Alert, AlertIntegration, Host, HostTask, HostTaskExecution, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup, TracingDataSource
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -83,32 +83,35 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 1)
         link = AIOpsIncidentAlert.objects.get(incident=incident, alert=alert)
         self.assertEqual(link.role, AIOpsIncidentAlert.ROLE_PRIMARY)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 6)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 7)
         alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
         log_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.log_snapshot')
+        trace_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.trace_snapshot')
         k8s_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.k8s_snapshot')
         event_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.event_timeline')
         resource_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.task_resource_scope')
         self.assertIsNotNone(alert_evidence.tool_invocation)
         self.assertIsNotNone(log_evidence.tool_invocation)
+        self.assertIsNotNone(trace_evidence.tool_invocation)
         self.assertIsNotNone(k8s_evidence.tool_invocation)
         self.assertIsNotNone(event_evidence.tool_invocation)
         self.assertIsNotNone(resource_evidence.tool_invocation)
         self.assertEqual(alert_evidence.tool_invocation.tool_name, 'builtin.alert_snapshot')
         self.assertEqual(log_evidence.tool_invocation.tool_name, 'builtin.log_snapshot')
+        self.assertEqual(trace_evidence.tool_invocation.tool_name, 'builtin.trace_snapshot')
         self.assertEqual(k8s_evidence.tool_invocation.tool_name, 'builtin.k8s_snapshot')
         self.assertEqual(event_evidence.tool_invocation.tool_name, 'builtin.event_timeline')
         self.assertEqual(resource_evidence.tool_invocation.tool_name, 'builtin.task_resource_scope')
         self.assertEqual(
             set(AIOpsToolInvocation.objects.filter(session__context__source='incident_background_investigation').values_list('tool_name', flat=True)),
-            {'builtin.alert_snapshot', 'builtin.metric_snapshot', 'builtin.log_snapshot', 'builtin.k8s_snapshot', 'builtin.event_timeline', 'builtin.task_resource_scope'},
+            {'builtin.alert_snapshot', 'builtin.metric_snapshot', 'builtin.log_snapshot', 'builtin.trace_snapshot', 'builtin.k8s_snapshot', 'builtin.event_timeline', 'builtin.task_resource_scope'},
         )
         task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['incident_id'], incident.id)
-        self.assertEqual(len(task.result_payload['tool_invocation_ids']), 6)
-        self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 6)
-        self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:6]))
+        self.assertEqual(len(task.result_payload['tool_invocation_ids']), 7)
+        self.assertEqual(len(task.orchestration_state['tool_invocation_ids']), 7)
+        self.assertTrue(all(item.get('tool_invocation_id') for item in task.react_trace[:7]))
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_ALERT_SYMPTOM)
         self.assertTrue(hypothesis.supporting_evidence_ids)
@@ -143,7 +146,7 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(incident.active_alert_count, 2)
         self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_CRITICAL)
         self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident).count(), 2)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 6)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 7)
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 2)
         alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
         self.assertEqual(len(alert_evidence.payload['alerts']), 2)
@@ -168,7 +171,7 @@ class IncidentAlertIntakeTests(TestCase):
         lifecycle_events = EventRecord.objects.filter(module='aiops', category='incident').exclude(action='investigate_incident')
         self.assertEqual(lifecycle_events.count(), 1)
         self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 1)
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 6)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=incident).count(), 7)
         self.assertEqual(AIOpsIncidentHypothesis.objects.filter(incident=incident).count(), 1)
         self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident).count(), 1)
 
@@ -480,6 +483,121 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertTrue(any('failed' in item['message'].lower() for item in evidence.payload['logs']))
         hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
         self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
+
+    def test_incident_investigation_collects_trace_evidence(self):
+        TracingDataSource.objects.create(
+            name='demo-tempo',
+            provider='tempo',
+            is_default=True,
+            config={'demo_mode': True},
+        )
+        alert = Alert.objects.create(
+            title='Order Create Error',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='order create failed',
+            environment='prod',
+            cluster='dev-k8s-cluster',
+            namespace='production',
+            service='order-service',
+            resource_type='service',
+            resource='order-service',
+            fingerprint='order-create-trace-scope',
+            group_key='order-create-trace-scope',
+            labels={'service': 'order-service', 'namespace': 'production'},
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='test_trace_scope')
+
+        evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.trace_snapshot')
+        summary = evidence.payload['summary']
+        self.assertEqual(evidence.kind, AIOpsIncidentEvidence.KIND_TRACE)
+        self.assertEqual(evidence.tool_invocation.tool_name, 'builtin.trace_snapshot')
+        self.assertTrue(summary['datasource_found'])
+        self.assertTrue(summary['service_matched'])
+        self.assertEqual(summary['service_name'], 'order-service')
+        self.assertGreaterEqual(summary['match_count'], 1)
+        self.assertGreaterEqual(summary['error_match_count'], 1)
+        self.assertTrue(any(item['is_error'] for item in evidence.payload['traces']))
+        task = AIOpsExternalTask.objects.get(action_code='incident.investigate')
+        self.assertIn('builtin.trace_snapshot', [step['tool'] for step in task.plan_steps])
+        self.assertTrue(any(item.get('phase') == 'collect_traces' for item in task.react_trace))
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertIn(evidence.id, hypothesis.supporting_evidence_ids)
+
+    def test_incident_investigation_skips_trace_without_service(self):
+        TracingDataSource.objects.create(
+            name='demo-tempo-no-service',
+            provider='tempo',
+            is_default=True,
+            config={'demo_mode': True},
+        )
+        alert = Alert.objects.create(
+            title='Cluster Node Pressure',
+            level='warning',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='cluster node pressure',
+            environment='prod',
+            cluster='dev-k8s-cluster',
+            namespace='production',
+            fingerprint='cluster-node-pressure-no-service',
+            group_key='cluster-node-pressure-no-service',
+            labels={'namespace': 'production'},
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='test_trace_no_service')
+
+        evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.trace_snapshot')
+        summary = evidence.payload['summary']
+        self.assertTrue(summary['datasource_found'])
+        self.assertFalse(summary['service_matched'])
+        self.assertEqual(summary['match_count'], 0)
+        self.assertEqual(evidence.payload['traces'], [])
+
+    def test_incident_investigation_does_not_fallback_trace_for_unknown_service(self):
+        TracingDataSource.objects.create(
+            name='demo-tempo-unknown-service',
+            provider='tempo',
+            is_default=True,
+            config={'demo_mode': True},
+        )
+        alert = Alert.objects.create(
+            title='Unknown Service Error',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='unknown service failed',
+            environment='prod',
+            cluster='dev-k8s-cluster',
+            namespace='production',
+            service='unknown-service',
+            resource_type='service',
+            resource='unknown-service',
+            fingerprint='unknown-service-trace-scope',
+            group_key='unknown-service-trace-scope',
+            labels={'service': 'unknown-service', 'namespace': 'production'},
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        run_readonly_investigation(incident, reason='test_trace_unknown_service')
+
+        evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.trace_snapshot')
+        summary = evidence.payload['summary']
+        self.assertTrue(summary['datasource_found'])
+        self.assertFalse(summary['service_matched'])
+        self.assertEqual(summary['service_name'], 'unknown-service')
+        self.assertEqual(summary['match_count'], 0)
+        self.assertEqual(evidence.payload['traces'], [])
 
     def test_alert_detail_can_link_existing_incident(self):
         user = User.objects.create_user(username='alert-linker', password='Passw0rd!123')
@@ -832,7 +950,7 @@ class IncidentApiTests(TestCase):
         task = AIOpsExternalTask.objects.filter(action_code='incident.investigate').order_by('-id').first()
         self.assertEqual(task.status, AIOpsExternalTask.STATUS_COMPLETED)
         self.assertEqual(task.input_payload['reason'], 'manual_followup')
-        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident).count(), 6)
+        self.assertEqual(AIOpsIncidentEvidence.objects.filter(incident=self.incident).count(), 7)
         self.assertTrue(AIOpsIncidentEvidence.objects.filter(incident=self.incident, source='builtin.task_resource_scope').exists())
         self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='run_incident_action').exists())
         response_action = next(item for item in response.data['incident_actions'] if item['id'] == action.id)
