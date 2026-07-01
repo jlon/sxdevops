@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
@@ -179,6 +179,53 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(len(alert_evidence.payload['alerts']), 2)
         self.assertEqual(AIOpsIncidentHypothesis.objects.filter(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY).count(), 1)
         self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident, action_type=AIOpsIncidentAction.ACTION_INVESTIGATE).count(), 1)
+
+    def test_same_group_key_without_upgrade_skips_duplicate_investigation(self):
+        first = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-201',
+                'labels': {'alertname': 'HighErrorRate', 'severity': 'warning'},
+                'annotations': {'summary': 'Order warning'},
+            },
+        ], group_key='service=order-center')
+        second = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-202',
+                'labels': {'alertname': 'HighLatency', 'severity': 'warning'},
+                'annotations': {'summary': 'Order latency warning'},
+            },
+        ], group_key='service=order-center')
+
+        self.assertEqual(first.status_code, 202, first.data)
+        self.assertEqual(second.status_code, 202, second.data)
+        incident = AIOpsIncident.objects.get()
+        self.assertEqual(incident.alert_count, 2)
+        self.assertEqual(incident.active_alert_count, 2)
+        self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 1)
+        alert_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.alert_snapshot')
+        self.assertEqual(len(alert_evidence.payload['alerts']), 1)
+
+    @override_settings(AIOPS_INCIDENT_INVESTIGATION_RUN_ASYNC=True)
+    @patch('aiops.incident_investigation.threading.Thread')
+    def test_webhook_queues_incident_investigation_without_running_in_request(self, mocked_thread):
+        response = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-async',
+                'labels': {'alertname': 'HighErrorRate', 'severity': 'critical'},
+                'annotations': {'summary': 'Order critical'},
+            },
+        ], group_key='service=order-async')
+
+        self.assertEqual(response.status_code, 202, response.data)
+        incident = AIOpsIncident.objects.get()
+        self.assertEqual(incident.status, AIOpsIncident.STATUS_INVESTIGATING)
+        self.assertEqual(incident.metadata['last_investigation']['status'], AIOpsExternalTask.STATUS_QUEUED)
+        self.assertFalse(AIOpsExternalTask.objects.filter(action_code='incident.investigate').exists())
+        mocked_thread.assert_called_once()
+        mocked_thread.return_value.start.assert_called_once()
 
     def test_repeated_same_alert_does_not_duplicate_incident_events(self):
         payload = [{
@@ -944,6 +991,55 @@ class IncidentAlertIntakeTests(TestCase):
         incident.refresh_from_db()
         self.assertEqual(incident.alert_count, 1)
         self.assertEqual(response.data['incident']['id'], incident.id)
+
+    def test_manual_alert_link_skips_duplicate_recent_investigation(self):
+        incident = AIOpsIncident.objects.create(
+            title='hbase / RegionServer unstable',
+            status=AIOpsIncident.STATUS_OPEN,
+            severity=AIOpsIncident.SEVERITY_WARNING,
+            source_type=AIOpsIncident.SOURCE_ALERT,
+            dedupe_key='manual:hbase-regionserver-duplicate',
+            environment='prod',
+            cluster='hbase-local',
+            namespace='middleware',
+            service='hbase',
+        )
+        first_alert = Alert.objects.create(
+            title='HBase GC High',
+            level='warning',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='GC pause high',
+            environment='prod',
+            cluster='hbase-local',
+            namespace='middleware',
+            service='hbase',
+            fingerprint='hbase-manual-link-1',
+        )
+        second_alert = Alert.objects.create(
+            title='HBase Queue High',
+            level='warning',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='Queue length high',
+            environment='prod',
+            cluster='hbase-local',
+            namespace='middleware',
+            service='hbase',
+            fingerprint='hbase-manual-link-2',
+        )
+
+        from aiops.incidents import link_alert_to_incident
+
+        with self.captureOnCommitCallbacks(execute=True):
+            link_alert_to_incident(first_alert, incident, role=AIOpsIncidentAlert.ROLE_SYMPTOM)
+        with self.captureOnCommitCallbacks(execute=True):
+            link_alert_to_incident(second_alert, incident, role=AIOpsIncidentAlert.ROLE_SYMPTOM)
+
+        incident.refresh_from_db()
+        self.assertEqual(incident.alert_count, 2)
+        self.assertEqual(incident.active_alert_count, 2)
+        self.assertEqual(AIOpsExternalTask.objects.filter(action_code='incident.investigate').count(), 1)
 
 
 class IncidentApiTests(TestCase):

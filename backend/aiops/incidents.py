@@ -1,12 +1,15 @@
+from datetime import timedelta
+
 from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from eventwall.models import EventRecord
 from eventwall.services import record_event
 from ops.models import Alert
 
-from .models import AIOpsIncident, AIOpsIncidentAlert
+from .models import AIOpsExternalTask, AIOpsIncident, AIOpsIncidentAlert
 
 
 ACTIVE_INCIDENT_STATUSES = [
@@ -19,6 +22,11 @@ SEVERITY_RANK = {
     AIOpsIncident.SEVERITY_INFO: 1,
     AIOpsIncident.SEVERITY_WARNING: 2,
     AIOpsIncident.SEVERITY_CRITICAL: 3,
+}
+INVESTIGATION_REFRESH_MINUTES = 10
+INVESTIGATION_IN_FLIGHT_STATUSES = {
+    AIOpsExternalTask.STATUS_QUEUED,
+    AIOpsExternalTask.STATUS_RUNNING,
 }
 
 
@@ -129,11 +137,48 @@ def _record_incident_event(incident, alert, action, created=False):
     )
 
 
-def _investigation_reason(created, link_created, role_changed, status_changed):
-    if created:
+def _metadata_datetime(value):
+    if not value:
+        return None
+    if hasattr(value, 'isoformat'):
+        return value
+    parsed = parse_datetime(str(value))
+    if parsed and timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+    return parsed
+
+
+def _last_investigation_metadata(incident):
+    metadata = incident.metadata if isinstance(incident.metadata, dict) else {}
+    last = metadata.get('last_investigation') if isinstance(metadata.get('last_investigation'), dict) else {}
+    return last
+
+
+def _recent_investigation_finished(last, now):
+    completed_at = _metadata_datetime(last.get('completed_at'))
+    if not completed_at:
+        return False
+    return completed_at >= now - timedelta(minutes=INVESTIGATION_REFRESH_MINUTES)
+
+
+def _should_schedule_investigation(incident, reason):
+    if not reason or incident.status in {AIOpsIncident.STATUS_RESOLVED, AIOpsIncident.STATUS_CLOSED}:
+        return False
+    last = _last_investigation_metadata(incident)
+    if last.get('status') in INVESTIGATION_IN_FLIGHT_STATUSES:
+        return False
+    if reason in {'incident_created', 'incident_reopened', 'severity_upgraded'}:
+        return True
+    return not _recent_investigation_finished(last, timezone.now())
+
+
+def _investigation_reason(created, link_created, role_changed, status_changed, severity_upgraded, incident_status):
+    if created and incident_status != AIOpsIncident.STATUS_RESOLVED:
         return 'incident_created'
-    if status_changed:
-        return 'incident_status_changed'
+    if status_changed and incident_status in ACTIVE_INCIDENT_STATUSES:
+        return 'incident_reopened'
+    if severity_upgraded:
+        return 'severity_upgraded'
     if role_changed:
         return 'alert_role_changed'
     if link_created:
@@ -154,6 +199,7 @@ def upsert_incident_for_alert(alert, schedule_investigation=True):
     created = incident is None
     started_at = alert.starts_at or alert.last_received_at or timezone.now()
     last_seen_at = alert.last_received_at or timezone.now()
+    previous_severity = ''
     if created:
         incident = AIOpsIncident.objects.create(
             title=_incident_title(alert),
@@ -174,6 +220,7 @@ def upsert_incident_for_alert(alert, schedule_investigation=True):
             metadata={'primary_alert_id': alert.id, 'source_type': alert.source_type},
         )
     else:
+        previous_severity = incident.severity
         incident.severity = _max_severity(incident.severity, alert.level)
         incident.last_seen_at = max(incident.last_seen_at or last_seen_at, last_seen_at)
         if not incident.started_at or started_at < incident.started_at:
@@ -225,13 +272,25 @@ def upsert_incident_for_alert(alert, schedule_investigation=True):
     _refresh_incident_counts(incident)
     incident.refresh_from_db()
     status_changed = incident.status != previous_status
+    severity_upgraded = (
+        not created
+        and SEVERITY_RANK.get(incident.severity or AIOpsIncident.SEVERITY_INFO, 1)
+        > SEVERITY_RANK.get(previous_severity or AIOpsIncident.SEVERITY_INFO, 1)
+    )
     if status_changed:
         action = 'resolve_incident' if incident.status == AIOpsIncident.STATUS_RESOLVED else 'reopen_incident'
         _record_incident_event(incident, alert, action, created=False)
     elif created or link_created or role_changed:
         _record_incident_event(incident, alert, 'create_incident' if created else 'link_alert', created=created)
-    reason = _investigation_reason(created, link_created, role_changed, status_changed)
-    if reason and schedule_investigation:
+    reason = _investigation_reason(
+        created,
+        link_created,
+        role_changed,
+        status_changed,
+        severity_upgraded,
+        incident.status,
+    )
+    if reason and schedule_investigation and _should_schedule_investigation(incident, reason):
         from .incident_investigation import schedule_readonly_investigation
 
         schedule_readonly_investigation(incident, reason=reason)
@@ -287,7 +346,12 @@ def link_alert_to_incident(alert, incident, role='', reason='', schedule_investi
             'resolve_incident' if incident.status == AIOpsIncident.STATUS_RESOLVED else 'reopen_incident'
         )
         _record_incident_event(incident, alert, action, created=False)
-    if schedule_investigation and (created or role_changed or status_changed):
+    should_refresh_investigation = (
+        schedule_investigation
+        and (created or role_changed or status_changed)
+        and _should_schedule_investigation(incident, 'manual_alert_linked')
+    )
+    if should_refresh_investigation:
         from .incident_investigation import schedule_readonly_investigation
 
         schedule_readonly_investigation(incident, reason='manual_alert_linked')

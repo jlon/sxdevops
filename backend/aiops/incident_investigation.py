@@ -1,9 +1,12 @@
 import logging
+import sys
+import threading
 import time
 from collections import Counter
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -62,6 +65,8 @@ RCA_EVIDENCE_SOURCE_ORDER = (
 LLM_RCA_GENERATED_BY = 'llm_rca_planner'
 RULE_RCA_GENERATED_BY = 'rule_based'
 _LLM_RCA_PLANNER = None
+_INVESTIGATION_THREADS = {}
+_INVESTIGATION_THREADS_LOCK = threading.Lock()
 
 
 def _safe_dict(value):
@@ -1953,6 +1958,22 @@ def _mark_incident_investigating(incident, task, reason):
     incident.save(update_fields=update_fields)
 
 
+def _mark_incident_investigation_queued(incident, reason):
+    metadata = incident.metadata if isinstance(incident.metadata, dict) else {}
+    now = timezone.now()
+    metadata['last_investigation'] = {
+        'reason': reason,
+        'status': AIOpsExternalTask.STATUS_QUEUED,
+        'queued_at': now.isoformat(),
+    }
+    update_fields = ['metadata', 'updated_at']
+    if incident.status == AIOpsIncident.STATUS_OPEN:
+        incident.status = AIOpsIncident.STATUS_INVESTIGATING
+        update_fields.append('status')
+    incident.metadata = metadata
+    incident.save(update_fields=update_fields)
+
+
 def _mark_incident_investigation_finished(incident, task, status, error=''):
     fresh = AIOpsIncident.objects.get(id=incident.id)
     metadata = fresh.metadata if isinstance(fresh.metadata, dict) else {}
@@ -2126,6 +2147,13 @@ def run_readonly_investigation(incident, reason='alert_changed'):
     return _run_readonly_investigation_internal(incident, reason=reason)
 
 
+def should_run_incident_investigation_async():
+    configured = getattr(settings, 'AIOPS_INCIDENT_INVESTIGATION_RUN_ASYNC', None)
+    if configured is not None:
+        return configured
+    return 'test' not in sys.argv
+
+
 def schedule_readonly_investigation(incident, reason='alert_changed'):
     incident_id = incident.id
 
@@ -2136,4 +2164,26 @@ def schedule_readonly_investigation(incident, reason='alert_changed'):
         except Exception:
             logger.exception('Failed to run readonly investigation for incident %s', incident_id)
 
-    transaction.on_commit(_run)
+    def _run_and_forget():
+        try:
+            _run()
+        finally:
+            with _INVESTIGATION_THREADS_LOCK:
+                _INVESTIGATION_THREADS.pop(incident_id, None)
+
+    _mark_incident_investigation_queued(incident, reason)
+
+    def _run_after_commit():
+        if not should_run_incident_investigation_async():
+            _run()
+            return
+        worker = threading.Thread(
+            target=_run_and_forget,
+            name=f'aiops-incident-investigation-{incident_id}',
+            daemon=True,
+        )
+        with _INVESTIGATION_THREADS_LOCK:
+            _INVESTIGATION_THREADS[incident_id] = worker
+        worker.start()
+
+    transaction.on_commit(_run_after_commit)
