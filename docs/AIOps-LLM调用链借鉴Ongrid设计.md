@@ -64,6 +64,10 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
   - 报告只引用当前调查证据包中的 evidence ID，不读取原始 payload，不扩大敏感数据暴露面。
   - 完整报告写入调查任务 `orchestration_state.rca_report`；摘要写入 `result_payload.rca_report` 和 Incident `metadata.last_rca_report`，详情 API 直接返回 `rca_report`。
   - 前端 Incident 工作台新增“RCA 调查报告”区域，先展示结论总览，再展示假设、处置方案和证据。
+- 通用聊天预算收敛：
+  - 当模型后续工具调用全部被预算策略拦截，且本轮已经采集到工具证据时，运行时立即基于已有证据生成局部结论。
+  - 该路径不再追加规划轮次，也跳过二阶段 formatter，避免在已知不可继续的方向上继续消耗模型调用。
+  - assistant metadata 写入 `runtime_stop_reason=tool_budget_stopped`、`partial_answer=true` 和 `formatter_skip_reason=tool_budget_stopped`，审计可解释为什么提前收敛。
 
 ## 后续优先级
 
@@ -80,7 +84,8 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
    - 后续如引入 LLM 报告润色，必须保留当前结构化报告作为事实边界，禁止模型新增未观测事实。
 
 4. **P2：通用聊天 MaxStep salvage**
-   - Incident 调查已支持超预算局部结论。后续可对通用聊天保存更完整 transcript，超预算时生成低置信局部结论，而不是只报失败。
+   - 已完成第一阶段：工具预算拦截后，如果已有工具证据，直接收敛为局部结论。
+   - 后续可继续补完整 transcript 摘要，把多轮规划轨迹压缩成更清晰的审计视图。
 
 ## 边界
 

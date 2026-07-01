@@ -19372,6 +19372,8 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     final_content = ''
     collected_tool_outputs = []
     tool_budget = ToolRuntimeBudget()
+    runtime_stop_reason = ''
+    partial_answer = False
 
     messages = [
         {'role': 'system', 'content': _build_runtime_prompt(runtime_config, active_mcp_servers, prompt_skills, user, mcp_diagnostics=mcp_diagnostics, agent=agent, skill_prompt_trace=skill_prompt_trace)},
@@ -19431,6 +19433,8 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                     text=f'\u51c6\u5907\u8c03\u7528 {len(tool_calls)} \u4e2a\u5de5\u5177',
                 )
                 messages.append({'role': 'assistant', 'content': content or '', 'tool_calls': tool_calls})
+                executed_before_round = len(executed_tool_names)
+                blocked_this_round = 0
                 for tool_call in tool_calls:
                     function_payload = tool_call.get('function') or {}
                     tool_name = function_payload.get('name', '')
@@ -19441,6 +19445,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                     allowed, stop_reason = tool_budget.allow(tool_name, arguments)
                     if not allowed:
                         tool_budget.stop(tool_name, stop_reason)
+                        blocked_this_round += 1
                         emit(
                             tool_event={'name': tool_name, 'detail': stop_reason, 'status': PROCESSING_STATUS_FAILED},
                             text=f'{tool_name} 已被工具预算策略拦截',
@@ -19481,6 +19486,29 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                         'tool_call_id': tool_call.get('id'),
                         'content': json.dumps(tool_result.get('tool_output') or {}, ensure_ascii=False, default=_json_default),
                     })
+                if (
+                    executed_tool_names
+                    and blocked_this_round
+                    and len(executed_tool_names) == executed_before_round
+                ):
+                    runtime_stop_reason = 'tool_budget_stopped'
+                    partial_answer = True
+                    final_content = _build_fallback_answer(
+                        sections,
+                        citations,
+                        pending_action_draft=pending_action_draft,
+                        question=question,
+                        collected_tool_outputs=collected_tool_outputs,
+                    )
+                    emit(
+                        step={
+                            'title': '工具预算收敛',
+                            'detail': '后续工具调用均被预算策略拦截，已基于已采集证据生成局部结论。',
+                            'status': PROCESSING_STATUS_COMPLETED,
+                        },
+                        text='已基于现有证据收敛回答',
+                    )
+                    break
                 continue
 
             final_content = content
@@ -19589,6 +19617,8 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         text='正在准备 Skill 模板整形',
     )
     if not final_content:
+        runtime_stop_reason = runtime_stop_reason or 'max_planning_rounds'
+        partial_answer = bool(executed_tool_names)
         final_content = _build_fallback_answer(
             sections,
             citations,
@@ -19609,7 +19639,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
         )
 
     formatter_result = None
-    if provider:
+    if provider and runtime_stop_reason != 'tool_budget_stopped':
         emit(
             step={
                 'title': 'Skill 模板整形',
@@ -19681,6 +19711,15 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                 text='Skill 模板整形已回退到代码模板',
             )
     final_content = _ensure_followup_line(_normalize_formatter_output(final_content), citations)
+    formatter_skip_reason = 'tool_budget_stopped' if runtime_stop_reason == 'tool_budget_stopped' else ''
+    if formatter_skip_reason:
+        formatter_mode = 'fallback'
+    elif formatter_result and formatter_result.get('fell_back'):
+        formatter_mode = 'fallback'
+    elif formatter_result and formatter_result.get('used'):
+        formatter_mode = 'skill'
+    else:
+        formatter_mode = 'draft_only'
 
     result = {
         'content': final_content,
@@ -19695,19 +19734,16 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             'agent_execution_policy': agent.execution_policy,
             'current_environment': knowledge_environment.get('name'),
             'analysis_scope': analysis_scope,
-            'formatter_mode': (
-                'fallback'
-                if formatter_result and formatter_result.get('fell_back')
-                else 'skill'
-                if formatter_result and formatter_result.get('used')
-                else 'draft_only'
-            ),
+            'formatter_mode': formatter_mode,
             'formatter_attempts': (formatter_result or {}).get('attempts', 0),
+            'formatter_skip_reason': formatter_skip_reason,
             'mcp_diagnostics': mcp_diagnostics,
             'action_tool_filter': action_tool_filter,
             'incident_context': session_memory.get('incident_context') or {},
             'planning_skill_trace': skill_prompt_trace,
             'tool_budget': tool_budget.trace(),
+            'runtime_stop_reason': runtime_stop_reason,
+            'partial_answer': partial_answer,
             'formatter_skill_trace': (formatter_result or {}).get('skill_trace') or {},
             'skill_trace': _build_skill_trace(
                 active_skills,
