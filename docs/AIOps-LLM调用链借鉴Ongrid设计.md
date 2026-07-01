@@ -42,11 +42,16 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
 - `_build_runtime_prompt` 注入工具预算提示，让模型先知道边界。
 - `_dispatch_with_tool_runtime` 执行工具前做预算检查，执行后记录空结果状态。
 - assistant 消息 metadata 写入 `tool_budget`，方便审计为什么某次工具调用被停止。
+- Incident 只读调查调度增加 runtime gate：
+  - 默认只自动调查 warning/critical，info 级 Incident 只入库并记录跳过原因。
+  - 后台调查默认最多并发 2 个，超过上限时跳过本次调查并写入 Incident 元数据。
+  - 跳过记录写入 `last_investigation`、`last_investigation_skip` 和 EventWall，避免前端误判为“正在调查”。
 
 ## 后续优先级
 
 1. **P0：Incident 调查专用 orchestrator 深化**
-   - 当前 Incident 调查已有后台线程、去重和只读证据采集。后续可把严重级别 gate、全局并发上限、超时和 failed/skipped 状态显式化。
+   - 已完成严重级别 gate、全局并发上限和 skipped 状态审计。
+   - 后续补超时控制和失败后的局部结论 salvage。
 
 2. **P1：Reviewer Agent**
    - 对高风险 Action 生成独立二审结果，而不是只依赖确认按钮和权限判断。

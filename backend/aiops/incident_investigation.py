@@ -64,6 +64,14 @@ RCA_EVIDENCE_SOURCE_ORDER = (
 )
 LLM_RCA_GENERATED_BY = 'llm_rca_planner'
 RULE_RCA_GENERATED_BY = 'rule_based'
+INVESTIGATION_STATUS_SKIPPED = 'skipped'
+INVESTIGATION_DEFAULT_MIN_SEVERITY = AIOpsIncident.SEVERITY_WARNING
+INVESTIGATION_DEFAULT_MAX_CONCURRENT = 2
+INVESTIGATION_SEVERITY_RANK = {
+    AIOpsIncident.SEVERITY_INFO: 1,
+    AIOpsIncident.SEVERITY_WARNING: 2,
+    AIOpsIncident.SEVERITY_CRITICAL: 3,
+}
 _LLM_RCA_PLANNER = None
 _INVESTIGATION_THREADS = {}
 _INVESTIGATION_THREADS_LOCK = threading.Lock()
@@ -78,6 +86,10 @@ def _safe_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _safe_positive_int(value, default=0):
+    return max(_safe_int(value, default), 0)
 
 
 def _short_text(value, limit=RCA_TEXT_LIMIT):
@@ -1964,6 +1976,7 @@ def _mark_incident_investigation_queued(incident, reason):
     metadata['last_investigation'] = {
         'reason': reason,
         'status': AIOpsExternalTask.STATUS_QUEUED,
+        'previous_status': incident.status,
         'queued_at': now.isoformat(),
     }
     update_fields = ['metadata', 'updated_at']
@@ -1972,6 +1985,88 @@ def _mark_incident_investigation_queued(incident, reason):
         update_fields.append('status')
     incident.metadata = metadata
     incident.save(update_fields=update_fields)
+
+
+def _investigation_min_severity():
+    configured = str(
+        getattr(settings, 'AIOPS_INCIDENT_INVESTIGATION_MIN_SEVERITY', INVESTIGATION_DEFAULT_MIN_SEVERITY)
+        or INVESTIGATION_DEFAULT_MIN_SEVERITY
+    ).strip().lower()
+    if configured not in INVESTIGATION_SEVERITY_RANK:
+        return INVESTIGATION_DEFAULT_MIN_SEVERITY
+    return configured
+
+
+def _investigation_max_concurrent():
+    return _safe_positive_int(
+        getattr(settings, 'AIOPS_INCIDENT_INVESTIGATION_MAX_CONCURRENT', INVESTIGATION_DEFAULT_MAX_CONCURRENT),
+        INVESTIGATION_DEFAULT_MAX_CONCURRENT,
+    )
+
+
+def _investigation_severity_skip_detail(incident):
+    min_severity = _investigation_min_severity()
+    severity = incident.severity or AIOpsIncident.SEVERITY_INFO
+    if INVESTIGATION_SEVERITY_RANK.get(severity, 0) >= INVESTIGATION_SEVERITY_RANK.get(min_severity, 0):
+        return ''
+    return f'严重级别 {severity} 低于自动调查阈值 {min_severity}'
+
+
+def _record_investigation_skip_event(incident, reason, detail):
+    record_event(
+        module='aiops',
+        category='incident',
+        action='skip_incident_investigation',
+        title='Incident 只读调查跳过',
+        summary=f'Incident #{incident.id} 已跳过只读调查：{detail}',
+        resource_type='aiops_incident',
+        resource_id=incident.id,
+        resource_name=incident.title,
+        environment=incident.environment,
+        application=incident.service,
+        severity=EventRecord.SEVERITY_INFO,
+        correlation_id=f'aiops_incident:{incident.id}',
+        metadata={
+            'reason': reason,
+            'detail': detail,
+            'severity': incident.severity,
+            'min_severity': _investigation_min_severity(),
+            'max_concurrent': _investigation_max_concurrent(),
+        },
+    )
+
+
+def _mark_incident_investigation_skipped(incident, reason, detail, reset_status=False):
+    fresh = AIOpsIncident.objects.get(id=incident.id)
+    metadata = fresh.metadata if isinstance(fresh.metadata, dict) else {}
+    last = metadata.get('last_investigation') if isinstance(metadata.get('last_investigation'), dict) else {}
+    now = timezone.now()
+    skipped = {
+        'reason': reason,
+        'status': INVESTIGATION_STATUS_SKIPPED,
+        'detail': detail,
+        'skipped_at': now.isoformat(),
+    }
+    if last.get('previous_status'):
+        skipped['previous_status'] = last.get('previous_status')
+    metadata['last_investigation'] = skipped
+    metadata['last_investigation_skip'] = skipped
+    update_fields = ['metadata', 'updated_at']
+    previous_status = last.get('previous_status')
+    valid_statuses = {value for value, _label in AIOpsIncident.STATUS_CHOICES}
+    if (
+        reset_status
+        and fresh.status == AIOpsIncident.STATUS_INVESTIGATING
+        and last.get('status') == AIOpsExternalTask.STATUS_QUEUED
+        and previous_status in valid_statuses
+        and previous_status != fresh.status
+    ):
+        fresh.status = previous_status
+        update_fields.append('status')
+    fresh.metadata = metadata
+    fresh.save(update_fields=update_fields)
+    _record_investigation_skip_event(fresh, reason, detail)
+    return fresh
 
 
 def _mark_incident_investigation_finished(incident, task, status, error=''):
@@ -2156,6 +2251,10 @@ def should_run_incident_investigation_async():
 
 def schedule_readonly_investigation(incident, reason='alert_changed'):
     incident_id = incident.id
+    skip_detail = _investigation_severity_skip_detail(incident)
+    if skip_detail:
+        _mark_incident_investigation_skipped(incident, reason, skip_detail)
+        return False
 
     def _run():
         try:
@@ -2177,13 +2276,41 @@ def schedule_readonly_investigation(incident, reason='alert_changed'):
         if not should_run_incident_investigation_async():
             _run()
             return
-        worker = threading.Thread(
-            target=_run_and_forget,
-            name=f'aiops-incident-investigation-{incident_id}',
-            daemon=True,
-        )
+        max_concurrent = _investigation_max_concurrent()
+        skip_detail = ''
+        with _INVESTIGATION_THREADS_LOCK:
+            if incident_id in _INVESTIGATION_THREADS:
+                skip_detail = f'Incident #{incident_id} 已有只读调查在后台执行'
+            elif max_concurrent and len(_INVESTIGATION_THREADS) >= max_concurrent:
+                skip_detail = f'后台只读调查并发达到上限 {max_concurrent}'
+            else:
+                _INVESTIGATION_THREADS[incident_id] = None
+        if skip_detail:
+            _mark_incident_investigation_skipped(incident, reason, skip_detail, reset_status=True)
+            return
+        try:
+            worker = threading.Thread(
+                target=_run_and_forget,
+                name=f'aiops-incident-investigation-{incident_id}',
+                daemon=True,
+            )
+        except Exception as exc:
+            with _INVESTIGATION_THREADS_LOCK:
+                _INVESTIGATION_THREADS.pop(incident_id, None)
+            detail = f'后台只读调查线程创建失败：{str(exc)[:180]}'
+            _mark_incident_investigation_skipped(incident, reason, detail, reset_status=True)
+            logger.exception('Failed to create readonly investigation worker for incident %s', incident_id)
+            return
         with _INVESTIGATION_THREADS_LOCK:
             _INVESTIGATION_THREADS[incident_id] = worker
-        worker.start()
+        try:
+            worker.start()
+        except Exception as exc:
+            with _INVESTIGATION_THREADS_LOCK:
+                _INVESTIGATION_THREADS.pop(incident_id, None)
+            detail = f'后台只读调查线程启动失败：{str(exc)[:180]}'
+            _mark_incident_investigation_skipped(incident, reason, detail, reset_status=True)
+            logger.exception('Failed to start readonly investigation worker for incident %s', incident_id)
 
     transaction.on_commit(_run_after_commit)
+    return True

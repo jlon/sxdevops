@@ -5,7 +5,13 @@ from django.test import TestCase, override_settings
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from aiops.incident_investigation import register_llm_rca_planner, run_readonly_investigation
+from aiops.incident_investigation import (
+    INVESTIGATION_STATUS_SKIPPED,
+    _INVESTIGATION_THREADS,
+    _INVESTIGATION_THREADS_LOCK,
+    register_llm_rca_planner,
+    run_readonly_investigation,
+)
 from aiops.conversation_context import build_session_memory_snapshot
 from aiops.models import (
     AIOpsChatSession,
@@ -45,6 +51,8 @@ class IncidentAlertIntakeTests(TestCase):
 
     def tearDown(self):
         register_llm_rca_planner(None)
+        with _INVESTIGATION_THREADS_LOCK:
+            _INVESTIGATION_THREADS.clear()
 
     def post_alertmanager(self, alerts, group_key='service=order', common_labels=None):
         with self.captureOnCommitCallbacks(execute=True):
@@ -223,6 +231,61 @@ class IncidentAlertIntakeTests(TestCase):
         incident = AIOpsIncident.objects.get()
         self.assertEqual(incident.status, AIOpsIncident.STATUS_INVESTIGATING)
         self.assertEqual(incident.metadata['last_investigation']['status'], AIOpsExternalTask.STATUS_QUEUED)
+        self.assertFalse(AIOpsExternalTask.objects.filter(action_code='incident.investigate').exists())
+        mocked_thread.assert_called_once()
+        mocked_thread.return_value.start.assert_called_once()
+
+    @override_settings(AIOPS_INCIDENT_INVESTIGATION_MIN_SEVERITY='warning')
+    def test_info_alert_skips_automatic_investigation_below_severity_floor(self):
+        response = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-info-skip',
+                'labels': {'alertname': 'InfoSignal', 'severity': 'info'},
+                'annotations': {'summary': 'Informational signal'},
+            },
+        ], group_key='service=order-info')
+
+        self.assertEqual(response.status_code, 202, response.data)
+        incident = AIOpsIncident.objects.get()
+        self.assertEqual(incident.status, AIOpsIncident.STATUS_OPEN)
+        self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_INFO)
+        self.assertFalse(AIOpsExternalTask.objects.filter(action_code='incident.investigate').exists())
+        last = incident.metadata['last_investigation']
+        self.assertEqual(last['status'], INVESTIGATION_STATUS_SKIPPED)
+        self.assertIn('低于自动调查阈值', last['detail'])
+        self.assertEqual(incident.metadata['last_investigation_skip'], last)
+        self.assertTrue(EventRecord.objects.filter(module='aiops', category='incident', action='skip_incident_investigation').exists())
+
+    @override_settings(AIOPS_INCIDENT_INVESTIGATION_RUN_ASYNC=True, AIOPS_INCIDENT_INVESTIGATION_MAX_CONCURRENT=1)
+    @patch('aiops.incident_investigation.threading.Thread')
+    def test_async_investigation_concurrency_cap_skips_second_incident(self, mocked_thread):
+        first = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-async-cap-1',
+                'labels': {'alertname': 'HighErrorRate', 'severity': 'critical'},
+                'annotations': {'summary': 'Order critical'},
+            },
+        ], group_key='service=order-async-cap-1')
+        second = self.post_alertmanager([
+            {
+                'status': 'firing',
+                'fingerprint': 'fp-incident-async-cap-2',
+                'labels': {'alertname': 'HighErrorRate', 'severity': 'critical'},
+                'annotations': {'summary': 'Payment critical'},
+            },
+        ], group_key='service=order-async-cap-2')
+
+        self.assertEqual(first.status_code, 202, first.data)
+        self.assertEqual(second.status_code, 202, second.data)
+        incidents = list(AIOpsIncident.objects.order_by('id'))
+        self.assertEqual(len(incidents), 2)
+        self.assertEqual(incidents[0].status, AIOpsIncident.STATUS_INVESTIGATING)
+        self.assertEqual(incidents[0].metadata['last_investigation']['status'], AIOpsExternalTask.STATUS_QUEUED)
+        self.assertEqual(incidents[1].status, AIOpsIncident.STATUS_OPEN)
+        self.assertEqual(incidents[1].metadata['last_investigation']['status'], INVESTIGATION_STATUS_SKIPPED)
+        self.assertIn('并发达到上限', incidents[1].metadata['last_investigation']['detail'])
         self.assertFalse(AIOpsExternalTask.objects.filter(action_code='incident.investigate').exists())
         mocked_thread.assert_called_once()
         mocked_thread.return_value.start.assert_called_once()
