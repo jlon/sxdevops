@@ -95,6 +95,7 @@ from .tool_registry import (
     validate_platform_tool_registry,
     whitelisted_platform_tool_names,
 )
+from .tool_runtime_policy import ToolRuntimeBudget, build_tool_budget_prompt
 from .models import (
     AIOpsAgentConfig,
     AIOpsAgentProfile,
@@ -17279,6 +17280,7 @@ def _build_runtime_prompt(config, active_mcp_servers, active_skills, user, mcp_d
         '运行约束：',
         '\n'.join(runtime_lines),
         '要求：优先调用工具获取事实；未确认前不能声称任务已执行；如果数据不足，请明确说明。',
+        build_tool_budget_prompt(),
         '环境里已经绑定任务中心资源底座时，用户询问中间件/主机/机器/节点/非 K8s 集群的数量、清单或资源归属，应让模型优先选择 query_task_resources；“集群”只是业务对象泛称，不等同于 Kubernetes，除非用户明确提到 K8s/Kubernetes/Pod/命名空间/Deployment/Service/kubectl/Helm。',
         '如果用户明确要求生成、创建、新建、安排任务、巡检任务或 K8s 修改任务，不要只做查询，必须调用 generate_host_task。',
         '任务生成类请求必须以 query_task_resources 返回的任务中心资源底座为目标来源；知识图谱只用于环境识别和辅助元信息，不能把知识图谱命名空间或实时资源列表当作生成任务草稿的硬前置。',
@@ -19031,6 +19033,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
     message_type = AIOpsChatMessage.TYPE_TEXT
     final_content = ''
     collected_tool_outputs = []
+    tool_budget = ToolRuntimeBudget()
 
     messages = [
         {'role': 'system', 'content': _build_runtime_prompt(runtime_config, active_mcp_servers, prompt_skills, user, mcp_diagnostics=mcp_diagnostics, agent=agent, skill_prompt_trace=skill_prompt_trace)},
@@ -19097,11 +19100,25 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                     if not registry_entry:
                         continue
                     arguments = _parse_tool_arguments(function_payload.get('arguments'))
+                    allowed, stop_reason = tool_budget.allow(tool_name, arguments)
+                    if not allowed:
+                        tool_budget.stop(tool_name, stop_reason)
+                        emit(
+                            tool_event={'name': tool_name, 'detail': stop_reason, 'status': PROCESSING_STATUS_FAILED},
+                            text=f'{tool_name} 已被工具预算策略拦截',
+                        )
+                        messages.append({
+                            'role': 'tool',
+                            'tool_call_id': tool_call.get('id'),
+                            'content': json.dumps({'error': 'tool_budget_stopped', 'detail': stop_reason}, ensure_ascii=False),
+                        })
+                        continue
                     emit(
                         tool_event={'name': tool_name, 'detail': '\u5f00\u59cb\u8c03\u7528', 'status': PROCESSING_STATUS_RUNNING},
                         text=f'\u6b63\u5728\u8c03\u7528 {tool_name}',
                     )
                     tool_result = _run_tool_call(session, user_message, user, tool_name, arguments, registry_entry=registry_entry)
+                    empty_result = tool_budget.record(tool_name, arguments, tool_result.get('tool_output') or {})
                     executed_tool_names.append(tool_name)
                     collected_tool_outputs.append({'tool_name': tool_name, 'tool_output': tool_result.get('tool_output') or {}})
                     sections.extend(tool_result.get('sections', []))
@@ -19114,8 +19131,11 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                         message_type = AIOpsChatMessage.TYPE_ANALYSIS
                     tool_output = tool_result.get('tool_output') or {}
                     tool_status = PROCESSING_STATUS_FAILED if isinstance(tool_output, dict) and tool_output.get('error') else PROCESSING_STATUS_COMPLETED
+                    detail = _summarize_tool_result(tool_result)
+                    if empty_result:
+                        detail = f'{detail}；该方向返回空结果或错误，若再次为空将停止继续尝试。'
                     emit(
-                        tool_event={'name': tool_name, 'detail': _summarize_tool_result(tool_result), 'status': tool_status},
+                        tool_event={'name': tool_name, 'detail': detail, 'status': tool_status},
                         text=f'{tool_name} \u8c03\u7528\u5b8c\u6210',
                     )
                     messages.append({
@@ -19200,6 +19220,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                     'mcp_diagnostics': mcp_diagnostics,
                     'action_tool_filter': action_tool_filter,
                     'planning_skill_trace': skill_prompt_trace,
+                    'tool_budget': tool_budget.trace(),
                     'skill_trace': _build_skill_trace(
                         active_skills,
                         formatter_result={'fell_back': True},
@@ -19348,6 +19369,7 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
             'action_tool_filter': action_tool_filter,
             'incident_context': session_memory.get('incident_context') or {},
             'planning_skill_trace': skill_prompt_trace,
+            'tool_budget': tool_budget.trace(),
             'formatter_skill_trace': (formatter_result or {}).get('skill_trace') or {},
             'skill_trace': _build_skill_trace(
                 active_skills,

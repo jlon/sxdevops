@@ -361,3 +361,105 @@ class BuiltinSkillRuntimeE2ETests(TestCase):
         self.assertNotIn('sx-task-template-selection', planning_slugs)
         self.assertIn('formatter_skill_trace', result['metadata'])
         self.assertIn('skill_trace', result['metadata'])
+
+    def test_dispatch_runtime_stops_repeated_same_tool_arguments(self):
+        get_agent_config()
+        session = AIOpsChatSession.objects.create(
+            user=self.user,
+            title='tool budget e2e',
+            context={},
+        )
+        user_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='帮我查 HBase 最近日志',
+        )
+        log_action = _action_registry_item_by_code('log.query_generate', user=self.user)
+        planning_calls = 0
+
+        def fake_completion(provider, payload, **kwargs):
+            nonlocal planning_calls
+            if kwargs.get('purpose') == 'chat_planning':
+                planning_calls += 1
+                if planning_calls == 1:
+                    return {
+                        'choices': [{
+                            'message': {
+                                'content': '',
+                                'tool_calls': [{
+                                    'id': 'call-logs-1',
+                                    'type': 'function',
+                                    'function': {
+                                        'name': 'query_logs',
+                                        'arguments': '{"query":"hbase error","duration_minutes":30,"limit":3}',
+                                    },
+                                }],
+                            },
+                        }],
+                    }
+                if planning_calls == 2:
+                    return {
+                        'choices': [{
+                            'message': {
+                                'content': '',
+                                'tool_calls': [{
+                                    'id': 'call-logs-duplicate',
+                                    'type': 'function',
+                                    'function': {
+                                        'name': 'query_logs',
+                                        'arguments': '{"query":"hbase error","duration_minutes":30,"limit":3}',
+                                    },
+                                }],
+                            },
+                        }],
+                    }
+                return {
+                    'choices': [{
+                        'message': {
+                            'content': '结论：已基于第一次 query_logs 结果收敛，不继续重复查询。',
+                        },
+                    }],
+                }
+            return {
+                'choices': [{
+                    'message': {
+                        'content': '结论：命中 1 条日志。\n依据：query_logs 返回 HBase error。\n建议操作：检查 RegionServer。',
+                    },
+                }],
+            }
+
+        with (
+            patch('aiops.services._provider_is_ready', return_value=True),
+            patch('aiops.services._resolve_chat_environment', return_value={'status': 'resolved', 'environment': {'name': '本地 HBase 集群', 'aliases': []}}),
+            patch('aiops.services._build_analysis_scope', return_value={'summary': {'node_count': 1}, 'services': ['hbase-regionserver']}),
+            patch('aiops.services._select_action_for_question', return_value=log_action),
+            patch('aiops.services.select_action_by_handler', return_value=log_action),
+            patch('aiops.services._build_runtime_tool_registry', return_value=(
+                [{'type': 'function', 'function': {'name': 'query_logs', 'description': 'query logs', 'parameters': {'type': 'object', 'properties': {}}}}],
+                {'query_logs': {'kind': 'platform_mcp', 'tool_name': 'query_logs'}},
+                [],
+                [{'server_type': 'platform_builtin', 'status': 'connected', 'name': '平台内置 MCP', 'tool_count': 1}],
+            )),
+            patch('aiops.services._run_tool_call', return_value={
+                'tool_output': {
+                    'summary': {'count': 1, 'service': 'hbase-regionserver', 'duration_minutes': 30},
+                    'logs': [{'message': 'HBase error'}],
+                },
+                'sections': [{'title': '日志结果', 'items': ['HBase error']}],
+                'citations': [{'title': '日志中心', 'path': '/observability/logs'}],
+                'message_type': AIOpsChatMessage.TYPE_ANALYSIS,
+            }) as mocked_run_tool_call,
+            patch('aiops.services._request_model_completion', side_effect=fake_completion),
+        ):
+            result = _dispatch_with_tool_runtime(
+                session,
+                user_message,
+                self.user,
+                user_message.content,
+            )
+
+        self.assertEqual(mocked_run_tool_call.call_count, 1)
+        self.assertEqual(result['tool_calls'], ['query_logs'])
+        self.assertEqual(result['metadata']['tool_budget']['total_calls'], 1)
+        self.assertEqual(len(result['metadata']['tool_budget']['stops']), 1)
+        self.assertIn('相同参数', result['metadata']['tool_budget']['stops'][0]['reason'])
