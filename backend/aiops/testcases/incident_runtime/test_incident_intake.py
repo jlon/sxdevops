@@ -46,14 +46,14 @@ class IncidentAlertIntakeTests(TestCase):
     def tearDown(self):
         register_llm_rca_planner(None)
 
-    def post_alertmanager(self, alerts, group_key='service=order'):
+    def post_alertmanager(self, alerts, group_key='service=order', common_labels=None):
         with self.captureOnCommitCallbacks(execute=True):
             return self.client.post(
                 f'/api/alerts/webhooks/prometheus/{self.integration.token}/',
                 {
                     'status': 'firing',
                     'groupKey': group_key,
-                    'commonLabels': {'service': 'order-center', 'namespace': 'production'},
+                    'commonLabels': common_labels if common_labels is not None else {'service': 'order-center', 'namespace': 'production'},
                     'alerts': alerts,
                 },
                 format='json',
@@ -351,6 +351,88 @@ class IncidentAlertIntakeTests(TestCase):
         self.assertEqual(rca_inventory['node_count'], 4)
         self.assertEqual(set(rca_inventory['node_name_samples']), {'hbase-master', 'hbase-regionserver-1', 'hbase-regionserver-2', 'rs-backup-3'})
         self.assertEqual(rca_inventory['roles']['regionserver'], 3)
+
+    def test_hbase_alertmanager_webhook_drives_incident_e2e(self):
+        env = TaskResourceGroup.objects.create(name='本地 HBase 集群', code='hbase-local', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        for name, status, role in [
+            ('hbase-master', TaskResource.STATUS_ACTIVE, 'master'),
+            ('hbase-regionserver-1', TaskResource.STATUS_WARNING, 'regionserver'),
+            ('hbase-regionserver-2', TaskResource.STATUS_ACTIVE, 'regionserver'),
+        ]:
+            TaskResource.objects.create(
+                name=name,
+                resource_type=TaskResource.RESOURCE_HOST,
+                environment=env,
+                status=status,
+                metadata={'role': role, 'cluster': 'hbase-local', 'service': 'hbase'},
+            )
+
+        response = self.post_alertmanager(
+            [
+                {
+                    'status': 'firing',
+                    'fingerprint': 'fp-hbase-alertmanager-e2e',
+                    'labels': {
+                        'alertname': 'HBaseRegionServerDown',
+                        'severity': 'critical',
+                        'pod': 'hbase-regionserver-1',
+                    },
+                    'annotations': {
+                        'summary': 'HBase RegionServer 不可用',
+                        'description': 'regionserver-1 在最近 5 分钟内不可达',
+                    },
+                    'startsAt': '2026-06-22T18:25:00+08:00',
+                },
+            ],
+            group_key='cluster=hbase-local service=hbase',
+            common_labels={
+                'environment': '本地 HBase 集群',
+                'cluster': 'hbase-local',
+                'namespace': 'middleware',
+                'service': 'hbase',
+                'job': 'hbase-regionserver',
+                'resource_type': 'host',
+            },
+        )
+
+        self.assertEqual(response.status_code, 202, response.data)
+        alert = Alert.objects.get()
+        self.assertEqual(alert.environment, '本地 HBase 集群')
+        self.assertEqual(alert.cluster, 'hbase-local')
+        self.assertEqual(alert.namespace, 'middleware')
+        self.assertEqual(alert.service, 'hbase')
+        self.assertEqual(alert.resource, 'hbase-regionserver-1')
+
+        incident = AIOpsIncident.objects.get()
+        self.assertEqual(incident.status, AIOpsIncident.STATUS_INVESTIGATING)
+        self.assertEqual(incident.environment, '本地 HBase 集群')
+        self.assertEqual(incident.cluster, 'hbase-local')
+        self.assertEqual(incident.namespace, 'middleware')
+        self.assertEqual(incident.service, 'hbase')
+        self.assertEqual(incident.active_alert_count, 1)
+        self.assertEqual(AIOpsIncidentAlert.objects.filter(incident=incident, alert=alert).count(), 1)
+
+        resource_evidence = AIOpsIncidentEvidence.objects.get(incident=incident, source='builtin.task_resource_scope')
+        inventory = resource_evidence.payload['cluster_inventory']
+        self.assertEqual(inventory['cluster_count'], 1)
+        self.assertEqual(inventory['node_count'], 3)
+        self.assertEqual(inventory['roles']['regionserver'], 2)
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertIn(resource_evidence.id, hypothesis.supporting_evidence_ids)
+        verify_action = AIOpsIncidentAction.objects.get(incident=incident, action_type=AIOpsIncidentAction.ACTION_VERIFY)
+        self.assertEqual(verify_action.action_payload['target_type'], HostTask.TARGET_HOST)
+        self.assertEqual(verify_action.action_payload['host_count'], 3)
+
+        user = User.objects.create_user(username='hbase-incident-e2e', password='Passw0rd!123')
+        user.rbac_roles.add(Role.objects.get(code='platform-admin'))
+        token = Token.objects.create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        detail = self.client.get(f'/api/aiops/incidents/{incident.id}/')
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertTrue(any(item['source'] == 'builtin.alert_snapshot' for item in detail.data['evidence_items']))
+        self.assertTrue(any(item['source'] == 'builtin.task_resource_scope' for item in detail.data['evidence_items']))
+        self.assertTrue(any(item['action_type'] == AIOpsIncidentAction.ACTION_VERIFY for item in detail.data['incident_actions']))
+        self.assertEqual(AIOpsExternalTask.objects.get(action_code='incident.investigate').status, AIOpsExternalTask.STATUS_COMPLETED)
 
     def test_incident_investigation_collects_k8s_evidence(self):
         cluster = K8sCluster.objects.create(
