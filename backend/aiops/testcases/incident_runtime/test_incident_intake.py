@@ -88,6 +88,7 @@ class IncidentAlertIntakeTests(TestCase):
         incident = AIOpsIncident.objects.get()
         self.assertEqual(incident.status, AIOpsIncident.STATUS_INVESTIGATING)
         self.assertEqual(incident.metadata['last_investigation']['status'], AIOpsExternalTask.STATUS_COMPLETED)
+        self.assertFalse(incident.metadata['last_investigation']['partial'])
         self.assertEqual(incident.severity, AIOpsIncident.SEVERITY_CRITICAL)
         self.assertEqual(incident.environment, 'prod')
         self.assertEqual(incident.cluster, 'dev-k8s-cluster')
@@ -1011,6 +1012,58 @@ class IncidentAlertIntakeTests(TestCase):
         incident.refresh_from_db()
         self.assertEqual(incident.status, AIOpsIncident.STATUS_RESOLVED)
         self.assertEqual(incident.metadata['last_investigation']['status'], AIOpsExternalTask.STATUS_COMPLETED)
+
+    def test_readonly_investigation_partial_result_does_not_reuse_old_evidence(self):
+        env = TaskResourceGroup.objects.create(name='prod', code='prod', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
+        TaskResource.objects.create(
+            name='order-host-01',
+            resource_type=TaskResource.RESOURCE_HOST,
+            environment=env,
+            status=TaskResource.STATUS_ACTIVE,
+            metadata={'service': 'order-center'},
+        )
+        alert = Alert.objects.create(
+            title='Order Error High',
+            level='critical',
+            source='prometheus',
+            source_type=Alert.SOURCE_PROMETHEUS,
+            message='order errors are high',
+            environment='prod',
+            cluster='prod',
+            namespace='production',
+            service='order-center',
+            resource_type='service',
+            resource='order-center',
+            fingerprint='order-partial-timeout',
+            group_key='order-partial-timeout',
+            labels={'service': 'order-center', 'namespace': 'production'},
+        )
+
+        from aiops.incidents import upsert_incident_for_alert
+
+        incident, _ = upsert_incident_for_alert(alert, schedule_investigation=False)
+        with override_settings(AIOPS_INCIDENT_INVESTIGATION_TIMEOUT_SECONDS=90):
+            run_readonly_investigation(incident, reason='full_seed')
+        self.assertTrue(AIOpsIncidentEvidence.objects.filter(incident=incident, source='builtin.task_resource_scope').exists())
+        self.assertEqual(AIOpsIncidentAction.objects.filter(incident=incident, action_type=AIOpsIncidentAction.ACTION_VERIFY).count(), 1)
+
+        AIOpsIncidentAction.objects.filter(incident=incident, action_type=AIOpsIncidentAction.ACTION_VERIFY).delete()
+        with override_settings(AIOPS_INCIDENT_INVESTIGATION_TIMEOUT_SECONDS=1):
+            with patch('aiops.incident_investigation.time.monotonic', side_effect=[100.0, 102.0]):
+                run_readonly_investigation(incident, reason='partial_timeout')
+
+        task = AIOpsExternalTask.objects.filter(action_code='incident.investigate').latest('id')
+        incident.refresh_from_db()
+        self.assertTrue(task.result_payload['partial'])
+        self.assertIn('达到预算', task.result_payload['timeout_detail'])
+        self.assertEqual(task.orchestration_state['evidence_count'], 0)
+        self.assertEqual(task.result_payload['evidence_ids'], [])
+        self.assertEqual(task.agent_results[0]['status'], 'partial')
+        self.assertTrue(incident.metadata['last_investigation']['partial'])
+        self.assertIn('达到预算', incident.metadata['last_investigation']['timeout_detail'])
+        self.assertFalse(AIOpsIncidentAction.objects.filter(incident=incident, action_type=AIOpsIncidentAction.ACTION_VERIFY).exists())
+        hypothesis = AIOpsIncidentHypothesis.objects.get(incident=incident, status=AIOpsIncidentHypothesis.STATUS_PRIMARY)
+        self.assertEqual(hypothesis.root_cause_type, AIOpsIncidentHypothesis.TYPE_UNKNOWN)
 
     def test_alert_detail_can_link_existing_incident(self):
         user = User.objects.create_user(username='alert-linker', password='Passw0rd!123')

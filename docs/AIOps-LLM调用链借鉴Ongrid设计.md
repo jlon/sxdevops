@@ -46,12 +46,16 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
   - 默认只自动调查 warning/critical，info 级 Incident 只入库并记录跳过原因。
   - 后台调查默认最多并发 2 个，超过上限时跳过本次调查并写入 Incident 元数据。
   - 跳过记录写入 `last_investigation`、`last_investigation_skip` 和 EventWall，避免前端误判为“正在调查”。
+- Incident 只读调查增加协作式超时和局部结论：
+  - 每个取证步骤前检查 `AIOPS_INCIDENT_INVESTIGATION_TIMEOUT_SECONDS`，达到预算后停止后续取证。
+  - 已采集证据会继续生成低置信 RCA 和只读建议，任务结果标记 `partial=true`。
+  - 局部结论只使用本轮已采集证据，不复用上一次调查的旧证据生成验证任务。
 
 ## 后续优先级
 
 1. **P0：Incident 调查专用 orchestrator 深化**
-   - 已完成严重级别 gate、全局并发上限和 skipped 状态审计。
-   - 后续补超时控制和失败后的局部结论 salvage。
+   - 已完成严重级别 gate、全局并发上限、skipped 状态审计、协作式超时和局部结论 salvage。
+   - 后续可继续补更细的 UI 展示和历史调查对比。
 
 2. **P1：Reviewer Agent**
    - 对高风险 Action 生成独立二审结果，而不是只依赖确认按钮和权限判断。
@@ -60,8 +64,8 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
 3. **P1：RCA 报告结构化二阶段**
    - 当前有 `generate_incident_llm_root_cause` 结构化假设。后续可增加报告抽取层，把自然语言 RCA 映射为根因、因果链、证据、建议动作、置信度。
 
-4. **P2：MaxStep/失败 salvage**
-   - 对通用聊天和 Incident 调查保存更完整 transcript，超预算时生成低置信局部结论，而不是只报失败。
+4. **P2：通用聊天 MaxStep salvage**
+   - Incident 调查已支持超预算局部结论。后续可对通用聊天保存更完整 transcript，超预算时生成低置信局部结论，而不是只报失败。
 
 ## 边界
 

@@ -67,6 +67,7 @@ RULE_RCA_GENERATED_BY = 'rule_based'
 INVESTIGATION_STATUS_SKIPPED = 'skipped'
 INVESTIGATION_DEFAULT_MIN_SEVERITY = AIOpsIncident.SEVERITY_WARNING
 INVESTIGATION_DEFAULT_MAX_CONCURRENT = 2
+INVESTIGATION_DEFAULT_TIMEOUT_SECONDS = 90
 INVESTIGATION_SEVERITY_RANK = {
     AIOpsIncident.SEVERITY_INFO: 1,
     AIOpsIncident.SEVERITY_WARNING: 2,
@@ -1128,10 +1129,11 @@ def collect_k8s_evidence(incident, task=None, tool_invocation=None, limit=8):
     return evidence
 
 
-def _evidence_by_source(incident):
+def _evidence_by_source(incident, evidence_items=None):
+    items = evidence_items if evidence_items is not None else incident.evidence_items.all()
     return {
         evidence.source: evidence
-        for evidence in incident.evidence_items.all()
+        for evidence in items
     }
 
 
@@ -1659,9 +1661,12 @@ def _generate_llm_root_cause_hypothesis(incident, rca_input, task=None):
     return hypothesis
 
 
-def generate_root_cause_hypothesis(incident, task=None):
-    incident = AIOpsIncident.objects.prefetch_related('evidence_items').get(id=incident.id)
-    evidence = _evidence_by_source(incident)
+def generate_root_cause_hypothesis(incident, task=None, evidence_items=None):
+    if evidence_items is None:
+        incident = AIOpsIncident.objects.prefetch_related('evidence_items').get(id=incident.id)
+    else:
+        incident = AIOpsIncident.objects.get(id=incident.id)
+    evidence = _evidence_by_source(incident, evidence_items=evidence_items)
     alert_evidence = evidence.get('builtin.alert_snapshot')
     event_evidence = evidence.get('builtin.event_timeline')
     resource_evidence = evidence.get('builtin.task_resource_scope')
@@ -1751,12 +1756,12 @@ def generate_root_cause_hypothesis(incident, task=None):
             'generated_at': timezone.now(),
         },
     )
-    rca_input = build_rca_evidence_package(incident, hypothesis=hypothesis)
+    rca_input = build_rca_evidence_package(incident, evidence_items=evidence_items, hypothesis=hypothesis)
     return _generate_llm_root_cause_hypothesis(incident, rca_input, task=task) or hypothesis
 
 
-def _resource_evidence_host_targets(incident):
-    evidence = _evidence_by_source(incident).get('builtin.task_resource_scope')
+def _resource_evidence_host_targets(incident, evidence_items=None):
+    evidence = _evidence_by_source(incident, evidence_items=evidence_items).get('builtin.task_resource_scope')
     payload = evidence.payload if evidence and isinstance(evidence.payload, dict) else {}
     resources = payload.get('resources') if isinstance(payload.get('resources'), list) else []
     target_refs = []
@@ -1803,8 +1808,8 @@ def _verification_task_payload(incident, hypothesis, target_refs, resource_ids):
     }
 
 
-def generate_verification_task_proposal(incident, hypothesis):
-    target_refs, resource_ids = _resource_evidence_host_targets(incident)
+def generate_verification_task_proposal(incident, hypothesis, evidence_items=None):
+    target_refs, resource_ids = _resource_evidence_host_targets(incident, evidence_items=evidence_items)
     if not target_refs:
         return None
     action_payload = _verification_task_payload(incident, hypothesis, target_refs, resource_ids)
@@ -1850,7 +1855,7 @@ def generate_verification_task_proposal(incident, hypothesis):
     return proposal
 
 
-def generate_remediation_proposals(incident, hypothesis):
+def generate_remediation_proposals(incident, hypothesis, evidence_items=None):
     next_checks = hypothesis.recommended_next_checks if isinstance(hypothesis.recommended_next_checks, list) else []
     if not next_checks:
         next_checks = _recommended_next_checks(incident, 0)
@@ -1897,7 +1902,7 @@ def generate_remediation_proposals(incident, hypothesis):
             defaults=defaults,
         )
     proposals.append(proposal)
-    verification_proposal = generate_verification_task_proposal(incident, hypothesis)
+    verification_proposal = generate_verification_task_proposal(incident, hypothesis, evidence_items=evidence_items)
     if verification_proposal:
         proposals.append(verification_proposal)
     return proposals
@@ -2004,6 +2009,18 @@ def _investigation_max_concurrent():
     )
 
 
+def _investigation_timeout_seconds():
+    return _safe_positive_int(
+        getattr(settings, 'AIOPS_INCIDENT_INVESTIGATION_TIMEOUT_SECONDS', INVESTIGATION_DEFAULT_TIMEOUT_SECONDS),
+        INVESTIGATION_DEFAULT_TIMEOUT_SECONDS,
+    )
+
+
+def _investigation_timed_out(started_at, timeout_seconds=None):
+    timeout_seconds = _investigation_timeout_seconds() if timeout_seconds is None else timeout_seconds
+    return bool(timeout_seconds and time.monotonic() - started_at >= timeout_seconds)
+
+
 def _investigation_severity_skip_detail(incident):
     min_severity = _investigation_min_severity()
     severity = incident.severity or AIOpsIncident.SEVERITY_INFO
@@ -2069,7 +2086,7 @@ def _mark_incident_investigation_skipped(incident, reason, detail, reset_status=
     return fresh
 
 
-def _mark_incident_investigation_finished(incident, task, status, error=''):
+def _mark_incident_investigation_finished(incident, task, status, error='', partial=False, timeout_detail=''):
     fresh = AIOpsIncident.objects.get(id=incident.id)
     metadata = fresh.metadata if isinstance(fresh.metadata, dict) else {}
     last = metadata.get('last_investigation') if isinstance(metadata.get('last_investigation'), dict) else {}
@@ -2077,13 +2094,54 @@ def _mark_incident_investigation_finished(incident, task, status, error=''):
         last = {'task_id': task.id}
     last.update({
         'status': status,
+        'partial': bool(partial),
         'completed_at': timezone.now().isoformat(),
     })
     if error:
         last['error'] = str(error)[:240]
+    if timeout_detail:
+        last['timeout_detail'] = str(timeout_detail)[:240]
     metadata['last_investigation'] = last
     fresh.metadata = metadata
     fresh.save(update_fields=['metadata', 'updated_at'])
+
+
+def _readonly_investigation_steps():
+    return [
+        ('collect_alerts', 'builtin.alert_snapshot', collect_alert_evidence),
+        ('collect_metrics', 'builtin.metric_snapshot', collect_metric_evidence),
+        ('collect_logs', 'builtin.log_snapshot', collect_log_evidence),
+        ('collect_traces', 'builtin.trace_snapshot', collect_trace_evidence),
+        ('collect_k8s', 'builtin.k8s_snapshot', collect_k8s_evidence),
+        ('collect_events', 'builtin.event_timeline', collect_event_evidence),
+        ('collect_task_resources', 'builtin.task_resource_scope', collect_task_resource_evidence),
+    ]
+
+
+def _step_tool_map():
+    return {tool_name: index for index, (_phase, tool_name, _collector) in enumerate(_readonly_investigation_steps())}
+
+
+def _finalize_plan_steps(plan_steps, completed_tools, skipped_tools, now):
+    tool_index = _step_tool_map()
+    completed = set(completed_tools)
+    skipped = set(skipped_tools)
+    result = []
+    for step in plan_steps:
+        tool_name = step.get('tool')
+        if tool_name in completed:
+            result.append({**step, 'status': 'completed', 'completed_at': now.isoformat()})
+        elif tool_name in skipped:
+            result.append({**step, 'status': 'skipped', 'skipped_at': now.isoformat()})
+        elif tool_name in tool_index:
+            result.append({**step, 'status': 'pending'})
+        else:
+            result.append(step)
+    return result
+
+
+def _task_status_label(partial):
+    return 'partial' if partial else 'completed'
 
 
 def _run_readonly_investigation_internal(incident, reason='alert_changed'):
@@ -2091,80 +2149,60 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
     task = create_investigation_task(incident, reason=reason)
     _mark_incident_investigating(incident, task, reason)
     audit_session = _investigation_audit_session(incident)
+    started_at = time.monotonic()
+    timeout_seconds = _investigation_timeout_seconds()
+    evidence_items = []
+    tool_invocation_ids = []
+    react_trace = []
+    skipped_tools = []
+    timeout_detail = ''
     try:
-        alert_evidence, alert_invocation = _collect_evidence_with_audit(
-            incident,
-            task,
-            audit_session,
-            'builtin.alert_snapshot',
-            collect_alert_evidence,
-        )
-        metric_evidence_item, metric_invocation = _collect_evidence_with_audit(
-            incident,
-            task,
-            audit_session,
-            'builtin.metric_snapshot',
-            collect_metric_evidence,
-        )
-        log_evidence, log_invocation = _collect_evidence_with_audit(
-            incident,
-            task,
-            audit_session,
-            'builtin.log_snapshot',
-            collect_log_evidence,
-        )
-        trace_evidence, trace_invocation = _collect_evidence_with_audit(
-            incident,
-            task,
-            audit_session,
-            'builtin.trace_snapshot',
-            collect_trace_evidence,
-        )
-        k8s_evidence, k8s_invocation = _collect_evidence_with_audit(
-            incident,
-            task,
-            audit_session,
-            'builtin.k8s_snapshot',
-            collect_k8s_evidence,
-        )
-        event_evidence, event_invocation = _collect_evidence_with_audit(
-            incident,
-            task,
-            audit_session,
-            'builtin.event_timeline',
-            collect_event_evidence,
-        )
-        resource_evidence, resource_invocation = _collect_evidence_with_audit(
-            incident,
-            task,
-            audit_session,
-            'builtin.task_resource_scope',
-            collect_task_resource_evidence,
-        )
+        for phase, tool_name, collector in _readonly_investigation_steps():
+            if _investigation_timed_out(started_at, timeout_seconds):
+                timeout_detail = f'只读调查达到预算 {timeout_seconds} 秒，已停止后续取证'
+                skipped_tools = [
+                    step_tool
+                    for _step_phase, step_tool, _step_collector in _readonly_investigation_steps()
+                    if step_tool not in {item.source for item in evidence_items}
+                ]
+                react_trace.append({
+                    'phase': phase,
+                    'status': 'skipped',
+                    'reason': timeout_detail,
+                })
+                break
+            evidence, invocation = _collect_evidence_with_audit(
+                incident,
+                task,
+                audit_session,
+                tool_name,
+                collector,
+            )
+            evidence_items.append(evidence)
+            tool_invocation_ids.append(invocation.id)
+            react_trace.append({
+                'phase': phase,
+                'status': 'completed',
+                'evidence_id': evidence.id,
+                'tool_invocation_id': invocation.id,
+            })
     except Exception as exc:
         _mark_investigation_task_failed(task, exc)
         _mark_incident_investigation_finished(incident, task, AIOpsExternalTask.STATUS_FAILED, error=exc)
         raise
-    evidence_items = [alert_evidence, metric_evidence_item, log_evidence, trace_evidence, k8s_evidence, event_evidence, resource_evidence]
-    tool_invocation_ids = [
-        alert_invocation.id,
-        metric_invocation.id,
-        log_invocation.id,
-        trace_invocation.id,
-        k8s_invocation.id,
-        event_invocation.id,
-        resource_invocation.id,
-    ]
-    hypothesis = generate_root_cause_hypothesis(incident, task=task)
+    partial = bool(timeout_detail)
+    hypothesis = generate_root_cause_hypothesis(incident, task=task, evidence_items=evidence_items)
     rca_evidence_package = build_rca_evidence_package(incident, evidence_items=evidence_items, hypothesis=hypothesis)
-    proposals = generate_remediation_proposals(incident, hypothesis)
+    proposals = generate_remediation_proposals(incident, hypothesis, evidence_items=evidence_items)
     now = timezone.now()
     task.status = AIOpsExternalTask.STATUS_COMPLETED
     task.completed_at = now
-    task.plan_steps = [
-        {**step, 'status': 'completed', 'completed_at': now.isoformat()}
-        for step in task.plan_steps
-    ]
+    task.plan_steps = _finalize_plan_steps(
+        task.plan_steps,
+        completed_tools=[item.source for item in evidence_items],
+        skipped_tools=skipped_tools,
+        now=now,
+    )
     task.orchestration_state = {
         **(task.orchestration_state or {}),
         'completed_at': now.isoformat(),
@@ -2172,26 +2210,24 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         'audit_session_id': audit_session.id,
         'tool_invocation_ids': tool_invocation_ids,
         'rca_input': rca_evidence_package,
+        'timeout_seconds': timeout_seconds,
+        'partial': partial,
+        'timeout_detail': timeout_detail,
     }
     task.agent_results = [
         {
             'agent': 'incident_readonly_investigator',
             'agent_name': 'Incident 只读调查',
-            'status': 'completed',
+            'status': _task_status_label(partial),
             'observations': [item.summary for item in evidence_items] + [hypothesis.summary],
-            'confidence': 'medium',
+            'confidence': 'low' if partial else 'medium',
         }
     ]
-    task.react_trace = [
-        {'phase': 'collect_alerts', 'status': 'completed', 'evidence_id': evidence_items[0].id, 'tool_invocation_id': alert_invocation.id},
-        {'phase': 'collect_metrics', 'status': 'completed', 'evidence_id': evidence_items[1].id, 'tool_invocation_id': metric_invocation.id},
-        {'phase': 'collect_logs', 'status': 'completed', 'evidence_id': evidence_items[2].id, 'tool_invocation_id': log_invocation.id},
-        {'phase': 'collect_traces', 'status': 'completed', 'evidence_id': evidence_items[3].id, 'tool_invocation_id': trace_invocation.id},
-        {'phase': 'collect_k8s', 'status': 'completed', 'evidence_id': evidence_items[4].id, 'tool_invocation_id': k8s_invocation.id},
-        {'phase': 'collect_events', 'status': 'completed', 'evidence_id': evidence_items[5].id, 'tool_invocation_id': event_invocation.id},
-        {'phase': 'collect_task_resources', 'status': 'completed', 'evidence_id': evidence_items[6].id, 'tool_invocation_id': resource_invocation.id},
-        {'phase': 'terminate', 'status': 'completed', 'stop_condition': '只读证据快照已刷新'},
-    ]
+    task.react_trace = react_trace + [{
+        'phase': 'terminate',
+        'status': _task_status_label(partial),
+        'stop_condition': timeout_detail or '只读证据快照已刷新',
+    }]
     task.result_payload = {
         'mode': 'incident_readonly_investigation',
         'incident_id': incident.id,
@@ -2200,7 +2236,9 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         'hypothesis_id': hypothesis.id,
         'rca_input_version': rca_evidence_package['version'],
         'proposal_ids': [item.id for item in proposals],
-        'summary': '已刷新 Incident 只读调查证据、主根因假设和只读处置建议。',
+        'partial': partial,
+        'timeout_detail': timeout_detail,
+        'summary': '已基于部分证据生成低置信只读调查结论。' if partial else '已刷新 Incident 只读调查证据、主根因假设和只读处置建议。',
     }
     task.save(update_fields=[
         'status',
@@ -2217,7 +2255,11 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         category='incident',
         action='investigate_incident',
         title='Incident 只读调查',
-        summary=f'Incident #{incident.id} 已刷新 {len(evidence_items)} 条只读证据、1 条主根因假设和 {len(proposals)} 条建议',
+        summary=(
+            f'Incident #{incident.id} 已基于 {len(evidence_items)} 条部分证据生成低置信结论'
+            if partial
+            else f'Incident #{incident.id} 已刷新 {len(evidence_items)} 条只读证据、1 条主根因假设和 {len(proposals)} 条建议'
+        ),
         resource_type='aiops_incident',
         resource_id=incident.id,
         resource_name=incident.title,
@@ -2232,9 +2274,17 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
             'hypothesis_id': hypothesis.id,
             'proposal_ids': [item.id for item in proposals],
             'reason': reason,
+            'partial': partial,
+            'timeout_detail': timeout_detail,
         },
     )
-    _mark_incident_investigation_finished(incident, task, AIOpsExternalTask.STATUS_COMPLETED)
+    _mark_incident_investigation_finished(
+        incident,
+        task,
+        AIOpsExternalTask.STATUS_COMPLETED,
+        partial=partial,
+        timeout_detail=timeout_detail,
+    )
     return task
 
 
