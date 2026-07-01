@@ -4,8 +4,10 @@ from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 
 from aiops.models import AIOpsChatMessage, AIOpsChatSession
+from aiops.serializers import AIOpsAuditSessionSerializer
 from aiops.services import (
     _action_registry_item_by_code,
+    _apply_dispatch_result_to_message,
     _build_runtime_prompt,
     _dispatch_with_tool_runtime,
     _select_runtime_skills,
@@ -470,3 +472,27 @@ class BuiltinSkillRuntimeE2ETests(TestCase):
         self.assertEqual(result['metadata']['formatter_attempts'], 0)
         self.assertEqual(result['metadata']['formatter_skip_reason'], 'tool_budget_stopped')
         self.assertIn('HBase error', result['content'])
+
+        assistant_message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_ASSISTANT,
+            content='处理中',
+            metadata={},
+        )
+        assistant_message, _pending = _apply_dispatch_result_to_message(
+            session,
+            assistant_message,
+            result,
+            self.user,
+            question=user_message.content,
+        )
+        transcript = assistant_message.metadata['runtime_transcript']
+        self.assertEqual(transcript['status'], 'partial')
+        self.assertEqual(transcript['runtime_stop_reason'], 'tool_budget_stopped')
+        self.assertEqual(transcript['tool_call_count'], 1)
+        self.assertGreaterEqual(len(transcript['steps']), 4)
+        self.assertTrue(any(item['title'] == '工具预算' for item in transcript['steps']))
+        self.assertTrue(any(item['title'] == '最终回复' for item in transcript['steps']))
+        serialized = AIOpsAuditSessionSerializer(session).data
+        self.assertEqual(serialized['runtime_transcript']['runtime_stop_reason'], 'tool_budget_stopped')
+        self.assertEqual(serialized['runtime_transcript']['tool_call_count'], 1)

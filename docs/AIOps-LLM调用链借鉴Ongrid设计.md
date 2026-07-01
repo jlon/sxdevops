@@ -68,6 +68,10 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
   - 当模型后续工具调用全部被预算策略拦截，且本轮已经采集到工具证据时，运行时立即基于已有证据生成局部结论。
   - 该路径不再追加规划轮次，也跳过二阶段 formatter，避免在已知不可继续的方向上继续消耗模型调用。
   - assistant metadata 写入 `runtime_stop_reason=tool_budget_stopped`、`partial_answer=true` 和 `formatter_skip_reason=tool_budget_stopped`，审计可解释为什么提前收敛。
+- 通用聊天运行摘要：
+  - assistant 消息 metadata 写入 `runtime_transcript`，把运行上下文、Action 决策、Skill 注入、工具调用、预算停止、回复整形和最终回复压缩为稳定摘要。
+  - 审计会话 API 返回最新 assistant 消息的 `runtime_transcript`，审计页新增“运行摘要”面板，便于回看为什么得到当前回答。
+  - 摘要只保存计数、状态和短文本，不保存原始 prompt 或完整工具 payload，避免把审计能力做成新的敏感数据出口。
 
 ## 后续优先级
 
@@ -84,8 +88,8 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
    - 后续如引入 LLM 报告润色，必须保留当前结构化报告作为事实边界，禁止模型新增未观测事实。
 
 4. **P2：通用聊天 MaxStep salvage**
-   - 已完成第一阶段：工具预算拦截后，如果已有工具证据，直接收敛为局部结论。
-   - 后续可继续补完整 transcript 摘要，把多轮规划轨迹压缩成更清晰的审计视图。
+   - 已完成第一阶段：工具预算拦截后，如果已有工具证据，直接收敛为局部结论，并生成 `runtime_transcript` 摘要供审计页展示。
+   - 后续可继续补跨轮对比和压缩轨迹，把同一问题的多轮调查串成更清晰的审计视图。
 
 ## 边界
 

@@ -19824,6 +19824,135 @@ def _build_chat_result(session, user_message, user, question, progress_callback=
     return _build_dispatch_error_result('\u672a\u83b7\u5f97\u5230\u6709\u6548\u56de\u7b54')
 
 
+def _safe_trace_list(values, limit=8):
+    if not isinstance(values, list):
+        return []
+    result = []
+    for item in values[:limit]:
+        text = str(item or '').strip()
+        if text:
+            result.append(text[:160])
+    return result
+
+
+def _runtime_transcript_step(title, detail='', status='completed', **extra):
+    item = {
+        'title': str(title or '').strip()[:80],
+        'detail': str(detail or '').strip()[:240],
+        'status': str(status or '').strip()[:32] or 'completed',
+    }
+    item.update({key: value for key, value in extra.items() if value not in (None, '', [], {})})
+    return item
+
+
+def _build_runtime_transcript(metadata, *, content='', tool_calls=None, message_type=''):
+    metadata = metadata if isinstance(metadata, dict) else {}
+    tool_calls = _safe_trace_list(tool_calls or [], limit=12)
+    tool_budget = metadata.get('tool_budget') if isinstance(metadata.get('tool_budget'), dict) else {}
+    budget_stops = tool_budget.get('stops') if isinstance(tool_budget.get('stops'), list) else []
+    skill_trace = metadata.get('skill_trace') if isinstance(metadata.get('skill_trace'), dict) else {}
+    action_trace = metadata.get('action_trace') if isinstance(metadata.get('action_trace'), dict) else {}
+    formatter_mode = metadata.get('formatter_mode') or ''
+    runtime_stop_reason = metadata.get('runtime_stop_reason') or ''
+    partial_answer = bool(metadata.get('partial_answer'))
+    steps = []
+
+    environment = metadata.get('current_environment') or metadata.get('environment') or ''
+    agent_name = metadata.get('agent_name') or metadata.get('agent_slug') or ''
+    if agent_name or environment:
+        detail_parts = []
+        if agent_name:
+            detail_parts.append(f'Agent：{agent_name}')
+        if environment:
+            detail_parts.append(f'环境：{environment}')
+        steps.append(_runtime_transcript_step('运行上下文', '，'.join(detail_parts)))
+
+    if action_trace:
+        action_name = action_trace.get('display_name') or action_trace.get('code') or ''
+        action_status = action_trace.get('status') or 'matched'
+        steps.append(_runtime_transcript_step(
+            '运行策略',
+            f'{action_name or "未命名策略"} / {action_status}',
+            status='completed' if action_status not in {'failed', 'blocked'} else 'failed',
+            action_code=action_trace.get('code') or '',
+        ))
+
+    matched_skill_count = skill_trace.get('matched_count') or 0
+    called_skill_count = skill_trace.get('called_count') or 0
+    if matched_skill_count or called_skill_count:
+        steps.append(_runtime_transcript_step(
+            'Skill 注入',
+            f'命中 {matched_skill_count} 个，调用 {called_skill_count} 个。',
+            matched_count=matched_skill_count,
+            called_count=called_skill_count,
+        ))
+
+    if tool_calls:
+        steps.append(_runtime_transcript_step(
+            '工具调用',
+            ' / '.join(tool_calls[:6]),
+            total=len(tool_calls),
+            tools=tool_calls[:12],
+        ))
+
+    if budget_stops:
+        first_stop = budget_stops[0] if isinstance(budget_stops[0], dict) else {}
+        steps.append(_runtime_transcript_step(
+            '工具预算',
+            first_stop.get('reason') or '工具预算策略触发。',
+            status='partial' if partial_answer else 'completed',
+            stop_count=len(budget_stops),
+            stopped_tools=_safe_trace_list([item.get('tool_name') for item in budget_stops if isinstance(item, dict)], limit=8),
+        ))
+    elif tool_budget:
+        steps.append(_runtime_transcript_step(
+            '工具预算',
+            f"本轮执行 {tool_budget.get('total_calls') or 0}/{tool_budget.get('max_tool_calls') or '-'} 次工具调用。",
+            total_calls=tool_budget.get('total_calls') or 0,
+            max_tool_calls=tool_budget.get('max_tool_calls') or 0,
+        ))
+
+    if formatter_mode:
+        formatter_detail = f'模式：{formatter_mode}'
+        if metadata.get('formatter_skip_reason'):
+            formatter_detail += f"，跳过原因：{metadata.get('formatter_skip_reason')}"
+        steps.append(_runtime_transcript_step('回复整形', formatter_detail, status='completed'))
+
+    if runtime_stop_reason:
+        steps.append(_runtime_transcript_step(
+            '停止条件',
+            runtime_stop_reason,
+            status='partial' if partial_answer else 'completed',
+        ))
+
+    content_text = str(content or '').strip()
+    if content_text:
+        steps.append(_runtime_transcript_step(
+            '最终回复',
+            content_text[:180],
+            status='partial' if partial_answer else 'completed',
+            message_type=message_type or '',
+        ))
+
+    return {
+        'version': '1.0',
+        'summary': (
+            '已基于部分工具证据生成局部结论。'
+            if partial_answer
+            else f'已完成 {len(tool_calls)} 次工具调用并生成回复。'
+            if tool_calls
+            else '已生成回复。'
+        ),
+        'status': 'partial' if partial_answer else 'completed',
+        'runtime_stop_reason': runtime_stop_reason,
+        'partial_answer': partial_answer,
+        'tool_call_count': len(tool_calls),
+        'budget_stop_count': len(budget_stops),
+        'formatter_mode': formatter_mode,
+        'steps': steps[:10],
+    }
+
+
 
 def _stream_dispatch_result(message_id, payload, progress_callback=None):
     emit = progress_callback or (lambda **kwargs: None)
@@ -20038,6 +20167,13 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
             pending_action=pending_action,
             decision=action_decision,
         )
+
+    merged_metadata['runtime_transcript'] = _build_runtime_transcript(
+        merged_metadata,
+        content=final_content,
+        tool_calls=result.get('tool_calls') or [],
+        message_type=result.get('message_type') or AIOpsChatMessage.TYPE_TEXT,
+    )
 
     payload = {
         'content': final_content,

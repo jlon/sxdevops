@@ -973,12 +973,13 @@ class AIOpsAuditSessionSerializer(_AIOpsAuditTraceMixin, serializers.ModelSerial
     latest_message = serializers.SerializerMethodField()
     skill_trace = serializers.SerializerMethodField()
     action_trace = serializers.SerializerMethodField()
+    runtime_transcript = serializers.SerializerMethodField()
 
     class Meta:
         model = AIOpsChatSession
         fields = [
             'id', 'title', 'status', 'username', 'message_count', 'tool_invocation_count',
-            'pending_action_count', 'latest_message', 'skill_trace', 'action_trace',
+            'pending_action_count', 'latest_message', 'skill_trace', 'action_trace', 'runtime_transcript',
             'last_message_at', 'created_at', 'updated_at',
         ]
 
@@ -1007,6 +1008,12 @@ class AIOpsAuditSessionSerializer(_AIOpsAuditTraceMixin, serializers.ModelSerial
 
     def get_action_trace(self, obj):
         return self._action_trace_for_message(self._latest_audit_message(obj))
+
+    def get_runtime_transcript(self, obj):
+        message = self._latest_audit_message(obj)
+        metadata = message.metadata if message and isinstance(message.metadata, dict) else {}
+        transcript = metadata.get('runtime_transcript')
+        return transcript if isinstance(transcript, dict) and transcript else None
 
 
 class AIOpsChatInputSerializer(serializers.Serializer):

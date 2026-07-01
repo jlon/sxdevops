@@ -330,6 +330,32 @@
                 </div>
                 <div v-else class="trace-empty">暂无运行策略命中记录</div>
               </div>
+              <div class="trace-panel trace-panel--wide">
+                <div class="trace-panel-head">
+                  <span>运行摘要</span>
+                  <small>{{ runtimeTranscriptSummary(row) }}</small>
+                </div>
+                <div v-if="hasRuntimeTranscript(row)" class="runtime-transcript">
+                  <div class="runtime-transcript-meta">
+                    <el-tag size="small" :type="runtimeTranscriptTone(row)" effect="plain">{{ runtimeTranscriptStatus(row) }}</el-tag>
+                    <span>工具 {{ row.runtime_transcript?.tool_call_count || 0 }} 次</span>
+                    <span v-if="row.runtime_transcript?.runtime_stop_reason">停止：{{ row.runtime_transcript.runtime_stop_reason }}</span>
+                    <span v-if="row.runtime_transcript?.formatter_mode">整形：{{ row.runtime_transcript.formatter_mode }}</span>
+                  </div>
+                  <div class="runtime-step-list">
+                    <div
+                      v-for="(step, index) in runtimeTranscriptSteps(row)"
+                      :key="`${row.id}-runtime-${index}-${step.title}`"
+                      class="runtime-step"
+                      :class="`is-${step.status || 'completed'}`"
+                    >
+                      <strong>{{ step.title || '-' }}</strong>
+                      <span>{{ step.detail || '-' }}</span>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="trace-empty">暂无运行摘要</div>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -1340,6 +1366,38 @@ function skillStatusLabel(status) {
 function hasActionTrace(row) {
   const trace = row?.action_trace
   return Boolean(trace && typeof trace === 'object' && Object.keys(trace).length)
+}
+
+function hasRuntimeTranscript(row) {
+  const transcript = row?.runtime_transcript
+  return Boolean(transcript && typeof transcript === 'object' && Object.keys(transcript).length)
+}
+
+function runtimeTranscriptSummary(row) {
+  const transcript = row?.runtime_transcript || {}
+  return transcript.summary || '暂无'
+}
+
+function runtimeTranscriptStatus(row) {
+  const status = row?.runtime_transcript?.status || ''
+  const labels = {
+    completed: '已完成',
+    partial: '局部结论',
+    failed: '失败',
+  }
+  return labels[status] || status || '-'
+}
+
+function runtimeTranscriptTone(row) {
+  const status = row?.runtime_transcript?.status || ''
+  if (status === 'partial') return 'warning'
+  if (status === 'failed') return 'danger'
+  return 'success'
+}
+
+function runtimeTranscriptSteps(row) {
+  const steps = row?.runtime_transcript?.steps
+  return Array.isArray(steps) ? steps.slice(0, 8) : []
 }
 
 function actionTraceTitle(row) {
@@ -2516,6 +2574,10 @@ watch(
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.86));
 }
 
+.trace-panel--wide {
+  grid-column: 1 / -1;
+}
+
 .trace-panel-head {
   display: flex;
   align-items: center;
@@ -2594,6 +2656,67 @@ watch(
 .trace-pill.is-fallback {
   border-color: rgba(245, 158, 11, 0.22);
   background: rgba(255, 251, 235, 0.82);
+}
+
+.runtime-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.runtime-transcript-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.runtime-step-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.runtime-step {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.runtime-step.is-partial {
+  border-color: rgba(245, 158, 11, 0.22);
+  background: rgba(255, 251, 235, 0.82);
+}
+
+.runtime-step.is-failed {
+  border-color: rgba(239, 68, 68, 0.2);
+  background: rgba(254, 242, 242, 0.82);
+}
+
+.runtime-step strong,
+.runtime-step span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-step strong {
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-step span {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
 }
 
 .trace-empty {
@@ -2803,6 +2926,10 @@ watch(
   }
 
   .trace-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-step-list {
     grid-template-columns: 1fr;
   }
 }
