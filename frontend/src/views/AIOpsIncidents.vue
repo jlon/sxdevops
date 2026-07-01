@@ -143,6 +143,46 @@
 
         <div class="impact-strip">{{ selectedIncident.impact_summary || '暂无影响摘要' }}</div>
 
+        <section v-if="rcaReport" class="incident-section rca-report-section">
+          <div class="section-head compact">
+            <div>
+              <h3>RCA 调查报告</h3>
+              <span class="toolbar-desc">生成于 {{ formatTime(rcaReport.generated_at) }}</span>
+            </div>
+            <div class="detail-tags">
+              <el-tag v-if="rcaReport.partial" size="small" type="warning" effect="plain">局部结论</el-tag>
+              <el-tag size="small" :type="confidenceTag(rcaReport.root_cause?.confidence_label)" effect="plain">
+                {{ confidenceText(rcaReport.root_cause?.confidence_label) }}
+              </el-tag>
+              <el-tag size="small" effect="plain">证据 {{ rcaReport.evidence_count || 0 }}</el-tag>
+            </div>
+          </div>
+          <div class="rca-root-cause">
+            <div class="rca-root-title">{{ rcaReport.root_cause?.title || '根因待确认' }}</div>
+            <div class="sub-line">
+              {{ rcaReport.root_cause?.type_display || rcaReport.root_cause?.type || '-' }}
+              <template v-if="rcaReport.root_cause?.generated_by"> · {{ rcaReport.root_cause.generated_by }}</template>
+            </div>
+            <p>{{ rcaReport.root_cause?.summary || '暂无根因摘要' }}</p>
+          </div>
+          <div v-if="(rcaReport.causal_chain || []).length" class="rca-chain">
+            <div v-for="(step, index) in rcaReport.causal_chain || []" :key="`rca-chain-${index}`" class="rca-chain-step">
+              <span>{{ index + 1 }}</span>
+              <p>{{ step }}</p>
+            </div>
+          </div>
+          <div v-if="(rcaReport.missing_evidence || []).length || (rcaReport.recommended_next_checks || []).length" class="rca-followups">
+            <div v-if="(rcaReport.missing_evidence || []).length">
+              <div class="mini-title">证据缺口</div>
+              <div v-for="item in rcaReport.missing_evidence || []" :key="`rca-missing-${item}`" class="sub-line">- {{ item }}</div>
+            </div>
+            <div v-if="(rcaReport.recommended_next_checks || []).length">
+              <div class="mini-title">建议补查</div>
+              <div v-for="item in rcaReport.recommended_next_checks || []" :key="`rca-check-${item}`" class="sub-line">- {{ item }}</div>
+            </div>
+          </div>
+        </section>
+
         <div class="incident-workbench-grid">
           <main class="incident-main-column">
             <section class="incident-section">
@@ -461,6 +501,7 @@ const evidenceById = computed(() => new Map(
 ))
 const primarySupportingEvidence = computed(() => resolveHypothesisEvidence(primaryHypothesis.value?.supporting_evidence_ids))
 const primaryCounterEvidence = computed(() => resolveHypothesisEvidence(primaryHypothesis.value?.counter_evidence_ids))
+const rcaReport = computed(() => selectedIncident.value?.rca_report || null)
 
 function formatTime(value) {
   if (!value) return '-'
@@ -502,6 +543,14 @@ function suggestionStatusType(value) {
 
 function suggestionStatusText(value) {
   return ({ ready: '可生成', needs_review: '需复核' }[value] || value || '-')
+}
+
+function confidenceTag(value) {
+  return ({ high: 'success', medium: 'warning', low: 'info' }[value] || 'info')
+}
+
+function confidenceText(value) {
+  return ({ high: '高置信', medium: '中置信', low: '低置信' }[value] || '置信度待确认')
 }
 
 function timelineResultType(value) {
@@ -794,6 +843,73 @@ onMounted(fetchIncidents)
   font-size: 13px;
   line-height: 1.5;
   word-break: break-word;
+}
+
+.rca-report-section {
+  margin-bottom: 12px;
+}
+
+.rca-root-cause {
+  padding: 10px 12px;
+  border: 1px solid rgba(51, 112, 255, 0.16);
+  border-radius: 8px;
+  background: #f7faff;
+}
+
+.rca-root-title {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.rca-root-cause p {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.rca-chain {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.rca-chain-step {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.rca-chain-step span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--panel-soft-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.rca-chain-step p {
+  margin: 1px 0 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.rca-followups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
 }
 
 .incident-workbench-grid {
@@ -1115,7 +1231,8 @@ onMounted(fetchIncidents)
   }
 
   .hypothesis-evidence-grid,
-  .hypothesis-columns {
+  .hypothesis-columns,
+  .rca-followups {
     grid-template-columns: 1fr;
   }
 

@@ -64,6 +64,7 @@ RCA_EVIDENCE_SOURCE_ORDER = (
 )
 LLM_RCA_GENERATED_BY = 'llm_rca_planner'
 RULE_RCA_GENERATED_BY = 'rule_based'
+RCA_REPORT_VERSION = '1.0'
 INVESTIGATION_STATUS_SKIPPED = 'skipped'
 INVESTIGATION_DEFAULT_MIN_SEVERITY = AIOpsIncident.SEVERITY_WARNING
 INVESTIGATION_DEFAULT_MAX_CONCURRENT = 2
@@ -1600,6 +1601,205 @@ def _safe_evidence_id_list(value, allowed_ids, limit=12):
     return result
 
 
+def _confidence_label(value):
+    confidence = _safe_float(value)
+    if confidence >= 0.75:
+        return 'high'
+    if confidence >= 0.45:
+        return 'medium'
+    return 'low'
+
+
+def _rca_report_evidence_ref(item):
+    return {
+        'id': item.get('id'),
+        'kind': item.get('kind') or '',
+        'kind_display': item.get('kind_display') or '',
+        'source': item.get('source') or '',
+        'summary': item.get('summary') or '',
+        'weight': item.get('weight') or '',
+        'key_facts': item.get('key_facts') if isinstance(item.get('key_facts'), dict) else {},
+    }
+
+
+def _rca_report_find_evidence(rca_evidence, source):
+    for item in rca_evidence:
+        if item.get('source') == source:
+            return item
+    return None
+
+
+def _rca_report_causal_chain(incident, hypothesis, rca_evidence, partial=False, timeout_detail=''):
+    chain = []
+    alert_item = _rca_report_find_evidence(rca_evidence, 'builtin.alert_snapshot')
+    alert_facts = alert_item.get('key_facts') if isinstance(alert_item, dict) else {}
+    primary_alert = alert_facts.get('primary_alert') if isinstance(alert_facts, dict) and isinstance(alert_facts.get('primary_alert'), dict) else {}
+    primary_title = primary_alert.get('title') or incident.title
+    active_alert_count = _safe_int(alert_facts.get('active_alert_count')) if isinstance(alert_facts, dict) else 0
+    if alert_item:
+        chain.append(f'主信号为 {primary_title}，当前活跃告警 {active_alert_count} 条。')
+
+    metric_item = _rca_report_find_evidence(rca_evidence, 'builtin.metric_snapshot')
+    metric_facts = metric_item.get('key_facts') if isinstance(metric_item, dict) else {}
+    if isinstance(metric_facts, dict):
+        abnormal_count = _safe_int(metric_facts.get('abnormal_count'))
+        failed_count = _safe_int(metric_facts.get('failed_count'))
+        missing_count = _safe_int(metric_facts.get('missing_count'))
+        if abnormal_count:
+            chain.append(f'指标快照发现 {abnormal_count} 个异常趋势。')
+        elif failed_count or missing_count:
+            chain.append(f'指标快照存在 {failed_count} 个失败查询和 {missing_count} 个无数据查询。')
+
+    log_item = _rca_report_find_evidence(rca_evidence, 'builtin.log_snapshot')
+    log_facts = log_item.get('key_facts') if isinstance(log_item, dict) else {}
+    if isinstance(log_facts, dict) and _safe_int(log_facts.get('error_count')):
+        chain.append(f'日志快照命中 {_safe_int(log_facts.get("error_count"))} 条错误样本。')
+
+    trace_item = _rca_report_find_evidence(rca_evidence, 'builtin.trace_snapshot')
+    trace_facts = trace_item.get('key_facts') if isinstance(trace_item, dict) else {}
+    if isinstance(trace_facts, dict) and _safe_int(trace_facts.get('error_match_count')):
+        chain.append(f'调用链快照命中 {_safe_int(trace_facts.get("error_match_count"))} 条异常链路。')
+
+    k8s_item = _rca_report_find_evidence(rca_evidence, 'builtin.k8s_snapshot')
+    k8s_facts = k8s_item.get('key_facts') if isinstance(k8s_item, dict) else {}
+    if isinstance(k8s_facts, dict):
+        pods_abnormal = _safe_int(k8s_facts.get('pods_abnormal'))
+        workloads_degraded = _safe_int(k8s_facts.get('workloads_degraded'))
+        if pods_abnormal or workloads_degraded:
+            chain.append(f'K8s 快照发现 {pods_abnormal} 个异常 Pod、{workloads_degraded} 个退化 Workload。')
+
+    event_item = _rca_report_find_evidence(rca_evidence, 'builtin.event_timeline')
+    event_facts = event_item.get('key_facts') if isinstance(event_item, dict) else {}
+    if isinstance(event_facts, dict) and _safe_int(event_facts.get('event_count')):
+        chain.append(f'事件时间线命中 {_safe_int(event_facts.get("event_count"))} 条相关事件，需要验证是否与告警同窗。')
+
+    topology_item = _rca_report_find_evidence(rca_evidence, 'builtin.task_resource_scope')
+    topology_facts = topology_item.get('key_facts') if isinstance(topology_item, dict) else {}
+    inventory = topology_facts.get('cluster_inventory') if isinstance(topology_facts, dict) and isinstance(topology_facts.get('cluster_inventory'), dict) else {}
+    if inventory and _safe_int(inventory.get('node_count')):
+        chain.append(f'资源底座识别到集群 {inventory.get("cluster_name") or incident.cluster or "-"}，节点数 {_safe_int(inventory.get("node_count"))}。')
+
+    if not chain:
+        chain.append('当前调查未采集到足够证据，根因保持未知。')
+    tail = [f'主根因假设：{hypothesis.title}。']
+    if partial:
+        tail.append(timeout_detail or '本次调查为局部结论，仍需补齐未执行的只读取证步骤。')
+    return chain[:max(8 - len(tail), 0)] + tail
+
+
+def _rca_report_next_actions(proposals):
+    result = []
+    for proposal in proposals or []:
+        if not proposal:
+            continue
+        result.append({
+            'id': proposal.id,
+            'title': proposal.title,
+            'action_type': proposal.action_type,
+            'action_type_display': proposal.get_action_type_display(),
+            'risk_level': proposal.risk_level,
+            'risk_level_display': proposal.get_risk_level_display(),
+            'status': proposal.status,
+            'status_display': proposal.get_status_display(),
+        })
+    return result
+
+
+def build_rca_report(incident, hypothesis, rca_input, proposals=None, partial=False, timeout_detail=''):
+    rca_evidence = rca_input.get('evidence') if isinstance(rca_input, dict) and isinstance(rca_input.get('evidence'), list) else []
+    evidence_by_id = {
+        _safe_int(item.get('id')): _rca_report_evidence_ref(item)
+        for item in rca_evidence
+        if isinstance(item, dict) and _safe_int(item.get('id'))
+    }
+    allowed_ids = set(evidence_by_id.keys())
+    supporting_ids = _safe_evidence_id_list(hypothesis.supporting_evidence_ids, allowed_ids)
+    counter_ids = _safe_evidence_id_list(hypothesis.counter_evidence_ids, allowed_ids)
+    confidence = _safe_float(hypothesis.confidence)
+    if partial:
+        confidence = min(confidence, 0.35)
+    return {
+        'version': RCA_REPORT_VERSION,
+        'generated_at': timezone.now().isoformat(),
+        'status': _task_status_label(partial),
+        'partial': bool(partial),
+        'timeout_detail': timeout_detail or '',
+        'incident': {
+            'id': incident.id,
+            'title': incident.title,
+            'severity': incident.severity,
+            'status': incident.status,
+            'scope': incident_scope(incident),
+            'alert_count': incident.alert_count,
+            'active_alert_count': incident.active_alert_count,
+            'started_at': _iso_or_none(incident.started_at),
+            'last_seen_at': _iso_or_none(incident.last_seen_at),
+        },
+        'root_cause': {
+            'hypothesis_id': hypothesis.id,
+            'title': hypothesis.title,
+            'type': hypothesis.root_cause_type,
+            'type_display': hypothesis.get_root_cause_type_display(),
+            'confidence': round(confidence, 2),
+            'confidence_label': _confidence_label(confidence),
+            'generated_by': hypothesis.generated_by,
+            'summary': hypothesis.summary,
+        },
+        'causal_chain': _rca_report_causal_chain(
+            incident,
+            hypothesis,
+            rca_evidence,
+            partial=partial,
+            timeout_detail=timeout_detail,
+        ),
+        'evidence': {
+            'supporting': [evidence_by_id[evidence_id] for evidence_id in supporting_ids if evidence_id in evidence_by_id],
+            'counter': [evidence_by_id[evidence_id] for evidence_id in counter_ids if evidence_id in evidence_by_id],
+            'observed': list(evidence_by_id.values()),
+        },
+        'missing_evidence': _safe_string_list(hypothesis.missing_evidence, limit=12),
+        'recommended_next_checks': _safe_string_list(hypothesis.recommended_next_checks, limit=12),
+        'proposed_actions': _rca_report_next_actions(proposals),
+        'policy': {
+            'scope': 'current_incident_only',
+            'evidence_ids_only_from_current_report': True,
+            'forbid_unobserved_facts': True,
+        },
+    }
+
+
+def _rca_report_metadata_summary(report):
+    if not isinstance(report, dict):
+        return {}
+    root_cause = report.get('root_cause') if isinstance(report.get('root_cause'), dict) else {}
+    incident = report.get('incident') if isinstance(report.get('incident'), dict) else {}
+    evidence = report.get('evidence') if isinstance(report.get('evidence'), dict) else {}
+    return {
+        'version': report.get('version') or RCA_REPORT_VERSION,
+        'generated_at': report.get('generated_at') or '',
+        'status': report.get('status') or '',
+        'partial': bool(report.get('partial')),
+        'timeout_detail': report.get('timeout_detail') or '',
+        'incident_id': incident.get('id'),
+        'root_cause': {
+            'hypothesis_id': root_cause.get('hypothesis_id'),
+            'title': root_cause.get('title') or '',
+            'type': root_cause.get('type') or '',
+            'type_display': root_cause.get('type_display') or '',
+            'confidence': root_cause.get('confidence'),
+            'confidence_label': root_cause.get('confidence_label') or '',
+            'generated_by': root_cause.get('generated_by') or '',
+            'summary': root_cause.get('summary') or '',
+        },
+        'causal_chain': (report.get('causal_chain') or [])[:6] if isinstance(report.get('causal_chain'), list) else [],
+        'evidence_count': len(evidence.get('observed') or []) if isinstance(evidence.get('observed'), list) else 0,
+        'supporting_evidence_count': len(evidence.get('supporting') or []) if isinstance(evidence.get('supporting'), list) else 0,
+        'missing_evidence': (report.get('missing_evidence') or [])[:6] if isinstance(report.get('missing_evidence'), list) else [],
+        'recommended_next_checks': (report.get('recommended_next_checks') or [])[:6] if isinstance(report.get('recommended_next_checks'), list) else [],
+        'proposed_action_count': len(report.get('proposed_actions') or []) if isinstance(report.get('proposed_actions'), list) else 0,
+    }
+
+
 def _normalize_llm_hypothesis_payload(payload, rca_input):
     if not isinstance(payload, dict):
         return None
@@ -2086,7 +2286,7 @@ def _mark_incident_investigation_skipped(incident, reason, detail, reset_status=
     return fresh
 
 
-def _mark_incident_investigation_finished(incident, task, status, error='', partial=False, timeout_detail=''):
+def _mark_incident_investigation_finished(incident, task, status, error='', partial=False, timeout_detail='', rca_report=None):
     fresh = AIOpsIncident.objects.get(id=incident.id)
     metadata = fresh.metadata if isinstance(fresh.metadata, dict) else {}
     last = metadata.get('last_investigation') if isinstance(metadata.get('last_investigation'), dict) else {}
@@ -2101,6 +2301,11 @@ def _mark_incident_investigation_finished(incident, task, status, error='', part
         last['error'] = str(error)[:240]
     if timeout_detail:
         last['timeout_detail'] = str(timeout_detail)[:240]
+    if isinstance(rca_report, dict):
+        report_summary = _rca_report_metadata_summary(rca_report)
+        if report_summary:
+            last['rca_report'] = report_summary
+            metadata['last_rca_report'] = report_summary
     metadata['last_investigation'] = last
     fresh.metadata = metadata
     fresh.save(update_fields=['metadata', 'updated_at'])
@@ -2194,6 +2399,14 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
     hypothesis = generate_root_cause_hypothesis(incident, task=task, evidence_items=evidence_items)
     rca_evidence_package = build_rca_evidence_package(incident, evidence_items=evidence_items, hypothesis=hypothesis)
     proposals = generate_remediation_proposals(incident, hypothesis, evidence_items=evidence_items)
+    rca_report = build_rca_report(
+        incident,
+        hypothesis,
+        rca_evidence_package,
+        proposals=proposals,
+        partial=partial,
+        timeout_detail=timeout_detail,
+    )
     now = timezone.now()
     task.status = AIOpsExternalTask.STATUS_COMPLETED
     task.completed_at = now
@@ -2210,6 +2423,7 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         'audit_session_id': audit_session.id,
         'tool_invocation_ids': tool_invocation_ids,
         'rca_input': rca_evidence_package,
+        'rca_report': rca_report,
         'timeout_seconds': timeout_seconds,
         'partial': partial,
         'timeout_detail': timeout_detail,
@@ -2235,6 +2449,8 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         'tool_invocation_ids': tool_invocation_ids,
         'hypothesis_id': hypothesis.id,
         'rca_input_version': rca_evidence_package['version'],
+        'rca_report_version': rca_report['version'],
+        'rca_report': _rca_report_metadata_summary(rca_report),
         'proposal_ids': [item.id for item in proposals],
         'partial': partial,
         'timeout_detail': timeout_detail,
@@ -2272,6 +2488,7 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
             'evidence_ids': [item.id for item in evidence_items],
             'tool_invocation_ids': tool_invocation_ids,
             'hypothesis_id': hypothesis.id,
+            'rca_report': _rca_report_metadata_summary(rca_report),
             'proposal_ids': [item.id for item in proposals],
             'reason': reason,
             'partial': partial,
@@ -2284,6 +2501,7 @@ def _run_readonly_investigation_internal(incident, reason='alert_changed'):
         AIOpsExternalTask.STATUS_COMPLETED,
         partial=partial,
         timeout_detail=timeout_detail,
+        rca_report=rca_report,
     )
     return task
 

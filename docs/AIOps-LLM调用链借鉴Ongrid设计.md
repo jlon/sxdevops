@@ -59,6 +59,11 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
   - 内置 `general` 会作为兜底存在。
   - 已有启用的自定义默认 Agent 时，`general` 不再抢占默认位。
   - 唯一默认 Agent 被停用时，`general` 会恢复为启用默认，避免聊天入口失去可用默认 Agent。
+- RCA 报告结构化二阶段：
+  - 只读调查结束后生成 `rca_report`，把 Incident、主根因、因果链、支持证据、证据缺口、建议补查和建议动作合成一个稳定结构。
+  - 报告只引用当前调查证据包中的 evidence ID，不读取原始 payload，不扩大敏感数据暴露面。
+  - 完整报告写入调查任务 `orchestration_state.rca_report`；摘要写入 `result_payload.rca_report` 和 Incident `metadata.last_rca_report`，详情 API 直接返回 `rca_report`。
+  - 前端 Incident 工作台新增“RCA 调查报告”区域，先展示结论总览，再展示假设、处置方案和证据。
 
 ## 后续优先级
 
@@ -71,7 +76,8 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
    - 后续再评估是否增加 LLM reviewer；前提是必须保留当前确定性规则作为硬拦截，避免把安全边界完全交给模型判断。
 
 3. **P1：RCA 报告结构化二阶段**
-   - 当前有 `generate_incident_llm_root_cause` 结构化假设。后续可增加报告抽取层，把自然语言 RCA 映射为根因、因果链、证据、建议动作、置信度。
+   - 已完成第一阶段：基于当前证据包和主根因假设生成确定性结构化报告。
+   - 后续如引入 LLM 报告润色，必须保留当前结构化报告作为事实边界，禁止模型新增未观测事实。
 
 4. **P2：通用聊天 MaxStep salvage**
    - Incident 调查已支持超预算局部结论。后续可对通用聊天保存更完整 transcript，超预算时生成低置信局部结论，而不是只报失败。

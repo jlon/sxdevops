@@ -545,6 +545,7 @@ class AIOpsIncidentListSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     severity_display = serializers.CharField(source='get_severity_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
+    rca_report = serializers.SerializerMethodField()
 
     class Meta:
         model = AIOpsIncident
@@ -574,6 +575,7 @@ class AIOpsIncidentListSerializer(serializers.ModelSerializer):
             'resolved_at',
             'closed_at',
             'metadata',
+            'rca_report',
             'created_at',
             'updated_at',
         ]
@@ -586,9 +588,19 @@ class AIOpsIncidentListSerializer(serializers.ModelSerializer):
             'resolved_at',
             'closed_at',
             'metadata',
+            'rca_report',
             'created_at',
             'updated_at',
         ]
+
+    def get_rca_report(self, obj):
+        metadata = obj.metadata if isinstance(obj.metadata, dict) else {}
+        report = metadata.get('last_rca_report')
+        if isinstance(report, dict) and report:
+            return report
+        last = metadata.get('last_investigation') if isinstance(metadata.get('last_investigation'), dict) else {}
+        report = last.get('rca_report') if isinstance(last.get('rca_report'), dict) else {}
+        return report or None
 
 
 class AIOpsIncidentSerializer(AIOpsIncidentListSerializer):
