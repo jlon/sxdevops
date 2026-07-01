@@ -3450,6 +3450,18 @@ def _missing_action_context_fields(action, question, knowledge_environment=None,
             '自愈推荐需要先明确告警、服务、异常现象或影响范围。',
             '例如：给电商测试环境订单服务 5xx 告警推荐自愈方案。',
         ))
+    elif action_code == 'incident.investigate':
+        incident_id = _extract_incident_id_from_question(question)
+        page_hints = page_context.get('hints') if isinstance(page_context.get('hints'), dict) else {}
+        page_params = page_context.get('params') if isinstance(page_context.get('params'), dict) else {}
+        page_query = page_context.get('query') if isinstance(page_context.get('query'), dict) else {}
+        page_incident = page_hints.get('incident_id') or page_params.get('incident_id') or page_query.get('incident_id') or page_params.get('incident') or page_query.get('incident')
+        if not incident_id and not page_incident:
+            missing.append(_build_action_missing_context_field(
+                'incident',
+                'Incident 只读调查需要明确 Incident ID。',
+                '例如：调查 Incident #1 的告警和事件证据。',
+            ))
     elif action_code == 'k8s.diagnose':
         has_cluster_scope = (
             _action_context_present('cluster', question, knowledge_environment, analysis_scope, page_context)
@@ -4245,6 +4257,9 @@ def _agent_profile_summary(agent, runtime_summary=None):
 
 def ensure_default_agent_profile(config=None):
     config = config or AIOpsAgentConfig.objects.filter(name='default').first()
+    has_enabled_default_agent = AIOpsAgentProfile.objects.filter(is_default=True, is_enabled=True).exists()
+    if not has_enabled_default_agent:
+        AIOpsAgentProfile.objects.filter(is_default=True, is_enabled=False).update(is_default=False)
     defaults = {
         'name': '通用运维 Agent',
         'description': '面向平台通用问答、只读取证、任务草稿和受控执行的默认 Agent。',
@@ -4263,7 +4278,7 @@ def ensure_default_agent_profile(config=None):
         'allowed_role_codes': [],
         'is_builtin': True,
         'is_enabled': True,
-        'is_default': True,
+        'is_default': not has_enabled_default_agent,
         'created_by': 'system',
         'updated_by': 'system',
     }
@@ -4275,7 +4290,7 @@ def ensure_default_agent_profile(config=None):
     if not agent.is_enabled:
         agent.is_enabled = True
         update_fields.append('is_enabled')
-    if not AIOpsAgentProfile.objects.filter(is_default=True).exists() or created:
+    if not has_enabled_default_agent and not agent.is_default:
         AIOpsAgentProfile.objects.exclude(pk=agent.pk).update(is_default=False)
         agent.is_default = True
         update_fields.append('is_default')
@@ -4370,7 +4385,7 @@ def runtime_config_for_agent(config, agent):
     default_agent = None
     if not agent.is_default:
         default_agent = get_default_agent_profile(config)
-    if agent.default_provider_id:
+    if agent.default_provider_id and not (agent.is_default and agent.is_builtin and config.default_provider_id):
         runtime.default_provider = agent.default_provider
         runtime.default_provider_id = agent.default_provider_id
     elif default_agent and default_agent.default_provider_id:
@@ -8637,6 +8652,110 @@ def _build_direct_tool_result(
         'pending_action_draft': None,
         'metadata': metadata,
     }
+
+
+def _extract_incident_id_from_question(question, session=None):
+    text = str(question or '')
+    match = re.search(r'(?:incident|故障单|事故)\s*#?\s*(\d+)', text, flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    context = session.context if session and isinstance(getattr(session, 'context', None), dict) else {}
+    for value in [context.get('incident_id'), (context.get('incident_context') or {}).get('incident_id')]:
+        try:
+            if value:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _run_incident_investigation_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+    incident_id = _extract_incident_id_from_question(question, session=session)
+    incident = (
+        AIOpsIncident.objects
+        .prefetch_related('evidence_items', 'hypotheses', 'incident_actions')
+        .filter(id=incident_id)
+        .first()
+        if incident_id
+        else None
+    )
+    if not incident:
+        sections = [{
+            'title': 'Incident 只读调查',
+            'items': [
+                f'未找到 Incident #{incident_id}。' if incident_id else '未识别到 Incident ID。',
+                '请从 Incident 详情页打开智能助手，或在问题中使用 “Incident #ID” 指定对象。',
+            ],
+        }]
+        result = _build_direct_tool_result(
+            'query_incident_context',
+            {'sections': sections, 'citations': [{'title': 'Incident 中心', 'path': '/aiops/incidents'}]},
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            'deterministic_incident_investigation',
+            provider=provider,
+            active_skills=active_skills,
+            prefer_llm=False,
+        )
+        result['metadata']['incident_lookup'] = {'incident_id': incident_id, 'found': False}
+        return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'deterministic_incident_investigation'})
+
+    evidence_items = list(incident.evidence_items.all()[:8])
+    hypotheses = list(incident.hypotheses.all()[:5])
+    actions = list(incident.incident_actions.all()[:6])
+    sections = [
+        {
+            'title': 'Incident 概览',
+            'items': [
+                f'#{incident.id} {incident.title}',
+                f'状态：{incident.get_status_display()}；严重级别：{incident.get_severity_display()}；活跃告警：{incident.active_alert_count}',
+                f'范围：{incident.environment or "-"} / {incident.cluster or "-"} / {incident.namespace or "-"} / {incident.service or incident.resource or "-"}',
+                f'影响：{incident.impact_summary or "暂无影响摘要"}',
+            ],
+        },
+        {
+            'title': '已有证据',
+            'items': [
+                f'{item.get_kind_display()}：{item.summary}'
+                for item in evidence_items
+            ] or ['暂无已沉淀证据，建议先触发只读补查或检查关联告警。'],
+        },
+        {
+            'title': '根因假设',
+            'items': [
+                f'{item.title}（{item.get_root_cause_type_display()}，置信度 {item.confidence}）：{item.summary or "暂无摘要"}'
+                for item in hypotheses
+            ] or ['暂无根因假设，建议补充告警、指标、日志、链路或变更证据。'],
+        },
+        {
+            'title': '建议动作',
+            'items': [
+                f'{item.get_action_type_display()} / {item.get_risk_level_display()} / {item.get_status_display()}：{item.title}'
+                for item in actions
+            ] or ['暂无建议动作。'],
+        },
+    ]
+    citations = [{'title': f'Incident #{incident.id}', 'path': f'/aiops/incidents/{incident.id}'}]
+    result = _build_direct_tool_result(
+        'query_incident_context',
+        {'sections': sections, 'citations': citations},
+        scoped_question,
+        knowledge_environment,
+        analysis_scope,
+        'deterministic_incident_investigation',
+        provider=provider,
+        active_skills=active_skills,
+        prefer_llm=bool(provider),
+    )
+    result['metadata']['incident_lookup'] = {
+        'incident_id': incident.id,
+        'found': True,
+        'evidence_count': len(evidence_items),
+        'hypothesis_count': len(hypotheses),
+        'action_count': len(actions),
+    }
+    return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'deterministic_incident_investigation'})
 
 
 def _dedupe_tool_names(tool_names):
@@ -13423,6 +13542,72 @@ def _ensure_task_draft_title(draft):
     return payload
 
 
+def _task_draft_safety_defaults(draft):
+    task_type = (draft or {}).get('task_type') or ''
+    payload = (draft or {}).get('payload') if isinstance((draft or {}).get('payload'), dict) else {}
+    command_text = '\n'.join(
+        str(value or '')
+        for value in [payload.get('command'), payload.get('playbook_content')]
+        if value
+    ).lower()
+    mutation_pattern = re.compile(
+        r'\b(systemctl|service)\s+(restart|start|stop|reload|enable|disable)\b|'
+        r'\b(kubectl|helm)\s+(apply|patch|delete|scale|rollout|create|replace)\b|'
+        r'\b(apt|apt-get|yum|dnf|pip|npm)\s+(install|remove|upgrade|update)\b|'
+        r'\b(sed|tee|mv|cp|chmod|chown|kill|docker|docker-compose)\b|'
+        r'>\s*/|>>\s*/'
+    )
+    readonly_command = bool(command_text) and not mutation_pattern.search(command_text) and not any(pattern in command_text for pattern in DANGEROUS_COMMAND_PATTERNS)
+    if task_type == HostTask.TASK_K8S_SCALE_WORKLOAD:
+        return {
+            'preconditions': ['执行前记录当前副本数和 Workload Ready 状态。'],
+            'verification_plan': ['确认 Workload readyReplicas 与期望副本数一致，并检查近期事件无新增异常。'],
+            'rollback_plan': ['如执行后异常，按执行前记录的副本数恢复。'],
+        }
+    if task_type == HostTask.TASK_K8S_RESTART_POD:
+        return {
+            'preconditions': ['确认 Pod 由控制器管理，且同服务仍有可用副本。'],
+            'verification_plan': ['确认新 Pod Running/Ready，并检查容器重启次数和事件无新增异常。'],
+            'rollback_plan': ['Pod 重启由控制器重建；如异常扩大，停止后续目标并按控制器状态回滚。'],
+        }
+    if task_type == HostTask.TASK_K8S_POD_EXEC:
+        return {
+            'preconditions': ['执行前记录目标 K8s 资源当前 spec 和 Ready 状态。'],
+            'verification_plan': ['确认目标资源状态符合预期，并检查相关 Pod/Event 无新增异常。'],
+            'rollback_plan': ['如执行后异常，使用执行前记录的资源 spec 回滚。'],
+        }
+    if task_type == HostTask.TASK_RUN_PLAYBOOK:
+        return {
+            'preconditions': ['确认目标主机可连接，Playbook 内容已人工复核。'],
+            'verification_plan': ['确认 Playbook 执行成功，并检查目标服务或主机状态符合预期。'],
+            'rollback_plan': ['如执行后异常，停止后续目标并按 Playbook 变更内容恢复执行前状态。'],
+        }
+    if task_type == HostTask.TASK_RUN_COMMAND:
+        rollback = '只读巡检命令，不修改目标资源，无需回滚。' if readonly_command else '如执行后异常，停止后续目标并按命令影响范围恢复执行前状态。'
+        return {
+            'preconditions': ['确认目标主机可连接，命令内容已人工复核。'],
+            'verification_plan': ['确认命令执行成功，并检查目标资源状态符合预期。'],
+            'rollback_plan': [rollback],
+        }
+    return {
+        'preconditions': ['确认目标资源范围准确。'],
+        'verification_plan': ['确认任务中心执行成功，并检查目标资源状态符合预期。'],
+        'rollback_plan': ['只读或巡检类任务不修改目标资源，无需回滚。'],
+    }
+
+
+def _with_task_draft_safety_plan(draft, draft_request=None):
+    payload = dict(draft or {})
+    request = draft_request if isinstance(draft_request, dict) else {}
+    defaults = _task_draft_safety_defaults(payload)
+    for key in ['preconditions', 'verification_plan', 'rollback_plan']:
+        if payload.get(key):
+            continue
+        alias_key = 'verification_steps' if key == 'verification_plan' else 'rollback_steps' if key == 'rollback_plan' else key
+        payload[key] = request.get(key) or request.get(alias_key) or defaults[key]
+    return payload
+
+
 K8S_TASK_KIND_ALIASES = {
     'shell': HostTask.TASK_RUN_COMMAND,
     'shell_script': HostTask.TASK_RUN_COMMAND,
@@ -14022,7 +14207,7 @@ def _build_k8s_service_patch_draft(user, question='', draft_request=None):
         'patch': patch,
         'patch_type': patch_type,
     }
-    return _ensure_task_draft_title({
+    return _ensure_task_draft_title(_with_task_draft_safety_plan({
         'name': f'修改 {namespace}/{service_name} Service',
         'description': '由 AIOps 智能助手生成的 K8s 命令任务草稿',
         'target_type': HostTask.TARGET_K8S,
@@ -14041,7 +14226,7 @@ def _build_k8s_service_patch_draft(user, question='', draft_request=None):
         'request_summary': request_summary,
         'reason': '已转换为通用 K8s 命令任务，通过 K8s API 执行 kubectl patch，避免退化为主机脚本或空脚本。',
         'knowledge_environment': (knowledge_environment or {}).get('name'),
-    })
+    }, draft_request))
 
 
 def _build_k8s_install_draft(user, question='', draft_request=None):
@@ -14093,7 +14278,7 @@ def _build_k8s_install_draft(user, question='', draft_request=None):
         payload['command'] = _build_helm_install_command(payload)
         k8s_targets = _build_k8s_target_items(k8s_sources, namespace=namespace, name=release_name, kind='helm_release')
         request_summary = (draft_request.get('request_summary') or question or '').strip()
-        return _ensure_task_draft_title({
+        return _ensure_task_draft_title(_with_task_draft_safety_plan({
             'name': f"Helm 部署 {payload['software_name']}",
             'description': '由 AIOps 智能助手生成的 Helm/K8s 安装部署任务草稿',
             'target_type': HostTask.TARGET_K8S,
@@ -14112,7 +14297,7 @@ def _build_k8s_install_draft(user, question='', draft_request=None):
             'request_summary': request_summary,
             'reason': '用户明确指定 Helm 部署，已生成 Helm release 任务草稿；执行时通过 Helm 客户端访问 K8s API，不退化为宿主机安装脚本。',
             'knowledge_environment': (knowledge_environment or {}).get('name'),
-        })
+        }, draft_request))
     manifest = (
         draft_request.get('manifest')
         or draft_request.get('k8s_manifest')
@@ -14144,7 +14329,7 @@ def _build_k8s_install_draft(user, question='', draft_request=None):
         'documentation_required': install_target not in INSTALL_TARGET_PROFILES,
         'documentation_hint': '如需生产级参数，请先联网查阅该软件官方 Kubernetes/Helm 部署文档后再确认执行。',
     }
-    return _ensure_task_draft_title({
+    return _ensure_task_draft_title(_with_task_draft_safety_plan({
         'name': f"K8s 部署 {payload['software_name']}",
         'description': '由 AIOps 智能助手生成的 K8s 安装部署任务草稿',
         'target_type': HostTask.TARGET_K8S,
@@ -14163,7 +14348,7 @@ def _build_k8s_install_draft(user, question='', draft_request=None):
         'request_summary': request_summary,
         'reason': '用户明确指定 K8s 部署，已生成 Kubernetes manifest / kubectl apply 类型任务，避免退化为宿主机安装脚本。',
         'knowledge_environment': (knowledge_environment or {}).get('name'),
-    })
+    }, draft_request))
 
 
 def _build_k8s_scale_workload_draft(user, question='', draft_request=None):
@@ -14199,7 +14384,7 @@ def _build_k8s_scale_workload_draft(user, question='', draft_request=None):
         'namespace': namespace,
         'replicas': replicas,
     }
-    return _ensure_task_draft_title({
+    return _ensure_task_draft_title(_with_task_draft_safety_plan({
         'name': f'伸缩 {namespace}/{workload_name} {workload_type}',
         'description': '由 AIOps 智能助手生成的 K8s 工作负载伸缩任务草稿',
         'target_type': HostTask.TARGET_K8S,
@@ -14218,7 +14403,7 @@ def _build_k8s_scale_workload_draft(user, question='', draft_request=None):
         'request_summary': request_summary,
         'reason': '已转换为 K8s API 工作负载伸缩任务，由任务中心调用 Kubernetes API 调整副本数。',
         'knowledge_environment': (knowledge_environment or {}).get('name'),
-    })
+    }, draft_request))
 
 
 def _build_k8s_restart_pod_draft(user, question='', draft_request=None):
@@ -14248,7 +14433,7 @@ def _build_k8s_restart_pod_draft(user, question='', draft_request=None):
         'pod_name': pod_name,
         'namespace': namespace,
     }
-    return _ensure_task_draft_title({
+    return _ensure_task_draft_title(_with_task_draft_safety_plan({
         'name': f'重启 {namespace}/{pod_name} Pod',
         'description': '由 AIOps 智能助手生成的 K8s Pod 重启任务草稿',
         'target_type': HostTask.TARGET_K8S,
@@ -14267,7 +14452,7 @@ def _build_k8s_restart_pod_draft(user, question='', draft_request=None):
         'request_summary': request_summary,
         'reason': '已转换为 K8s API Pod 重启任务，由任务中心通过 Kubernetes API 删除 Pod 并等待控制器重建。',
         'knowledge_environment': (knowledge_environment or {}).get('name'),
-    })
+    }, draft_request))
 
 
 def build_task_draft(user, question='', draft_request=None):
@@ -14426,7 +14611,7 @@ def build_task_draft(user, question='', draft_request=None):
     elif task_type == HostTask.TASK_SERVICE_STATUS:
         risk_level = AIOpsPendingAction.RISK_MEDIUM
 
-    return _ensure_task_draft_title({
+    return _ensure_task_draft_title(_with_task_draft_safety_plan({
         'name': title,
         'description': description,
         'target_type': HostTask.TARGET_HOST,
@@ -14442,7 +14627,7 @@ def build_task_draft(user, question='', draft_request=None):
         'host_count': len(target_refs),
         'risk_level': risk_level,
         'request_summary': request_summary,
-    })
+    }, draft_request))
 
 
 def _coerce_int_list(value):
@@ -14747,6 +14932,10 @@ def _build_task_center_draft_from_aiops_draft(draft, action=None):
         'host_count': payload.get('host_count') or (len(k8s_targets) if target_type == HostTask.TARGET_K8S else len(target_refs)),
         'risk_level': payload.get('risk_level') or HostTask.RISK_LOW,
         'request_summary': request_summary,
+        'verification_plan': payload.get('verification_plan') or payload.get('verification_steps') or [],
+        'rollback_plan': payload.get('rollback_plan') or payload.get('rollback_steps') or [],
+        'expected_result': payload.get('expected_result') or payload.get('validation') or '',
+        'reason': payload.get('reason') or '',
         'incident_id': incident_id,
         'incident_action_id': incident_action_id,
         'trigger_source': HostTask.TRIGGER_SOURCE_AIOPS,
@@ -14894,7 +15083,130 @@ def _can_full_auto_execute_task(user, agent, draft):
     return user_has_permissions(user, _execution_permissions_for_action_payload(draft or {}, full_auto=True))
 
 
-def _authorization_snapshot_for_action(action, user, agent, mode='manual_confirm'):
+REVIEWER_REQUIRED_RISK_LEVELS = {AIOpsPendingAction.RISK_HIGH, AIOpsPendingAction.RISK_CRITICAL, HostTask.RISK_HIGH, HostTask.RISK_CRITICAL}
+REVIEWER_DANGEROUS_COMMAND_PATTERNS = (
+    r'\brm\s+-rf\b',
+    r'\bdd\s+if=',
+    r'\bmkfs\b',
+    r'\bshutdown\b',
+    r'\breboot\b',
+    r'\binit\s+0\b',
+    r'\bhalt\b',
+    r'\bpoweroff\b',
+    r'\bkubectl\s+delete\b',
+    r'\bkubectl\s+scale\b',
+    r'\bkubectl\s+rollout\s+restart\b',
+)
+
+
+def _task_command_text(task_draft):
+    payload = task_draft.get('payload') if isinstance(task_draft, dict) else {}
+    if not isinstance(payload, dict):
+        return ''
+    values = [
+        payload.get('command'),
+        payload.get('playbook_content'),
+        payload.get('kubectl_command'),
+    ]
+    return '\n'.join(str(value or '') for value in values if value)
+
+
+def _task_has_targets(task_draft):
+    if not isinstance(task_draft, dict):
+        return False
+    if task_draft.get('target_type') == HostTask.TARGET_K8S:
+        return bool(task_draft.get('k8s_targets'))
+    return bool(task_draft.get('target_refs') or task_draft.get('host_ids') or task_draft.get('resource_ids') or task_draft.get('target_hosts'))
+
+
+def _task_has_verification_plan(task_draft):
+    payload = task_draft if isinstance(task_draft, dict) else {}
+    verification = payload.get('verification_plan') or payload.get('verification_steps')
+    if isinstance(verification, list) and any(str(item or '').strip() for item in verification):
+        return True
+    if isinstance(verification, str) and verification.strip():
+        return True
+    return bool(str(payload.get('expected_result') or payload.get('validation') or '').strip())
+
+
+def _task_has_rollback_or_idempotent_note(task_draft):
+    payload = task_draft if isinstance(task_draft, dict) else {}
+    rollback = payload.get('rollback_plan') or payload.get('rollback_steps')
+    if isinstance(rollback, list) and any(str(item or '').strip() for item in rollback):
+        return True
+    if isinstance(rollback, str) and rollback.strip():
+        return True
+    text = ' '.join([
+        str(payload.get('reason') or ''),
+        str(payload.get('description') or ''),
+        str(payload.get('request_summary') or ''),
+    ]).lower()
+    return any(keyword in text for keyword in ['idempotent', '幂等', '只读', 'readonly', 'read-only', '无需回滚', '不修改'])
+
+
+def _reviewer_dangerous_patterns(command_text):
+    if not command_text:
+        return []
+    return [
+        pattern
+        for pattern in REVIEWER_DANGEROUS_COMMAND_PATTERNS
+        if re.search(pattern, command_text, flags=re.IGNORECASE)
+    ]
+
+
+def _review_pending_action(action, task_draft, user, agent, mode='manual_confirm'):
+    risk_level = action.risk_level or task_draft.get('risk_level') or AIOpsPendingAction.RISK_LOW
+    requires_review = mode == 'full_auto' or risk_level in REVIEWER_REQUIRED_RISK_LEVELS
+    command_text = _task_command_text(task_draft)
+    dangerous_patterns = _reviewer_dangerous_patterns(command_text)
+    missing = []
+    if requires_review:
+        if not _task_has_targets(task_draft):
+            missing.append('缺少明确执行目标')
+        if not _task_has_verification_plan(task_draft):
+            missing.append('缺少执行后验证计划')
+        if not _task_has_rollback_or_idempotent_note(task_draft):
+            missing.append('缺少回滚方案或幂等/只读说明')
+    if dangerous_patterns:
+        missing.append('命令包含高危操作模式')
+    status = 'approved'
+    if dangerous_patterns:
+        status = 'rejected'
+    elif missing:
+        status = 'needs_info'
+    elif not requires_review:
+        status = 'not_required'
+    review = {
+        'status': status,
+        'required': requires_review,
+        'reviewer': 'rule_based_reviewer',
+        'reviewed_at': timezone.now().isoformat(),
+        'mode': mode,
+        'risk_level': risk_level,
+        'agent_slug': agent.slug if agent else '',
+        'agent_name': agent.name if agent else '',
+        'checked_by': user.username,
+        'missing': missing,
+        'dangerous_patterns': dangerous_patterns,
+        'target_type': task_draft.get('target_type') or '',
+        'host_count': task_draft.get('host_count') or len(task_draft.get('target_refs') or []),
+        'summary': 'Reviewer 已通过执行前安全检查' if status in {'approved', 'not_required'} else 'Reviewer 阻止执行：' + '；'.join(missing),
+    }
+    result_payload = action.result_payload if isinstance(action.result_payload, dict) else {}
+    result_payload['review'] = review
+    action.result_payload = result_payload
+    action.save(update_fields=['result_payload', 'updated_at'])
+    return review
+
+
+def _require_reviewer_approval(action, task_draft, user, agent, mode='manual_confirm'):
+    review = _review_pending_action(action, task_draft, user, agent, mode=mode)
+    if review['status'] not in {'approved', 'not_required'}:
+        raise ValueError(review['summary'])
+    return review
+
+
+def _authorization_snapshot_for_action(action, user, agent, mode='manual_confirm', review=None):
     permissions = _execution_permissions_for_action_payload(
         action.action_payload or {},
         full_auto=mode == 'full_auto',
@@ -14908,6 +15220,7 @@ def _authorization_snapshot_for_action(action, user, agent, mode='manual_confirm
         'execution_policy': agent.execution_policy if agent else AIOpsAgentProfile.EXECUTION_MANUAL_CONFIRM,
         'risk_level': action.risk_level,
         'permissions_checked': permissions,
+        'review': review or {},
     }
 
 
@@ -15387,7 +15700,13 @@ def sync_incident_action_verification_for_task(task, request=None):
 
 def _execute_pending_action_in_task_center(action, user, agent, mode='manual_confirm', request=None):
     task_draft = _build_task_center_draft_from_aiops_draft(action.action_payload or {}, action=action)
-    authorization = _authorization_snapshot_for_action(action, user, agent, mode=mode)
+    review = _require_reviewer_approval(action, task_draft, user, agent, mode=mode)
+    authorization = _authorization_snapshot_for_action(action, user, agent, mode=mode, review=review)
+    if action.status == AIOpsPendingAction.STATUS_PENDING:
+        action.status = AIOpsPendingAction.STATUS_CONFIRMED
+        action.confirmed_by = user.username
+        action.confirmed_at = timezone.now()
+        action.save(update_fields=['status', 'confirmed_by', 'confirmed_at', 'updated_at'])
     task = _create_and_start_task_center_task_from_action(
         action,
         user,
@@ -15406,6 +15725,7 @@ def _execute_pending_action_in_task_center(action, user, agent, mode='manual_con
         'execution_started': True,
         'auto_authorized': mode == 'full_auto',
         'authorization': authorization,
+        'review': review,
         'task_draft': task_draft,
     }
     action.save(update_fields=['status', 'result_payload', 'updated_at'])
@@ -15486,10 +15806,7 @@ def confirm_action(action, user, request=None):
     action.action_payload = normalized_payload
     if normalized_payload.get('name') and (not action.title or _is_generic_task_title(action.title)):
         action.title = normalized_payload['name']
-    action.status = AIOpsPendingAction.STATUS_CONFIRMED
-    action.confirmed_by = user.username
-    action.confirmed_at = timezone.now()
-    action.save(update_fields=['title', 'action_payload', 'status', 'confirmed_by', 'confirmed_at', 'updated_at'])
+    action.save(update_fields=['title', 'action_payload', 'updated_at'])
 
     agent = _agent_for_action(action, config=config)
     task_draft, task, authorization = _execute_pending_action_in_task_center(
@@ -15610,6 +15927,11 @@ LIGHTWEIGHT_CHAT_RISKY_ACTION_WORD_PATTERN = re.compile(
     r'\b(execute|run|restart|scale|deploy|install|fix|repair|rollback|change|approve|authorize|delete|remove|stop|disable)\b',
     re.I,
 )
+LIGHTWEIGHT_CHAT_TOOL_INTENT_PATTERN = re.compile(
+    r'(查询|查看|看下|获取|列出|状态|详情|统计|分析|排查|诊断|调查|证据|'
+    r'\b(query|search|list|show|get|status|detail|details|analyze|analyse|diagnose|investigate)\b)',
+    re.I,
+)
 
 
 def _normalize_light_chat_text(question):
@@ -15642,6 +15964,8 @@ def _lightweight_chat_mode(question):
         or LIGHTWEIGHT_CHAT_RISKY_ACTION_WORD_PATTERN.search(text)
     )
     if has_risky_action:
+        return ''
+    if LIGHTWEIGHT_CHAT_TOOL_INTENT_PATTERN.search(raw_text) or LIGHTWEIGHT_CHAT_TOOL_INTENT_PATTERN.search(text):
         return ''
     return LIGHTWEIGHT_CHAT_MODEL_MODE
 
@@ -18396,6 +18720,20 @@ def _run_selected_action(session, user_message, user, question, scoped_question,
             action,
             emit,
         )
+    if action_code == 'incident.investigate':
+        return _run_incident_investigation_evidence(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            provider,
+            action_skills,
+            action,
+            emit,
+        )
     if action_code == 'host_task.generate':
         result = _run_task_generation_evidence(
             session,
@@ -19601,8 +19939,10 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
                 }
                 final_content = f"{final_content}\n\nFull Auto 已在任务中心创建并启动任务：{task.name}（#{task.id}）。"
             except ValueError as exc:
+                result_payload = pending_action.result_payload if isinstance(pending_action.result_payload, dict) else {}
+                result_payload['error'] = str(exc)
                 pending_action.status = AIOpsPendingAction.STATUS_FAILED
-                pending_action.result_payload = {'error': str(exc)}
+                pending_action.result_payload = result_payload
                 pending_action.save(update_fields=['status', 'result_payload', 'updated_at'])
                 merged_metadata['pending_action_id'] = pending_action.id
                 merged_metadata['task_materialization_error'] = str(exc)[:200]

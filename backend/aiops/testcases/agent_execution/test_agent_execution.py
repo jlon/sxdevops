@@ -70,6 +70,8 @@ class AgentExecutionE2ETests(TestCase):
             'timeout_seconds': 30,
             'risk_level': AIOpsPendingAction.RISK_HIGH,
             'request_summary': '检查 agent-exec-env 的资源状态',
+            'verification_plan': ['确认命令返回主机名和 uptime。'],
+            'rollback_plan': ['只读巡检命令，不修改系统状态。'],
             'payload': {'command': 'hostname && uptime', 'script_kind': 'shell'},
         }
 

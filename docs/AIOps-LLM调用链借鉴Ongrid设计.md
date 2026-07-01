@@ -50,6 +50,15 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
   - 每个取证步骤前检查 `AIOPS_INCIDENT_INVESTIGATION_TIMEOUT_SECONDS`，达到预算后停止后续取证。
   - 已采集证据会继续生成低置信 RCA 和只读建议，任务结果标记 `partial=true`。
   - 局部结论只使用本轮已采集证据，不复用上一次调查的旧证据生成验证任务。
+- 高风险 PendingAction 增加执行前 Reviewer Gate：
+  - manual_confirm 的高风险/critical 动作和 full_auto 动作都必须先通过 reviewer。
+  - 当前 reviewer 是后端规则型安全检查，不增加新的模型调用；它检查执行目标、执行后验证计划、回滚或幂等说明，以及明显危险命令模式。
+  - reviewer 结果写入 `AIOpsPendingAction.result_payload.review`、授权快照和任务中心 `source_context.authorization.review`，前端可直接展示 `review_status`、`review_summary` 和 `review_required`。
+  - 未通过 reviewer 的人工确认动作保持 pending；Full Auto 动作标记 failed，并保留 reviewer 审计结果。
+- 默认 Agent 初始化修正：
+  - 内置 `general` 会作为兜底存在。
+  - 已有启用的自定义默认 Agent 时，`general` 不再抢占默认位。
+  - 唯一默认 Agent 被停用时，`general` 会恢复为启用默认，避免聊天入口失去可用默认 Agent。
 
 ## 后续优先级
 
@@ -58,8 +67,8 @@ SxDevOps 已经具备 Agent、MCP、Skill、Action、权限审批、任务中心
    - 后续可继续补更细的 UI 展示和历史调查对比。
 
 2. **P1：Reviewer Agent**
-   - 对高风险 Action 生成独立二审结果，而不是只依赖确认按钮和权限判断。
-   - Reviewer 只读、默认 reject，结果写回待审批动作。
+   - 已完成第一阶段：后端规则型 reviewer gate 覆盖高风险人工确认和 Full Auto。
+   - 后续再评估是否增加 LLM reviewer；前提是必须保留当前确定性规则作为硬拦截，避免把安全边界完全交给模型判断。
 
 3. **P1：RCA 报告结构化二阶段**
    - 当前有 `generate_incident_llm_root_cause` 结构化假设。后续可增加报告抽取层，把自然语言 RCA 映射为根因、因果链、证据、建议动作、置信度。

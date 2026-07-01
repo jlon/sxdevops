@@ -706,6 +706,25 @@ class AIOpsApiTests(TestCase):
 
         mocked_completion.assert_not_called()
 
+    def test_incident_investigate_requires_incident_id_when_no_context(self):
+        get_agent_config()
+        AIOpsModelProvider.objects.all().update(is_enabled=False)
+        session_response = self.client.post('/api/aiops/sessions/', {'title': 'incident-preflight'}, format='json')
+        self.assertEqual(session_response.status_code, 201)
+
+        response = self.client.post(
+            f"/api/aiops/sessions/{session_response.data['id']}/send_message/",
+            {'content': '这个 Incident 还缺哪些只读证据？'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        metadata = response.data['assistant_message']['metadata']
+        self.assertEqual(metadata['selected_action']['code'], 'incident.investigate')
+        self.assertTrue(metadata['action_preflight'])
+        self.assertIn('incident', {item.get('name') for item in metadata.get('missing_context') or []})
+        self.assertFalse(AIOpsModelInvocation.objects.exists())
+
     def test_legacy_generate_task_tool_call_infers_action_trace(self):
         from .serializers import AIOpsAuditTraceReader
 
@@ -6929,6 +6948,11 @@ class AIOpsApiTests(TestCase):
         self.assertFalse(AIOpsModelInvocation.objects.exists())
         self.assertFalse(AIOpsToolInvocation.objects.exists())
 
+    def test_tool_lookup_question_does_not_use_lightweight_chat(self):
+        from .services import _lightweight_chat_mode
+
+        self.assertEqual(_lightweight_chat_mode('查询 gateway 的外部状态'), '')
+
     @mock.patch('aiops.services._request_model_completion')
     def test_non_operational_chat_uses_model_without_tools(self, mocked_completion):
         get_agent_config()
@@ -7324,6 +7348,59 @@ class AIOpsApiTests(TestCase):
         pending_block = next(block for block in assistant_message.metadata.get('response_blocks', []) if block.get('id') == 'pending-action')
         self.assertEqual(pending_block['status'], 'disabled')
         self.assertEqual(pending_block['status_display'], '只分析')
+
+    def test_full_auto_high_risk_action_is_blocked_by_reviewer(self):
+        agent = AIOpsAgentProfile.objects.create(
+            name='Full Auto Reviewer',
+            slug='full-auto-reviewer',
+            execution_policy=AIOpsAgentProfile.EXECUTION_FULL_AUTO,
+            tool_policy={'allow_execute': True, 'max_risk_level': 'high'},
+            is_enabled=True,
+            is_default=True,
+        )
+        session = AIOpsChatSession.objects.create(
+            user=self.user,
+            title='full-auto-reviewer',
+            context={'agent_slug': agent.slug},
+        )
+        host = Host.objects.create(hostname='review-blocked-01', ip_address='10.20.30.22', environment='prod', status='online')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='')
+        draft = {
+            'name': 'review-blocked-01 重启 nginx',
+            'task_type': HostTask.TASK_RUN_COMMAND,
+            'payload': {
+                'script_kind': 'shell',
+                'script_purpose': 'remediation',
+                'command': 'systemctl restart nginx',
+            },
+            'host_ids': [host.id],
+            'target_refs': [{'source': 'host', 'id': host.id}],
+            'host_count': 1,
+            'execution_mode': HostTask.EXECUTION_MODE_SSH,
+            'execution_strategy': HostTask.STRATEGY_STOP_ON_ERROR,
+            'risk_level': AIOpsPendingAction.RISK_HIGH,
+            'request_summary': '重启 nginx',
+        }
+
+        assistant_message, pending_action = _apply_dispatch_result_to_message(
+            session,
+            assistant_message,
+            {
+                'content': '已生成重启任务。',
+                'message_type': AIOpsChatMessage.TYPE_ACTION,
+                'pending_action_draft': draft,
+            },
+            self.user,
+            question='重启 nginx',
+        )
+
+        self.assertIsNotNone(pending_action)
+        pending_action.refresh_from_db()
+        self.assertEqual(pending_action.status, AIOpsPendingAction.STATUS_FAILED)
+        self.assertEqual(pending_action.result_payload['review']['status'], 'needs_info')
+        self.assertFalse(HostTask.objects.filter(name='review-blocked-01 重启 nginx').exists())
+        self.assertEqual(assistant_message.metadata['action_trace']['decision']['status'], 'failed')
+        self.assertIn('Reviewer 阻止执行', assistant_message.content)
 
     def test_history_window_limits_model_context_messages(self):
         config = get_agent_config()
@@ -8152,15 +8229,53 @@ class AIOpsApiTests(TestCase):
         self.assertIn('legacy-data-sync', serialized_action['title'])
         self.assertEqual(serialized_action['action_payload']['name'], serialized_action['title'])
 
+        with self.assertRaises(ValueError) as context:
+            confirm_action(action, self.user)
+
+        self.assertIn('Reviewer 阻止执行', str(context.exception))
+        action.refresh_from_db()
+        self.assertEqual(action.status, AIOpsPendingAction.STATUS_PENDING)
+        self.assertEqual(action.result_payload['review']['status'], 'needs_info')
+        self.assertIn('缺少执行后验证计划', action.result_payload['review']['missing'])
+        self.assertIn('缺少回滚方案或幂等/只读说明', action.result_payload['review']['missing'])
+        self.assertFalse(HostTask.objects.filter(name__icontains='重启 nginx').exists())
+
+    def test_confirm_action_allows_reviewed_high_risk_task(self):
+        host = Host.objects.create(hostname='reviewed-app-01', ip_address='10.20.30.21', environment='prod', status='online')
+        session = AIOpsChatSession.objects.create(user=self.user, title='reviewed-high-risk')
+        assistant_message = AIOpsChatMessage.objects.create(session=session, role='assistant', content='已生成任务草稿')
+        payload = {
+            'name': 'reviewed-app-01 重启 nginx',
+            'description': '重启 nginx，失败时执行 systemctl status nginx 观察状态。',
+            'task_type': HostTask.TASK_RUN_COMMAND,
+            'payload': {
+                'script_kind': 'shell',
+                'script_purpose': 'remediation',
+                'command': 'systemctl restart nginx && systemctl status nginx --no-pager',
+            },
+            'host_ids': [host.id],
+            'target_refs': [{'source': 'host', 'id': host.id}],
+            'host_count': 1,
+            'execution_mode': HostTask.EXECUTION_MODE_SSH,
+            'execution_strategy': HostTask.STRATEGY_STOP_ON_ERROR,
+            'timeout_seconds': 30,
+            'risk_level': AIOpsPendingAction.RISK_HIGH,
+            'request_summary': '在 reviewed-app-01 上重启 nginx',
+            'verification_plan': ['确认 nginx active，确认 5xx 告警未新增。'],
+            'rollback_plan': ['如重启后异常，回滚到上一个 nginx 配置并执行 nginx -s reload。'],
+        }
+        action = create_pending_task_action_from_draft(session, assistant_message, payload)
+
         task_draft = confirm_action(action, self.user)
 
-        self.assertNotEqual(task_draft['name'], 'Ansible Playbook 执行')
-        self.assertIn('legacy-data-sync', task_draft['name'])
-        self.assertIn('重启 nginx', task_draft['name'])
-        self.assertEqual(task_draft['target_hosts'][0]['hostname'], 'legacy-data-sync')
+        self.assertEqual(task_draft['name'], 'reviewed-app-01 重启 nginx')
         action.refresh_from_db()
-        self.assertEqual(action.title, task_draft['name'])
-        self.assertEqual(action.action_payload['name'], task_draft['name'])
+        self.assertEqual(action.status, AIOpsPendingAction.STATUS_EXECUTED)
+        self.assertEqual(action.result_payload['review']['status'], 'approved')
+        self.assertTrue(action.result_payload['review']['required'])
+        self.assertEqual(action.result_payload['authorization']['review']['status'], 'approved')
+        task = HostTask.objects.get(name='reviewed-app-01 重启 nginx')
+        self.assertEqual(task.source_context['authorization']['review']['status'], 'approved')
 
     def test_task_draft_title_omits_environment_prefix(self):
         env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
@@ -8861,6 +8976,8 @@ class AIOpsApiTests(TestCase):
         self.assertIn('ansible.builtin.service', draft['payload']['playbook_content'])
         self.assertIn('state: restarted', draft['payload']['playbook_content'])
         self.assertIn('systemctl is-active nginx', draft['payload']['playbook_content'])
+        self.assertTrue(draft['rollback_plan'])
+        self.assertNotIn('无需回滚', ' '.join(draft['rollback_plan']))
 
     def test_confirm_action_repairs_legacy_shell_script_alias_payload(self):
         env = TaskResourceGroup.objects.create(name='电商测试环境', group_type=TaskResourceGroup.GROUP_ENVIRONMENT)
@@ -8887,6 +9004,8 @@ class AIOpsApiTests(TestCase):
             'timeout_seconds': 30,
             'risk_level': AIOpsPendingAction.RISK_HIGH,
             'request_summary': '帮我生成 Shell 脚本任务',
+            'verification_plan': ['确认脚本执行成功并返回 uptime/whoami 输出。'],
+            'rollback_plan': ['只读巡检脚本，不修改目标资源，无需回滚。'],
         }
         action = create_pending_task_action_from_draft(session, assistant_message, legacy_payload)
 
@@ -9053,6 +9172,9 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(task_draft['source_context']['source'], 'aiops')
         self.assertTrue(task_draft['name'])
         self.assertTrue(task_draft['payload'])
+        if task_draft['risk_level'] in {AIOpsPendingAction.RISK_HIGH, AIOpsPendingAction.RISK_CRITICAL}:
+            self.assertTrue(task_draft['verification_plan'])
+            self.assertTrue(task_draft['rollback_plan'])
         return task_draft
 
     def _submit_task_center_draft(self, task_draft):

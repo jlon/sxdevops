@@ -638,6 +638,9 @@ class AIOpsPendingActionSerializer(serializers.ModelSerializer):
     agent_slug = serializers.SerializerMethodField()
     agent_name = serializers.SerializerMethodField()
     authorization_mode = serializers.SerializerMethodField()
+    review_status = serializers.SerializerMethodField()
+    review_summary = serializers.SerializerMethodField()
+    review_required = serializers.SerializerMethodField()
     materialized_in_task_center = serializers.SerializerMethodField()
     execution_started = serializers.SerializerMethodField()
 
@@ -646,7 +649,8 @@ class AIOpsPendingActionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'action_type', 'title', 'risk_level', 'risk_level_display', 'status', 'status_display',
             'action_payload', 'result_payload', 'task_id', 'task_name', 'agent_slug', 'agent_name',
-            'authorization_mode', 'materialized_in_task_center', 'execution_started',
+            'authorization_mode', 'review_status', 'review_summary', 'review_required',
+            'materialized_in_task_center', 'execution_started',
             'confirmed_by', 'confirmed_at', 'created_at', 'updated_at',
         ]
 
@@ -682,6 +686,19 @@ class AIOpsPendingActionSerializer(serializers.ModelSerializer):
 
     def get_authorization_mode(self, obj):
         return self._authorization(obj).get('mode') or ''
+
+    def _review(self, obj):
+        review = self._result_payload(obj).get('review') or self._authorization(obj).get('review')
+        return review if isinstance(review, dict) else {}
+
+    def get_review_status(self, obj):
+        return self._review(obj).get('status') or ''
+
+    def get_review_summary(self, obj):
+        return self._review(obj).get('summary') or ''
+
+    def get_review_required(self, obj):
+        return bool(self._review(obj).get('required'))
 
     def get_materialized_in_task_center(self, obj):
         return bool(self._result_payload(obj).get('materialized_in_task_center'))

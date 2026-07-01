@@ -52,6 +52,70 @@ class AgentRegistryApiTests(TestCase):
         self.assertEqual(agent.enabled_skill_ids, [22])
         self.assertEqual(agent.execution_policy, AIOpsAgentProfile.EXECUTION_MANUAL_CONFIRM)
 
+    def test_default_agent_initialization_keeps_existing_custom_default(self):
+        custom_default = AIOpsAgentProfile.objects.create(
+            name='Custom Default Agent',
+            slug='custom-default-agent',
+            is_default=True,
+            is_enabled=True,
+        )
+        config = AIOpsAgentConfig.objects.create(name='existing-default-test')
+
+        general_agent = ensure_default_agent_profile(config)
+
+        self.assertEqual(general_agent.slug, 'general')
+        self.assertFalse(general_agent.is_default)
+        custom_default.refresh_from_db()
+        self.assertTrue(custom_default.is_default)
+        self.assertEqual(AIOpsAgentProfile.objects.get(is_default=True).slug, custom_default.slug)
+
+    def test_default_agent_initialization_replaces_disabled_default(self):
+        disabled_default = AIOpsAgentProfile.objects.create(
+            name='Disabled Default Agent',
+            slug='disabled-default-agent',
+            is_default=True,
+            is_enabled=False,
+        )
+        config = AIOpsAgentConfig.objects.create(name='disabled-default-test')
+
+        general_agent = ensure_default_agent_profile(config)
+
+        self.assertEqual(general_agent.slug, 'general')
+        self.assertTrue(general_agent.is_default)
+        disabled_default.refresh_from_db()
+        self.assertFalse(disabled_default.is_default)
+        self.assertEqual(AIOpsAgentProfile.objects.get(is_default=True).slug, 'general')
+
+    def test_builtin_default_agent_follows_global_provider_override(self):
+        initial_provider = AIOpsModelProvider.objects.create(
+            name='Initial Provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://initial.example.com/v1',
+            default_model='initial-model',
+            is_enabled=True,
+        )
+        initial_provider.set_api_key('initial-key')
+        initial_provider.save(update_fields=['api_key_encrypted'])
+        override_provider = AIOpsModelProvider.objects.create(
+            name='Override Provider',
+            provider_type=AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+            base_url='https://override.example.com/v1',
+            default_model='override-model',
+            is_enabled=True,
+        )
+        override_provider.set_api_key('override-key')
+        override_provider.save(update_fields=['api_key_encrypted'])
+        config = AIOpsAgentConfig.objects.create(name='provider-override-test', default_provider=initial_provider)
+        default_agent = ensure_default_agent_profile(config)
+        default_agent.default_provider = initial_provider
+        default_agent.save(update_fields=['default_provider'])
+        config.default_provider = override_provider
+        config.save(update_fields=['default_provider'])
+
+        runtime = runtime_config_for_agent(config, default_agent)
+
+        self.assertEqual(runtime.default_provider_id, override_provider.id)
+
     def test_create_agent_seeds_runtime_fields_from_default_agent(self):
         default_agent = ensure_default_agent_profile(AIOpsAgentConfig.objects.create(
             name='seed-default-test',

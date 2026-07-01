@@ -109,7 +109,7 @@ def selected_action_should_preempt_llm(question, selected_action=None, *, provid
     code = selected_action.get('code') or ''
     if code == 'skill.create':
         return False
-    if code == 'host_task.generate':
+    if code in {'host_task.generate', 'incident.investigate'}:
         return True
     if provider_ready and not has_mutation_intent(question):
         return False
